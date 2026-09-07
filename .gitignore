@@ -1,0 +1,16 @@
+# Rust build output
+/target/
+/target*/
+
+# Compiled binaries / installers are produced by CI and attached to GitHub Releases
+*.exe
+*.msi
+*.zip
+*.sha256
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
+*.rs.bk
