@@ -1,162 +1,345 @@
-use eframe::egui;
-use crate::config::{Config, SoundPreset, FlowSensitivity};
-use crate::Event;
-use std::sync::mpsc;
+//! 设置窗口内容（纯 egui 绘制，不持有窗口；窗口由 app.rs 作为子视口创建）。
 
-pub struct ConfigWindow {
-    config: Config,
-    tx: mpsc::Sender<Event>,
-    message: Option<String>,
+use std::time::{Duration, Instant};
+
+use crate::config::{format_hhmm, parse_hhmm, Config, FlowSensitivity, SoundPreset};
+use crate::stats::Stats;
+
+pub struct SettingsState {
+    /// 正在编辑的副本
+    pub draft: Config,
+    /// 上次保存的版本，用于判断是否有未保存修改
+    pub saved: Config,
+    pub autostart: bool,
+    pub autostart_error: Option<String>,
+    pub saved_at: Option<Instant>,
 }
 
-impl ConfigWindow {
-    pub fn new(config: Config, tx: mpsc::Sender<Event>) -> Self {
+impl SettingsState {
+    pub fn new(cfg: Config, autostart: bool) -> Self {
         Self {
-            config,
-            tx,
-            message: None,
+            draft: cfg.clone(),
+            saved: cfg,
+            autostart,
+            autostart_error: None,
+            saved_at: None,
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("EyeFlow 设置");
-            ui.separator();
-            ui.add_space(8.0);
+    pub fn has_unsaved(&self) -> bool {
+        self.draft != self.saved
+    }
+}
 
-            ui.checkbox(&mut self.config.enabled, "启用护眼提醒");
-            ui.add_space(4.0);
+/// 设置窗口需要展示的只读运行状态
+pub struct SettingsView<'a> {
+    pub state_label: &'a str,
+    /// “下次休息约 12 分钟后 / 即将休息 / 休息中 / 已暂停 / 提醒已关闭”
+    pub reminder_line: String,
+    pub stats: &'a Stats,
+    pub audio_ok: bool,
+}
 
-            egui::Grid::new("settings_grid")
-                .striped(true)
-                .num_columns(2)
-                .spacing([16.0, 8.0])
-                .show(ui, |ui| {
-                    // 提醒间隔（UI 显示为分钟，内部存储为秒）
-                    let mut min_min = self.config.min_interval_secs as u32 / 60;
-                    ui.label("最小间隔（分钟）：");
-                    ui.add(egui::Slider::new(&mut min_min, 5..=60));
-                    self.config.min_interval_secs = (min_min as u64) * 60;
-                    ui.end_row();
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettingsAction {
+    Save(Config),
+    RestNow,
+    ResetDefaults,
+    SetAutostart(bool),
+    Preview(SoundPreset),
+    OpenConfigDir,
+}
 
-                    let mut max_min = self.config.max_interval_secs as u32 / 60;
-                    ui.label("最大间隔（分钟）：");
-                    ui.add(egui::Slider::new(&mut max_min, 5..=120));
-                    self.config.max_interval_secs = (max_min as u64) * 60;
-                    ui.end_row();
+pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Vec<SettingsAction> {
+    let mut actions = Vec::new();
+    ui.spacing_mut().item_spacing = egui::vec2(10.0, 8.0);
 
-                    ui.label("护眼时长：");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Slider::new(&mut self.config.eye_rest_secs, 10..=60));
-                        let secs = self.config.eye_rest_secs;
-                        if secs < 60 {
-                            ui.label(format!("{} 秒", secs));
-                        } else {
-                            ui.label(format!("{} 分 {} 秒", secs / 60, secs % 60));
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            status_card(ui, view, &mut actions);
+            ui.add_space(6.0);
+            rhythm_card(ui, s);
+            ui.add_space(6.0);
+            delivery_card(ui, s, view, &mut actions);
+            ui.add_space(6.0);
+            context_card(ui, s);
+            ui.add_space(6.0);
+            system_card(ui, s, &mut actions);
+            ui.add_space(10.0);
+            footer(ui, s, &mut actions);
+        });
+
+    actions
+}
+
+fn card<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.group(|ui| {
+        ui.set_min_width(ui.available_width());
+        ui.label(egui::RichText::new(title).strong().size(15.0));
+        ui.add_space(4.0);
+        add(ui)
+    })
+    .inner
+}
+
+fn status_card(ui: &mut egui::Ui, view: &SettingsView, actions: &mut Vec<SettingsAction>) {
+    card(ui, "现在", |ui| {
+        ui.horizontal(|ui| {
+            ui.label(format!("● {} · {}", view.state_label, view.reminder_line));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("立即休息").clicked() {
+                    actions.push(SettingsAction::RestNow);
+                }
+            });
+        });
+        let st = view.stats;
+        ui.weak(format!(
+            "今日完成 {} 次休息（其中自然休息 {}）· 跳过 {} · 延后 {} · 连续坚持 {} 天",
+            st.completed_today(),
+            st.completed_natural,
+            st.skipped,
+            st.postponed,
+            st.streak_days
+        ));
+    });
+}
+
+fn rhythm_card(ui: &mut egui::Ui, s: &mut SettingsState) {
+    card(ui, "提醒节奏", |ui| {
+        ui.checkbox(&mut s.draft.enabled, "启用提醒");
+
+        let mut min_m = (s.draft.short_break_min_secs / 60) as u32;
+        let mut max_m = (s.draft.short_break_max_secs / 60) as u32;
+        ui.horizontal(|ui| {
+            ui.label("短休息间隔");
+            ui.add(
+                egui::Slider::new(&mut min_m, 5..=90)
+                    .suffix(" 分钟")
+                    .text("最短"),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("　　　　　");
+            ui.add(
+                egui::Slider::new(&mut max_m, 5..=120)
+                    .suffix(" 分钟")
+                    .text("最长"),
+            );
+        });
+        if max_m < min_m {
+            max_m = min_m;
+        }
+        s.draft.short_break_min_secs = min_m as u64 * 60;
+        s.draft.short_break_max_secs = max_m as u64 * 60;
+        ui.weak(
+            "实际间隔在区间内随机，峰值落在中点（默认 15~25 分钟，峰值 20 分钟 — AOA 20-20-20）。",
+        );
+
+        let mut rest = s.draft.short_break_secs as u32;
+        ui.horizontal(|ui| {
+            ui.label("短休息时长");
+            ui.add(egui::Slider::new(&mut rest, 10..=90).suffix(" 秒"));
+        });
+        s.draft.short_break_secs = rest as u64;
+
+        ui.add_space(4.0);
+        ui.checkbox(
+            &mut s.draft.long_break_enabled,
+            "长休息：连续用屏一段时间后建议离开屏幕",
+        );
+        ui.add_enabled_ui(s.draft.long_break_enabled, |ui| {
+            let mut after_h = s.draft.long_break_after_secs as f32 / 3600.0;
+            let mut long_m = (s.draft.long_break_secs / 60) as u32;
+            ui.horizontal(|ui| {
+                ui.label("连续用屏");
+                ui.add(
+                    egui::Slider::new(&mut after_h, 0.5..=4.0)
+                        .step_by(0.25)
+                        .suffix(" 小时"),
+                );
+                ui.label("后休息");
+                ui.add(egui::Slider::new(&mut long_m, 3..=30).suffix(" 分钟"));
+            });
+            s.draft.long_break_after_secs = (after_h * 3600.0).round() as u64;
+            s.draft.long_break_secs = long_m as u64 * 60;
+            ui.weak("AOA：连续用屏 2 小时后休息 15 分钟。长休息不可延后，跳过后 10 分钟再提示。");
+        });
+
+        ui.add_space(4.0);
+        let mut heads = s.draft.heads_up_secs as u32;
+        let mut post = (s.draft.postpone_secs / 60) as u32;
+        ui.horizontal(|ui| {
+            ui.label("预告提前");
+            ui.add(egui::Slider::new(&mut heads, 5..=60).suffix(" 秒"));
+            ui.label("　延后一次");
+            ui.add(egui::Slider::new(&mut post, 1..=30).suffix(" 分钟"));
+        });
+        s.draft.heads_up_secs = heads as u64;
+        s.draft.postpone_secs = post as u64 * 60;
+    });
+}
+
+fn delivery_card(
+    ui: &mut egui::Ui,
+    s: &mut SettingsState,
+    view: &SettingsView,
+    actions: &mut Vec<SettingsAction>,
+) {
+    card(ui, "提醒方式", |ui| {
+        ui.checkbox(
+            &mut s.draft.visual_enabled,
+            "视觉提醒：右下角预告浮窗 + 居中休息面板（不抢焦点）",
+        );
+        ui.add_enabled_ui(s.draft.visual_enabled, |ui| {
+            ui.checkbox(
+                &mut s.draft.strict_mode,
+                "严格模式：休息面板改为全屏暗色遮罩",
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.draft.sound_enabled, "提示音");
+            ui.add_enabled_ui(s.draft.sound_enabled, |ui| {
+                egui::ComboBox::from_id_salt("sound_preset")
+                    .selected_text(s.draft.sound_preset.label())
+                    .show_ui(ui, |ui| {
+                        for p in SoundPreset::ALL {
+                            ui.selectable_value(&mut s.draft.sound_preset, p, p.label());
                         }
                     });
-                    ui.end_row();
-                    ui.end_row();
-
-                    ui.separator();
-                    ui.separator();
-                    ui.end_row();
-
-                    // 提示音
-                    ui.label("提示音：");
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.config.sound_enabled, "启用");
-                    });
-                    ui.end_row();
-
-                    ui.label("提示音预设：");
-                    ui.horizontal(|ui| {
-                        egui::ComboBox::from_id_salt("sound_preset")
-                            .selected_text(match self.config.sound_preset {
-                                SoundPreset::GentleChime => "风铃",
-                                SoundPreset::SoftTap => "轻敲",
-                                SoundPreset::WaterDrop => "水滴",
-                                SoundPreset::DigitalDrop => "数字降调",
-                                SoundPreset::TripleBeep => "三连短哔",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.config.sound_preset, SoundPreset::GentleChime, "风铃");
-                                ui.selectable_value(&mut self.config.sound_preset, SoundPreset::SoftTap, "轻敲");
-                                ui.selectable_value(&mut self.config.sound_preset, SoundPreset::WaterDrop, "水滴");
-                                ui.selectable_value(&mut self.config.sound_preset, SoundPreset::DigitalDrop, "数字降调");
-                                ui.selectable_value(&mut self.config.sound_preset, SoundPreset::TripleBeep, "三连短哔");
-                            });
-                        if ui.button("▶ 试听").clicked() {
-                            crate::audio::preview_sound(&self.config.sound_preset);
-                        }
-                    });
-                    ui.end_row();
-
-                    ui.label("系统通知：");
-                    ui.checkbox(&mut self.config.notification_enabled, "启用弹窗通知");
-                    ui.end_row();
-
-                    ui.separator();
-                    ui.separator();
-                    ui.end_row();
-
-                    // 免打扰
-                    ui.label("免打扰时段：");
-                    ui.end_row();
-
-                    ui.label("开始时间：");
-                    ui.text_edit_singleline(&mut self.config.dnd_start);
-                    ui.end_row();
-
-                    ui.label("结束时间：");
-                    ui.text_edit_singleline(&mut self.config.dnd_end);
-                    ui.end_row();
-
-                    ui.separator();
-                    ui.separator();
-                    ui.end_row();
-
-                    // 心流检测
-                    ui.label("心流检测灵敏度：");
-                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        egui::ComboBox::from_id_salt("sensitivity")
-                            .selected_text(match self.config.flow_sensitivity {
-                                FlowSensitivity::Low => "低（30秒内按键 > 6 次）",
-                                FlowSensitivity::Medium => "中（30秒内按键 > 10 次）",
-                                FlowSensitivity::High => "高（30秒内按键 > 15 次）",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.config.flow_sensitivity, FlowSensitivity::Low, "低（30秒内按键 > 6 次）");
-                                ui.selectable_value(&mut self.config.flow_sensitivity, FlowSensitivity::Medium, "中（30秒内按键 > 10 次）");
-                                ui.selectable_value(&mut self.config.flow_sensitivity, FlowSensitivity::High, "高（30秒内按键 > 15 次）");
-                            });
-                        ui.label(egui::RichText::new(
-                            "灵敏度越高，键盘敲得越快才会被判定为「心流状态」。\n心流状态下提醒会延后，等键盘停歇后再触发。",
-                        ).size(12.0).color(egui::Color32::GRAY));
-                    });
-                    ui.end_row();
-
-                    ui.label("全局快捷键：");
-                    ui.text_edit_singleline(&mut self.config.global_mute_hotkey);
-                    ui.end_row();
-                });
-
-            ui.add_space(16.0);
-
-            if ui.button("保存设置").clicked() {
-                let new_config = self.config.clone();
-                let _ = self.tx.send(Event::SettingsChanged(new_config));
-                self.message = Some("设置已保存".to_string());
-            }
-
-            if let Some(msg) = &self.message {
-                ui.label(egui::RichText::new(msg).color(egui::Color32::GREEN));
+                if ui
+                    .add_enabled(view.audio_ok, egui::Button::new("▶ 试听"))
+                    .clicked()
+                {
+                    actions.push(SettingsAction::Preview(s.draft.sound_preset));
+                }
+            });
+            if !view.audio_ok {
+                ui.weak("（未检测到音频输出设备）");
             }
         });
-    }
+        ui.weak("提示音只在休息结束、以及游戏/全屏中到点时播放；预告出现时保持安静。");
+    });
+}
 
-    #[allow(dead_code)]
-    pub fn config(&self) -> &Config {
-        &self.config
+fn context_card(ui: &mut egui::Ui, s: &mut SettingsState) {
+    card(ui, "上下文感知", |ui| {
+        ui.horizontal(|ui| {
+            ui.label("心流灵敏度");
+            egui::ComboBox::from_id_salt("flow_sensitivity")
+                .selected_text(s.draft.flow_sensitivity.label())
+                .show_ui(ui, |ui| {
+                    for f in FlowSensitivity::ALL {
+                        ui.selectable_value(&mut s.draft.flow_sensitivity, f, f.label());
+                    }
+                });
+        });
+        ui.weak("持续快速输入时判定为心流：到点的提醒会等键盘停歇 8 秒后再出现，不会被取消。");
+
+        let mut away_m = (s.draft.away_secs / 60) as u32;
+        ui.horizontal(|ui| {
+            ui.label("离开判定");
+            ui.add(egui::Slider::new(&mut away_m, 1..=30).suffix(" 分钟无操作"));
+        });
+        s.draft.away_secs = away_m as u64 * 60;
+        ui.weak("离开时计时暂停；离开时间超过休息时长即视为已休息。全屏游戏 / 演示 / 独占应用中只响提示音，退出后补发预告。");
+
+        ui.add_space(4.0);
+        let mut qs = parse_hhmm(&s.draft.quiet_start);
+        let mut qe = parse_hhmm(&s.draft.quiet_end);
+        ui.horizontal(|ui| {
+            ui.label("免打扰时段");
+            time_editor(ui, "qs", &mut qs);
+            ui.label("到");
+            time_editor(ui, "qe", &mut qe);
+            if qs == qe {
+                ui.weak("（起止相同 = 不启用）");
+            }
+        });
+        s.draft.quiet_start = format_hhmm(qs);
+        s.draft.quiet_end = format_hhmm(qe);
+    });
+}
+
+fn time_editor(ui: &mut egui::Ui, salt: &str, minutes: &mut u32) {
+    let mut h = *minutes / 60;
+    let mut m = *minutes % 60;
+    ui.push_id(salt, |ui| {
+        ui.add(
+            egui::DragValue::new(&mut h)
+                .range(0..=23)
+                .speed(0.05)
+                .custom_formatter(|v, _| format!("{:02}", v as u32)),
+        );
+        ui.label(":");
+        ui.add(
+            egui::DragValue::new(&mut m)
+                .range(0..=59)
+                .speed(0.2)
+                .custom_formatter(|v, _| format!("{:02}", v as u32)),
+        );
+    });
+    *minutes = h * 60 + m;
+}
+
+fn system_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<SettingsAction>) {
+    card(ui, "系统", |ui| {
+        let before = s.autostart;
+        ui.checkbox(
+            &mut s.autostart,
+            "开机自启（写入 HKCU\\...\\Run，可在任务管理器“启动应用”中管理）",
+        );
+        if s.autostart != before {
+            actions.push(SettingsAction::SetAutostart(s.autostart));
+        }
+        if let Some(err) = &s.autostart_error {
+            ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+        }
+        ui.label("全局热键：Ctrl+Shift+E = 立即休息（v0.2 固定）");
+        ui.horizontal(|ui| {
+            ui.weak(format!("配置文件：{}", Config::path().display()));
+            if ui.small_button("打开目录").clicked() {
+                actions.push(SettingsAction::OpenConfigDir);
+            }
+        });
+    });
+}
+
+fn footer(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<SettingsAction>) {
+    ui.horizontal(|ui| {
+        if ui.button("恢复默认").clicked() {
+            actions.push(SettingsAction::ResetDefaults);
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let unsaved = s.has_unsaved();
+            if ui
+                .add_enabled(
+                    unsaved,
+                    egui::Button::new(egui::RichText::new("保存").strong()),
+                )
+                .clicked()
+            {
+                actions.push(SettingsAction::Save(s.draft.clone().sanitized()));
+            }
+            if unsaved {
+                ui.weak("有未保存的修改");
+            } else if s
+                .saved_at
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
+            {
+                ui.colored_label(egui::Color32::from_rgb(70, 170, 100), "已保存 ✓");
+            }
+        });
+    });
+}
+
+pub fn human_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs} 秒")
+    } else if secs < 3600 {
+        format!("{} 分钟", (secs + 30) / 60)
+    } else {
+        format!("{} 小时 {} 分", secs / 3600, (secs % 3600) / 60)
     }
 }

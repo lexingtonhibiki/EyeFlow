@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: Check / Test / Build (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # v0.2 重写期间允许格式化暂不达标,不阻塞 CI;稳定后可移除 continue-on-error
+      - name: Format check (advisory)
+        run: cargo fmt --check
+        continue-on-error: true
+
+      # 暂不开启 -D warnings(重写期告警预期偏多);稳定后切换为 `cargo clippy --all-targets -- -D warnings`
+      - name: Clippy (advisory)
+        run: cargo clippy --all-targets
+        continue-on-error: true
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked

@@ -1,213 +1,208 @@
-use std::collections::VecDeque;
+//! 系统检测：键盘钩子（心流）、空闲秒数、全屏与可打扰性（传感器线程）。
+//!
+//! 决策依据 docs/adr/0004：`SHQueryUserNotificationState` 为主，前台窗口矩形 + 无标题栏为兜底。
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use std::sync::mpsc;
 
-use crate::config::FlowSensitivity;
-use crate::Event;
-
-/// 检测前台窗口是否为全屏状态。
-pub fn is_fullscreen() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        use windows::Win32::Foundation::RECT;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowRect, GetSystemMetrics,
-            SYSTEM_METRICS_INDEX,
-        };
-
-        unsafe {
-            let hwnd = GetForegroundWindow();
-            #[allow(clippy::erasing_op, clippy::zero_ptr)]
-            if hwnd.0 == std::ptr::null_mut() {
-                return false;
-            }
-
-            let mut rect = RECT::default();
-            if GetWindowRect(hwnd, &mut rect).is_err() {
-                return false;
-            }
-
-            let screen_w = GetSystemMetrics(SYSTEM_METRICS_INDEX(0));
-            let screen_h = GetSystemMetrics(SYSTEM_METRICS_INDEX(1));
-
-            let w = rect.right - rect.left;
-            let h = rect.bottom - rect.top;
-
-            w + 2 >= screen_w && h + 2 >= screen_h
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        false
-    }
-}
-
-/// ---- 心流检测器 ----
-/// 30 秒滑动窗口统计按键频率。
-
-pub struct FlowDetector {
-    key_times: VecDeque<Instant>,
-    threshold: u32,
-    in_flow: bool,
-}
-
-impl FlowDetector {
-    pub fn new(sensitivity: FlowSensitivity) -> Self {
-        Self {
-            key_times: VecDeque::with_capacity(128),
-            threshold: sensitivity.threshold(),
-            in_flow: false,
-        }
-    }
-
-    pub fn on_key_down(&mut self) {
-        let now = Instant::now();
-        self.key_times.push_back(now);
-        while let Some(&t) = self.key_times.front() {
-            if now - t > Duration::from_secs(30) {
-                self.key_times.pop_front();
-            } else {
-                break;
-            }
-        }
-        self.in_flow = self.key_times.len() >= self.threshold as usize;
-    }
-
-    #[allow(dead_code)]
-    pub fn is_in_flow(&self) -> bool {
-        if !self.in_flow {
-            return false;
-        }
-        if let Some(&last) = self.key_times.back() {
-            if last.elapsed() > Duration::from_secs(8) {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub fn idle_time(&self) -> Option<Duration> {
-        self.key_times.back().map(|t| t.elapsed())
-    }
-
-    pub fn set_sensitivity(&mut self, s: FlowSensitivity) {
-        self.threshold = s.threshold();
-        self.in_flow = self.key_times.len() >= self.threshold as usize;
-    }
-}
-
-/// ---- 空闲检测 ----
-
-/// 返回用户空闲分钟数（基于 GetLastInputInfo）。
-pub fn idle_minutes() -> u64 {
-    #[cfg(target_os = "windows")]
-    {
-        #[repr(C)]
-        struct LASTINPUTINFO {
-            cb_size: u32,
-            dw_time: u32,
-        }
-
-        unsafe extern "system" {
-            fn GetLastInputInfo(plii: *mut LASTINPUTINFO) -> i32;
-            fn GetTickCount() -> u32;
-        }
-
-        unsafe {
-            let mut lii = LASTINPUTINFO {
-                cb_size: std::mem::size_of::<LASTINPUTINFO>() as u32,
-                dw_time: 0,
-            };
-
-            if GetLastInputInfo(&mut lii) != 0 {
-                let idle_ms = GetTickCount().wrapping_sub(lii.dw_time);
-                (idle_ms as u64) / 60_000
-            } else {
-                0
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        0
-    }
-}
-
-/// ---- 低级键盘钩子 ----
-/// WH_KEYBOARD_LL 不需要 UAC 提权即可全系统键盘监听。
-
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
+use windows::Win32::UI::Shell::{
+    SHQueryUserNotificationState, QUNS_ACCEPTS_NOTIFICATIONS, QUNS_NOT_PRESENT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, HHOOK, MSG, WM_QUIT,
-    WM_KEYDOWN, WM_SYSKEYDOWN,
+    CallNextHookEx, GetForegroundWindow, GetMessageW, GetShellWindow, GetWindowLongW,
+    GetWindowRect, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, GWL_STYLE, HHOOK,
+    KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WS_CAPTION,
 };
 
-/// 存储 (钩子句柄, 线程ID)，供退出时清理和唤醒。
-/// HHOOK 是 `*mut c_void` 的 newtype，不实现 Send/Sync，转 isize 存储。
-static KB_STATE: OnceLock<(isize, u32)> = OnceLock::new();
-static KB_TX: OnceLock<mpsc::Sender<Event>> = OnceLock::new();
+use crate::core::Sensors;
+use crate::event::{wake_ui, Event};
 
-unsafe extern "system" fn keyboard_proc(
-    code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if code >= 0 {
-        match wparam.0 as u32 {
-            WM_KEYDOWN | WM_SYSKEYDOWN => {
-                if let Some(tx) = KB_TX.get() {
-                    let _ = tx.send(Event::KeyboardActivity);
+// ------------------------------------------------------------------ 传感器
+
+/// 采样一次传感器快照（约 3 个廉价 Win32 调用）。
+pub fn sample_sensors() -> Sensors {
+    Sensors {
+        idle_secs: idle_millis() / 1000,
+        fullscreen: foreground_is_fullscreen(),
+        interruptible: system_accepts_notifications(),
+    }
+}
+
+/// 启动 1 Hz 传感器线程。
+pub fn start_sensor_thread(tx: mpsc::Sender<Event>) {
+    std::thread::Builder::new()
+        .name("eyeflow-sensors".into())
+        .spawn(move || {
+            let mut last: Option<Sensors> = None;
+            loop {
+                let s = sample_sensors();
+                // 每秒都发一份（空闲秒数在变），但只有状态位变化时才额外唤醒 UI，
+                // 让 UI 自身的 1 Hz 节拍处理常规刷新。
+                let state_changed = last
+                    .map(|l| l.fullscreen != s.fullscreen || l.interruptible != s.interruptible)
+                    .unwrap_or(true);
+                last = Some(s);
+                if tx.send(Event::Sensors(s)).is_err() {
+                    break;
                 }
+                if state_changed {
+                    wake_ui();
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        })
+        .expect("无法启动传感器线程");
+}
+
+/// 自上次键鼠输入以来的毫秒数（GetLastInputInfo，含鼠标；wrapping_sub 处理 49.7 天回绕）。
+pub fn idle_millis() -> u64 {
+    #[repr(C)]
+    #[allow(clippy::upper_case_acronyms)]
+    struct LASTINPUTINFO {
+        cb_size: u32,
+        dw_time: u32,
+    }
+    unsafe extern "system" {
+        fn GetLastInputInfo(plii: *mut LASTINPUTINFO) -> i32;
+        fn GetTickCount() -> u32;
+    }
+    unsafe {
+        let mut lii = LASTINPUTINFO {
+            cb_size: std::mem::size_of::<LASTINPUTINFO>() as u32,
+            dw_time: 0,
+        };
+        if GetLastInputInfo(&mut lii) != 0 {
+            GetTickCount().wrapping_sub(lii.dw_time) as u64
+        } else {
+            0
+        }
+    }
+}
+
+/// 官方“此刻是否适合打扰用户”。锁屏/屏保（NOT_PRESENT）交给空闲逻辑处理，因此视为可打扰。
+pub fn system_accepts_notifications() -> bool {
+    match unsafe { SHQueryUserNotificationState() } {
+        Ok(state) => state == QUNS_ACCEPTS_NOTIFICATIONS || state == QUNS_NOT_PRESENT,
+        Err(_) => true,
+    }
+}
+
+/// 前台窗口覆盖其所在显示器且没有标题栏 → 全屏应用（无边框窗口化游戏、F11 视频等）。
+pub fn foreground_is_fullscreen() -> bool {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() || hwnd == GetShellWindow() {
+            return false;
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return false;
+        }
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        if style & WS_CAPTION.0 == WS_CAPTION.0 {
+            return false;
+        }
+        let Some(mon) = monitor_rect(hwnd) else {
+            return false;
+        };
+        let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+        let (mw, mh) = (mon.right - mon.left, mon.bottom - mon.top);
+        w + 2 >= mw && h + 2 >= mh
+    }
+}
+
+unsafe fn monitor_rect(hwnd: HWND) -> Option<RECT> {
+    let hmon = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if hmon.0.is_null() {
+        return None;
+    }
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(hmon, &mut info) }.as_bool() {
+        Some(info.rcMonitor)
+    } else {
+        None
+    }
+}
+
+// ------------------------------------------------------------------ 键盘钩子
+
+static KB_TX: OnceLock<mpsc::Sender<Event>> = OnceLock::new();
+static KB_THREAD: OnceLock<u32> = OnceLock::new();
+/// 每个虚拟键的按下状态，用来过滤自动重复（低级钩子没有 KF_REPEAT 标志）。
+static KEY_DOWN: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
+
+fn is_modifier(vk: u32) -> bool {
+    matches!(vk, 0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5)
+}
+
+unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 {
+        let msg = wparam.0 as u32;
+        let vk = unsafe { (*(lparam.0 as *const KBDLLHOOKSTRUCT)).vkCode } as usize & 0xFF;
+        match msg {
+            WM_KEYDOWN | WM_SYSKEYDOWN => {
+                let was_down = KEY_DOWN[vk].swap(true, Ordering::Relaxed);
+                if !was_down && !is_modifier(vk as u32) {
+                    if let Some(tx) = KB_TX.get() {
+                        let _ = tx.send(Event::KeyPress(Instant::now()));
+                    }
+                    // 心流判定对时效不敏感，交给 UI 的 1 Hz 节拍处理即可，不额外唤醒。
+                }
+            }
+            WM_KEYUP | WM_SYSKEYUP => {
+                KEY_DOWN[vk].store(false, Ordering::Relaxed);
             }
             _ => {}
         }
     }
-    unsafe { CallNextHookEx(Some(HHOOK::default()), code, wparam, lparam) }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
-/// 启动键盘钩子线程。
-///
-/// 阻塞直到收到 WM_QUIT。main loop 退出时须调用 `stop_keyboard_hook()`。
-pub fn start_keyboard_hook(
-    tx: mpsc::Sender<Event>,
-) {
-    KB_TX.set(tx).ok().expect("keyboard hook already started");
-
-    let thread_id: u32;
-    let hook: HHOOK;
-
-    unsafe {
-        thread_id = windows::Win32::System::Threading::GetCurrentThreadId();
-        let hmod = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
-            .unwrap_or_default();
-        // HMODULE 与 HINSTANCE 在 Win32 中相同，构造方式一致
-        let hinst = windows::Win32::Foundation::HINSTANCE(hmod.0);
-        hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(hinst), 0)
-            .expect("SetWindowsHookExW failed");
+/// 启动键盘钩子线程（自带消息泵）。
+pub fn start_keyboard_hook(tx: mpsc::Sender<Event>) {
+    if KB_TX.set(tx).is_err() {
+        return;
     }
-
-    KB_STATE.set((hook.0 as isize, thread_id)).ok();
-
-    let mut msg = MSG::default();
-    while unsafe { GetMessageW(&mut msg, None, 0, 0).as_bool() } {
-        // WH_KEYBOARD_LL 回调由 GetMessageW 内部调用
-    }
-
-    // GetMessageW 返回 false（收到 WM_QUIT），清理钩子
-    unsafe { let _ = UnhookWindowsHookEx(hook); }
-}
-
-/// 停止键盘钩子并唤醒消息泵线程。
-pub fn stop_keyboard_hook() {
-    if let Some(&(raw_hook, thread_id)) = KB_STATE.get() {
-        unsafe {
-            let hook = HHOOK(raw_hook as *mut std::ffi::c_void);
-            let _ = PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+    std::thread::Builder::new()
+        .name("eyeflow-keyhook".into())
+        .spawn(|| unsafe {
+            let _ = KB_THREAD.set(windows::Win32::System::Threading::GetCurrentThreadId());
+            let hmod =
+                windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
+            let hook: HHOOK = match SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(keyboard_proc),
+                Some(windows::Win32::Foundation::HINSTANCE(hmod.0)),
+                0,
+            ) {
+                Ok(h) => h,
+                Err(e) => {
+                    log::error!("键盘钩子安装失败: {e}（心流检测不可用）");
+                    return;
+                }
+            };
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {}
             let _ = UnhookWindowsHookEx(hook);
+        })
+        .expect("无法启动键盘钩子线程");
+}
+
+/// 让钩子线程退出并自行卸载钩子。
+pub fn stop_keyboard_hook() {
+    if let Some(&tid) = KB_THREAD.get() {
+        unsafe {
+            let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
         }
     }
 }

@@ -1,40 +1,52 @@
 [package]
 name = "eyeflow"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "上下文感知的极简护眼提醒工具"
+rust-version = "1.95"
+description = "EyeFlow — context-aware eye-care break reminder for Windows / 上下文感知的极简护眼提醒工具"
+license = "MIT"
+repository = "https://github.com/lexingtonhibiki/eyeflow"
+readme = "README.md"
+keywords = ["eye-care", "break-reminder", "20-20-20", "tray", "windows"]
+categories = ["gui"]
+build = "build.rs"
 
 [dependencies]
-# GUI
-egui = "0.31"
-eframe = "0.31"
+# GUI — glow backend keeps the binary small; wgpu (the 0.34+ default) is unnecessary here
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.36"
 
-# 系统托盘
+# System tray + global hotkey (both must be created on the thread that runs the Win32 message loop)
 tray-icon = "0.24"
+global-hotkey = "0.8"
 
-# 音频
-rodio = { version = "0.22", features = ["playback"] }
+# Audio — synthesized cues only, so no decoders needed
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
 
 # Windows API
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_LibraryLoader",
-    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
 ] }
 
-# 配置
+# Config / persistence
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-directories = "6"
+toml = "1"
 
-# 工具
+# Utilities
 log = "0.4"
 env_logger = "0.11"
 chrono = "0.4"
 rand = "0.9"
+
+[build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 strip = true

@@ -1,187 +1,151 @@
-use crate::Event;
-use std::sync::mpsc;
-use tray_icon::menu::{Menu, MenuItem, MenuItemBuilder, MenuEvent, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+//! 系统托盘：图标、右键菜单、左键/双击事件。
+//!
+//! 菜单顺序遵循微软 UX 指南（docs/research/04）：默认命令在首位、常用开关带勾选、Exit 在末尾。
+//! 托盘图标必须在运行 Win32 消息循环的线程上创建——即 eframe 主线程、`run_native` 之前。
 
-/// 托盘菜单操作枚举
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrayAction {
-    /// 打开设置窗口
+pub enum TrayCommand {
     OpenSettings,
-    /// 全局提醒开关
     ToggleEnabled,
-    /// 静音开关（提示音 + 通知）
-    ToggleMute,
-    /// 退出程序
+    RestNow,
+    TogglePause,
+    ToggleSound,
     Quit,
 }
 
-impl TrayAction {
-    /// 从菜单字符串 ID 映射到枚举
-    pub fn from_menu_id(id: &str) -> Option<Self> {
-        match id {
-            menu_id::OPEN_SETTINGS => Some(TrayAction::OpenSettings),
-            menu_id::TOGGLE_ENABLED => Some(TrayAction::ToggleEnabled),
-            menu_id::TOGGLE_MUTE => Some(TrayAction::ToggleMute),
-            menu_id::QUIT => Some(TrayAction::Quit),
-            _ => None,
-        }
-    }
-}
-
-/// 菜单项字符串 ID 常量
-mod menu_id {
-    pub const TOGGLE_ENABLED: &str = "toggle_enabled";
-    pub const TOGGLE_MUTE: &str = "toggle_mute";
+mod id {
     pub const OPEN_SETTINGS: &str = "open_settings";
+    pub const TOGGLE_ENABLED: &str = "toggle_enabled";
+    pub const REST_NOW: &str = "rest_now";
+    pub const TOGGLE_PAUSE: &str = "toggle_pause";
+    pub const TOGGLE_SOUND: &str = "toggle_sound";
     pub const QUIT: &str = "quit";
 }
 
-/// 系统托盘
 pub struct Tray {
-    _tray: TrayIcon,
-    toggle_enabled_item: MenuItem,
-    toggle_mute_item: MenuItem,
+    icon: TrayIcon,
+    enabled_item: CheckMenuItem,
+    sound_item: CheckMenuItem,
+    pause_item: MenuItem,
+    tooltip: String,
 }
 
 impl Tray {
-    /// 创建系统托盘
-    ///
-    /// 会启动一个独立线程监听 `MenuEvent` 并将其转发到主循环的 `event_tx`。
-    pub fn new(event_tx: mpsc::Sender<Event>, enabled: bool, muted: bool) -> Self {
-        let icon = build_icon();
-
-        // 先创建菜单项（需在 TrayIcon 之前，以便存储句柄）
-        let toggle_enabled_item = build_enabled_item(enabled);
-        let toggle_mute_item = build_mute_item(muted);
-        let open_settings_item = MenuItemBuilder::new()
-            .enabled(true)
-            .id(menu_id::OPEN_SETTINGS.into())
-            .text("设置")
-            .build();
-        let separator_item = PredefinedMenuItem::separator();
-        let quit_item = MenuItemBuilder::new()
-            .enabled(true)
-            .id(menu_id::QUIT.into())
-            .text("退出")
-            .build();
+    pub fn new(enabled: bool, sound_on: bool) -> Result<Self, Box<dyn std::error::Error>> {
+        let open_item = MenuItem::with_id(MenuId(id::OPEN_SETTINGS.into()), "打开设置", true, None);
+        let enabled_item = CheckMenuItem::with_id(
+            MenuId(id::TOGGLE_ENABLED.into()),
+            "启用提醒",
+            true,
+            enabled,
+            None,
+        );
+        let rest_item = MenuItem::with_id(
+            MenuId(id::REST_NOW.into()),
+            "立即休息\tCtrl+Shift+E",
+            true,
+            None,
+        );
+        let pause_item =
+            MenuItem::with_id(MenuId(id::TOGGLE_PAUSE.into()), "暂停 1 小时", true, None);
+        let sound_item = CheckMenuItem::with_id(
+            MenuId(id::TOGGLE_SOUND.into()),
+            "提示音",
+            true,
+            sound_on,
+            None,
+        );
+        let quit_item = MenuItem::with_id(MenuId(id::QUIT.into()), "退出", true, None);
 
         let menu = Menu::new();
-        menu.append(&toggle_enabled_item).expect("添加菜单项失败");
-        menu.append(&toggle_mute_item).expect("添加菜单项失败");
-        menu.append(&open_settings_item).expect("添加菜单项失败");
-        menu.append(&separator_item).expect("添加分隔符失败");
-        menu.append(&quit_item).expect("添加菜单项失败");
+        menu.append(&open_item)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&enabled_item)?;
+        menu.append(&rest_item)?;
+        menu.append(&pause_item)?;
+        menu.append(&sound_item)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&quit_item)?;
 
+        let rgba = crate::icon::render_rgba(32);
+        let icon = Icon::from_rgba(rgba, 32, 32)?;
+
+        let tooltip = "EyeFlow 护眼提醒".to_string();
         let tray = TrayIconBuilder::new()
-            .with_tooltip("EyeFlow - 护眼提醒")
+            .with_id("eyeflow")
+            .with_tooltip(&tooltip)
             .with_icon(icon)
             .with_menu(Box::new(menu))
-            .build()
-            .expect("托盘图标创建失败");
+            .with_menu_on_left_click(false)
+            .build()?;
 
-        // 监听菜单事件（tray-icon 使用全局事件通道）
-        let tx = event_tx.clone();
-        std::thread::Builder::new()
-            .name("tray-listener".into())
-            .spawn(move || {
-                let receiver = MenuEvent::receiver();
-                while let Ok(event) = receiver.recv() {
-                    if let Some(action) = TrayAction::from_menu_id(event.id.0.as_ref()) {
-                        if tx.send(Event::TrayAction(action)).is_err() {
-                            break;
-                        }
-                    }
-                }
-            })
-            .expect("无法启动托盘监听线程");
-
-        Self { _tray: tray, toggle_enabled_item, toggle_mute_item }
+        Ok(Self {
+            icon: tray,
+            enabled_item,
+            sound_item,
+            pause_item,
+            tooltip,
+        })
     }
 
-    /// 更新提醒开关状态（菜单文字 + 已用属性）
+    /// 每帧调用：把 tray-icon / muda 的全局事件通道排空成命令。
+    pub fn poll(&self) -> Vec<TrayCommand> {
+        let mut out = Vec::new();
+        while let Ok(ev) = MenuEvent::receiver().try_recv() {
+            let cmd = match ev.id.0.as_str() {
+                id::OPEN_SETTINGS => Some(TrayCommand::OpenSettings),
+                id::TOGGLE_ENABLED => Some(TrayCommand::ToggleEnabled),
+                id::REST_NOW => Some(TrayCommand::RestNow),
+                id::TOGGLE_PAUSE => Some(TrayCommand::TogglePause),
+                id::TOGGLE_SOUND => Some(TrayCommand::ToggleSound),
+                id::QUIT => Some(TrayCommand::Quit),
+                _ => None,
+            };
+            out.extend(cmd);
+        }
+        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+            match ev {
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                }
+                | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                } => out.push(TrayCommand::OpenSettings),
+                _ => {}
+            }
+        }
+        out
+    }
+
     pub fn set_enabled(&self, enabled: bool) {
-        self.toggle_enabled_item.set_text(if enabled { "✅ 提醒已开启" } else { "⏸ 提醒已关闭" });
+        self.enabled_item.set_checked(enabled);
     }
 
-    /// 更新静音开关状态（菜单文字 + 已用属性）
-    pub fn set_muted(&self, muted: bool) {
-        self.toggle_mute_item.set_text(if muted { "🔇 已静音" } else { "🔊 声音已开启" });
+    pub fn set_sound(&self, on: bool) {
+        self.sound_item.set_checked(on);
     }
 
-    /// 显示系统通知（日志替代，待 notify-rust 实现原生通知）
-    pub fn show_notification(&self, title: &str, body: &str) -> Result<(), Box<dyn std::error::Error>> {
-        log::info!("通知: [{}] {}", title, body);
-        Ok(())
+    pub fn set_paused(&self, paused: bool) {
+        self.pause_item.set_text(if paused {
+            "恢复提醒"
+        } else {
+            "暂停 1 小时"
+        });
     }
-}
 
-fn build_enabled_item(enabled: bool) -> MenuItem {
-    MenuItemBuilder::new()
-        .enabled(true)
-        .id(menu_id::TOGGLE_ENABLED.into())
-        .text(if enabled { "✅ 提醒已开启" } else { "⏸ 提醒已关闭" })
-        .build()
-}
-
-fn build_mute_item(muted: bool) -> MenuItem {
-    MenuItemBuilder::new()
-        .enabled(true)
-        .id(menu_id::TOGGLE_MUTE.into())
-        .text(if muted { "🔇 已静音" } else { "🔊 声音已开启" })
-        .build()
-}
-
-/// 生成 32x32 绿色眼睛图标（程序化，无外部文件依赖）
-fn build_icon() -> Icon {
-    let size = 32u32;
-    let cx = size as f32 / 2.0;
-    let cy = size as f32 / 2.0;
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - cx + 0.5;
-            let dy = y as f32 - cy + 0.5;
-            let dist = (dx * dx + dy * dy).sqrt();
-
-            let (r, g, b, a) = if dist < 10.0 {
-                let bright = 1.0 - (dist / 10.0) * 0.3;
-                (0, (150.0 * bright) as u8, (200.0 * bright) as u8, 220)
-            } else if dist < 11.0 {
-                (50, 120, 160, 180)
-            } else if dist < 4.0 {
-                (0, 0, 0, 0)
-            } else {
-                (0, 0, 0, 0)
-            };
-
-            let (r, g, b, a) = if dist < 3.5 {
-                (20, 20, 30, 230)
-            } else if dist < 4.0 {
-                (40, 40, 50, 200)
-            } else {
-                (r, g, b, a)
-            };
-
-            let (r, g, b, a) = {
-                let hx = x as f32 - 13.0;
-                let hy = y as f32 - 12.5;
-                let hd = (hx * hx + hy * hy).sqrt();
-                if hd < 2.0 {
-                    let alpha = ((2.0 - hd) / 2.0 * 200.0) as u8;
-                    (255, 255, 255, alpha)
-                } else {
-                    (r, g, b, a)
-                }
-            };
-
-            rgba.push(r);
-            rgba.push(g);
-            rgba.push(b);
-            rgba.push(a);
+    /// tooltip ≤ 128 字符（NOTIFYICONDATA.szTip 上限），内容变化时才写。
+    pub fn set_tooltip(&mut self, text: &str) {
+        if self.tooltip != text {
+            let clipped: String = text.chars().take(120).collect();
+            if self.icon.set_tooltip(Some(&clipped)).is_ok() {
+                self.tooltip = text.to_string();
+            }
         }
     }
-
-    Icon::from_rgba(rgba, size, size).expect("图标创建失败")
 }

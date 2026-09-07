@@ -1,288 +1,210 @@
 #![windows_subsystem = "windows"]
 
-mod config;
-mod event;
-mod state;
-mod tray;
-mod reminder;
-mod detector;
+mod app;
 mod audio;
+mod autostart;
+mod config;
+mod core;
+mod detector;
+mod event;
+// 与 build.rs / examples 共享；ICO 编码部分在主程序里不会用到
+#[allow(dead_code)]
+mod icon;
+mod runtime;
+mod stats;
+mod tips;
+mod tray;
 mod ui;
 
-use config::Config;
-use event::Event;
-use state::{ContextState, StateMachine};
-use tray::{Tray, TrayAction};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-fn main() {
-    env_logger::init();
-    log::info!("EyeFlow 启动");
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::GlobalHotKeyManager;
 
-    // 1. 加载配置
-    let mut current_config = match Config::load() {
+use crate::config::Config;
+use crate::runtime::Runtime;
+use crate::stats::Stats;
+
+/// 轻量循环的轮询周期（托盘点击的最大响应延迟）
+const LIGHT_LOOP_TICK: Duration = Duration::from_millis(200);
+/// UI 会话连续失败后的退避时间
+const UI_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
+
+fn main() {
+    init_logging();
+    log::info!("EyeFlow {} 启动", env!("CARGO_PKG_VERSION"));
+
+    if !acquire_single_instance() {
+        log::info!("已有 EyeFlow 实例在运行，本次退出");
+        return;
+    }
+
+    let cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            log::error!("配置加载失败: {}", e);
+            log::error!("配置加载失败（{e}），使用默认配置");
             Config::default()
         }
     };
+    let stats = Stats::load();
 
-    // 2. 创建事件通道
-    let (tx, rx) = mpsc::channel::<Event>();
+    let (tx, rx) = mpsc::channel();
+    detector::start_keyboard_hook(tx.clone());
+    detector::start_sensor_thread(tx);
 
-    // 3. 初始化模块
-    let mut state_machine = StateMachine::new(current_config.flow_threshold());
-    let mut reminder = reminder::Scheduler::new(current_config.min_interval_secs, current_config.max_interval_secs);
     let audio = audio::AudioPlayer::new();
-    let tray = Tray::new(tx.clone(), current_config.enabled, !current_config.sound_enabled);
-    let mut flow_detector = detector::FlowDetector::new(current_config.flow_sensitivity);
 
-    // 4. 启动键盘钩子线程（WH_KEYBOARD_LL，需消息泵支撑）
-    let kh_tx = tx.clone();
-    std::thread::Builder::new()
-        .name("keyboard-hook".into())
-.spawn(move || {
-            detector::start_keyboard_hook(kh_tx);
-        })
-        .expect("无法启动键盘钩子线程");
-
-    // 5. 启动统一检测线程（合并空闲检测 + 全屏检测 + 定时器节拍）
-    let tick_tx = tx.clone();
-    std::thread::Builder::new()
-        .name("detector-ticker".into())
-        .spawn(move || {
-            loop {
-                // 全屏检测（1s 间隔）
-                let is_fs = detector::is_fullscreen();
-                let _ = tick_tx.send(Event::FullscreenChanged(is_fs));
-
-                // 空闲检测（15s 采样，超过 3 分钟才发事件）
-                let idle_min = detector::idle_minutes();
-                if idle_min >= 3 {
-                    let _ = tick_tx.send(Event::IdleTimeout);
-                }
-
-                // 定时器节拍
-                let _ = tick_tx.send(Event::TimerTick);
-
-                std::thread::sleep(Duration::from_secs(1));
-            }
-        })
-        .expect("无法启动检测线程");
-
-    // 6. 状态变量
-    let mut config_window_open = false;
-
-    // 7. 主事件循环
-    log::info!("EyeFlow 事件循环开始");
-    loop {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(event) => {
-                match event {
-                    // ---- 检测器事件 ----
-                    Event::KeyboardActivity => {
-                        state_machine.on_keyboard_activity();
-                        flow_detector.on_key_down();
-                    }
-                    Event::FullscreenChanged(is_fs) => {
-                        state_machine.on_fullscreen_change(is_fs);
-                    }
-                    Event::IdleTimeout => {
-                        state_machine.on_idle_timeout();
-                        reminder.reset();
-                        log::debug!("检测到空闲超时，进入 Away 状态");
-                    }
-
-                    // ---- 托盘事件 ----
-                    Event::TrayAction(action) => {
-                        match action {
-                            TrayAction::OpenSettings => {
-                                config_window_open = true;
-                            }
-                            TrayAction::ToggleEnabled => {
-                                current_config.enabled = !current_config.enabled;
-                                let _ = current_config.save();
-                                tray.set_enabled(current_config.enabled);
-                                log::info!("提醒开关: {}", current_config.enabled);
-                            }
-                            TrayAction::ToggleMute => {
-                                current_config.sound_enabled = !current_config.sound_enabled;
-                                current_config.notification_enabled = !current_config.notification_enabled;
-                                let _ = current_config.save();
-                                tray.set_muted(!current_config.sound_enabled);
-                                log::info!("静音开关: {}", !current_config.sound_enabled);
-                            }
-                            TrayAction::Quit => {
-                                log::info!("收到退出指令");
-                                break;
-                            }
-                        }
-                    }
-
-                    // ---- 全局快捷键 ----
-                    Event::GlobalHotkey => {
-                        current_config.sound_enabled = !current_config.sound_enabled;
-                        current_config.notification_enabled = !current_config.notification_enabled;
-                        let _ = current_config.save();
-                        log::info!("全局快捷键 - 静音切换: {}", !current_config.sound_enabled);
-                    }
-
-                    // ---- 提醒器 ----
-                    Event::TimerTick => {
-                        let now = Instant::now();
-                        let ctx_state = state_machine.tick(now);
-
-                        match ctx_state {
-                            ContextState::Desktop => {
-                                if reminder.should_remind() {
-                                    let _ = tx.send(Event::ReminderTriggered);
-                                }
-                            }
-                            ContextState::Flow => {
-                                if let Some(idle) = flow_detector.idle_time() {
-                                    if idle >= Duration::from_secs(8) {
-                                        if reminder.should_remind() {
-                                            let _ = tx.send(Event::ReminderTriggered);
-                                        }
-                                    }
-                                }
-                            }
-                            ContextState::Gaming | ContextState::Away => {}
-                        }
-                    }
-                    Event::ReminderTriggered => {
-                        trigger_reminder(&current_config, &audio, &state_machine, &tray);
-                        reminder.reset();
-                    }
-
-                    // ---- 设置窗口 ----
-                    Event::OpenSettings => {
-                        config_window_open = true;
-                    }
-                    Event::SettingsChanged(new_config) => {
-                        state_machine.set_flow_threshold(new_config.flow_threshold());
-                        reminder.set_interval(new_config.min_interval_secs, new_config.max_interval_secs);
-                        flow_detector.set_sensitivity(new_config.flow_sensitivity);
-                        let _ = new_config.save();
-                        current_config = new_config;
-                        log::info!("配置已更新");
-                    }
-
-                                    // ---- 生命周期 ----
-                    Event::Quit => {
-                        log::info!("收到退出事件");
-                        break;
-                    }
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // 超时也是正常状态，继续泵送消息
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                log::info!("事件通道已关闭");
-                break;
-            }
+    // 托盘与热键都必须在运行 Win32 消息循环的线程上创建：就是主线程。
+    // 轻量循环用 PeekMessage 泵，UI 会话期间由 winit 泵，二者都在这条线程上。
+    let tray = match tray::Tray::new(cfg.enabled, cfg.sound_enabled) {
+        Ok(t) => t,
+        Err(e) => {
+            log::error!("托盘图标创建失败: {e}");
+            return;
         }
+    };
+    let (hotkeys, hotkey_id) = register_hotkey();
 
-        // 泵送 Windows 消息（托盘图标隐藏窗口需此处理鼠标事件）
-        pump_windows_messages();
-
-        // 按需运行 egui 设置窗口
-        if config_window_open {
-            run_config_window(&mut current_config, &tx);
-            config_window_open = false;
-        }
+    let mut core = core::Core::new(cfg, stats, Instant::now());
+    // EYEFLOW_DEMO=1：20 秒后触发一次提醒并打开设置窗，便于演示 / 截图 / 验收
+    let demo = std::env::var_os("EYEFLOW_DEMO").is_some();
+    if demo {
+        core.cfg.heads_up_secs = 45; // 仅内存中生效：把预告窗口拉长便于截图验收
+        core.set_due_in(Instant::now(), Duration::from_secs(60));
+        log::info!("演示模式：60 秒后触发提醒，预告 45 秒");
     }
 
-    // 8. 清理
+    let mut rt = Runtime::new(core, rx, audio, tray, hotkeys, hotkey_id);
+    if demo {
+        rt.open_settings();
+    }
+
+    // 轻量循环：没有窗口、没有 GL 上下文。只在需要显示窗口时进入 eframe 会话，
+    // 窗口全部关闭后回到这里（docs/adr/0006）。
+    let mut ui_backoff_until: Option<Instant> = None;
+    loop {
+        pump_win32_messages();
+        let now = Instant::now();
+        rt.step(now);
+        if rt.quit {
+            break;
+        }
+        let backoff = ui_backoff_until.is_some_and(|t| now < t);
+        if rt.needs_ui() && !backoff {
+            match run_ui_session(&mut rt) {
+                Ok(()) => ui_backoff_until = None,
+                Err(e) => {
+                    log::error!(
+                        "UI 会话失败: {e}；{}s 内退化为仅声音",
+                        UI_FAILURE_BACKOFF.as_secs()
+                    );
+                    rt.settings = None;
+                    ui_backoff_until = Some(Instant::now() + UI_FAILURE_BACKOFF);
+                }
+            }
+            if rt.quit {
+                break;
+            }
+            continue;
+        }
+        std::thread::sleep(LIGHT_LOOP_TICK);
+    }
+
     detector::stop_keyboard_hook();
     log::info!("EyeFlow 退出");
 }
 
-/// 泵送 Windows 消息队列（托盘图标依赖此处理鼠标事件）
-fn pump_windows_messages() {
+/// 进入一次 eframe 会话，直到所有窗口关闭。`run_and_return`（默认开启）让
+/// eframe 复用线程局部的 winit 事件循环，因此可以反复调用。
+fn run_ui_session(rt: &mut Runtime) -> eframe::Result {
+    log::debug!("UI 会话开始");
+    // 根视口是屏幕外的 1×1 锚点窗口（见 app.rs 模块说明）。
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("EyeFlow")
+            .with_inner_size([1.0, 1.0])
+            .with_position([-30000.0, -30000.0])
+            .with_decorations(false)
+            .with_taskbar(false)
+            .with_active(false)
+            .with_resizable(false),
+        centered: false,
+        persist_window: false,
+        run_and_return: true,
+        ..Default::default()
+    };
+    let result = eframe::run_native(
+        "EyeFlow",
+        options,
+        Box::new(|cc| Ok(Box::new(app::UiSession::new(cc, rt)))),
+    );
+    crate::event::set_ui_context(None);
+    log::debug!("UI 会话结束");
+    result
+}
+
+/// 泵送主线程消息队列：托盘图标与全局热键的隐藏窗口都在这条线程上。
+fn pump_win32_messages() {
     use windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, PeekMessageW, MSG, PM_REMOVE,
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
     };
     let mut msg = MSG::default();
-    // SAFETY: PeekMessageW/DispatchMessageW 是无副作用的 Win32 消息泵
     unsafe {
         while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
 }
 
-/// 触发护眼提醒
-fn trigger_reminder(config: &Config, audio: &audio::AudioPlayer, state: &StateMachine, tray: &Tray) {
-    if !config.enabled || config.is_in_dnd() {
-        return;
-    }
-
-    match state.current() {
-        ContextState::Desktop => {
-            if config.sound_enabled {
-                audio.play_preset(&config.sound_preset);
-            }
-            if config.notification_enabled {
-                let msg = format!("已经工作了，看看远处 {} 秒吧 👀", config.eye_rest_secs);
-                let _ = tray.show_notification("EyeFlow", &msg);
-            }
+fn register_hotkey() -> (Option<GlobalHotKeyManager>, Option<u32>) {
+    let manager = match GlobalHotKeyManager::new() {
+        Ok(m) => m,
+        Err(e) => {
+            log::warn!("全局热键管理器创建失败: {e}");
+            return (None, None);
         }
-        ContextState::Gaming => {
-            if config.sound_enabled {
-                audio.play_preset(&config.sound_preset);
-            }
-        }
-        ContextState::Flow | ContextState::Away => {}
-    }
-}
-
-/// 运行 egui 配置窗口
-fn run_config_window(config: &mut Config, tx: &mpsc::Sender<Event>) {
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([540.0, 580.0])
-            .with_resizable(false),
-        ..Default::default()
     };
+    let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE);
+    match manager.register(hotkey) {
+        Ok(()) => (Some(manager), Some(hotkey.id())),
+        Err(e) => {
+            log::warn!("注册 Ctrl+Shift+E 失败（可能被其他程序占用）: {e}");
+            (Some(manager), None)
+        }
+    }
+}
 
-    let config_clone = config.clone();
-    let tx_clone = tx.clone();
-
-    if let Err(e) = eframe::run_native(
-        "EyeFlow 设置",
-        options,
-        Box::new(|cc| {
-            // 加载中文字体（Microsoft YaHei）以正确显示中文
-            let font_path = "C:\\Windows\\Fonts\\msyh.ttc";
-            if let Ok(font_data) = std::fs::read(font_path) {
-                use std::sync::Arc;
-                let mut fonts = egui::FontDefinitions::default();
-                fonts.font_data.insert("msyh".to_string(), Arc::new(egui::FontData::from_owned(font_data)));
-                fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap()
-                    .insert(0, "msyh".to_string());
-                cc.egui_ctx.set_fonts(fonts);
-            } else {
-                log::warn!("未找到中文字体文件: {}", font_path);
+/// 命名互斥量保证单实例；句柄有意不关闭，随进程存活。
+fn acquire_single_instance() -> bool {
+    use windows::core::w;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+    unsafe {
+        match CreateMutexW(None, false, w!("Local\\EyeFlow.SingleInstance")) {
+            Ok(_handle) => GetLastError() != ERROR_ALREADY_EXISTS,
+            Err(e) => {
+                log::warn!("创建单实例互斥量失败: {e}");
+                true
             }
-            Ok(Box::new(ConfigWindowApp {
-                config_window: ui::ConfigWindow::new(config_clone, tx_clone),
-            }))
-        }),
-    ) {
-        log::error!("设置窗口运行失败: {:?}", e);
+        }
     }
 }
 
-struct ConfigWindowApp {
-    config_window: ui::ConfigWindow,
-}
-
-impl eframe::App for ConfigWindowApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.config_window.show(ctx);
+/// 无控制台的托盘程序把日志写到 %APPDATA%\eyeflow\eyeflow.log（每次启动覆盖）。
+fn init_logging() {
+    let dir = config::config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let mut builder = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,eframe=warn,egui_glow=warn"),
+    );
+    if let Ok(file) = std::fs::File::create(dir.join("eyeflow.log")) {
+        builder.target(env_logger::Target::Pipe(Box::new(file)));
     }
+    let _ = builder.try_init();
+
+    std::panic::set_hook(Box::new(|info| {
+        log::error!("panic: {info}");
+    }));
 }
