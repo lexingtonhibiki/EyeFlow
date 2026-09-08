@@ -83,9 +83,10 @@ Section "Install" SEC_MAIN
     CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\eyeflow.exe"
     CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall ${PRODUCT_NAME}.lnk" "$INSTDIR\uninstall.exe"
 
-    ; 6. 可选立即启动(保持无 MUI 的简单脚本,用 MessageBox 询问;
-    ;    /S 静默安装时 MessageBox 被抑制,不会自动启动)
-    MessageBox MB_YESNO|MB_ICONQUESTION "安装完成。现在启动 ${PRODUCT_NAME} 吗?" IDYES launch_now
+    ; 6. 可选立即启动(保持无 MUI 的简单脚本)。
+    ;    注意:静默安装(/S)下 MessageBox 不会自动消失,/SD 指定静默时的缺省答案(IDNO);
+    ;    即静默安装不弹窗、不自动启动,交互安装时才询问。
+    MessageBox MB_YESNO|MB_ICONQUESTION "安装完成。现在启动 ${PRODUCT_NAME} 吗?" /SD IDNO IDYES launch_now
     DetailPrint "稍后可从开始菜单或系统托盘启动 ${PRODUCT_NAME}"
     Goto install_done
 launch_now:

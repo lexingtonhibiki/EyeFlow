@@ -219,6 +219,7 @@ EyeFlow 的关键决策都有编号的决策记录(ADR)与调研支撑:
 | [ADR-0004](docs/adr/0004-interruptibility-via-shqueryusernotificationstate.md) | 可打扰性判定用 SHQueryUserNotificationState |
 | [ADR-0005](docs/adr/0005-autostart-hkcu-run-default-on.md) | 开机自启用 HKCU\Run,安装默认开启 |
 | [ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md) | UI 宿主:按需启动的 eframe 会话,空闲时不持有 GL 上下文(含内存实测) |
+| [docs/portability-notes.md](docs/portability-notes.md) | 跨平台移植路径与内存/维护成本评估(Qt、UPX 取舍) |
 | [docs/research/](docs/research/) | 科学证据(02)、竞品 UX(03)、Windows UX 规范(04)、发布迁移(06)等调研 |
 
 ## License
