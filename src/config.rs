@@ -134,6 +134,15 @@ pub struct Config {
     /// 无输入多久视为离开（秒）
     #[serde(default = "d_away")]
     pub away_secs: u64,
+    /// 提示音音量百分比（50~200；>100 为主动放大，适配音乐/视频掩蔽）
+    #[serde(default = "d_cue_volume")]
+    pub cue_volume_pct: u32,
+    /// 提示音总时长（秒，1~5；短图案循环铺满，依据见 docs/report-v0.3.md）
+    #[serde(default = "d_cue_duration")]
+    pub cue_duration_secs: u64,
+    /// 是否启用全局热键 Ctrl+Shift+E（组合键是全局独占的，允许用户关闭）
+    #[serde(default = "d_true")]
+    pub hotkey_enabled: bool,
 }
 
 fn d_true() -> bool {
@@ -169,6 +178,12 @@ fn d_quiet_end() -> String {
 fn d_away() -> u64 {
     180
 }
+fn d_cue_volume() -> u32 {
+    100
+}
+fn d_cue_duration() -> u64 {
+    1
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -190,6 +205,9 @@ impl Default for Config {
             quiet_end: d_quiet_end(),
             flow_sensitivity: FlowSensitivity::default(),
             away_secs: d_away(),
+            cue_volume_pct: d_cue_volume(),
+            cue_duration_secs: d_cue_duration(),
+            hotkey_enabled: true,
         }
     }
 }
@@ -271,6 +289,8 @@ impl Config {
         self.heads_up_secs = self.heads_up_secs.clamp(5, 120);
         self.postpone_secs = self.postpone_secs.clamp(60, 3600);
         self.away_secs = self.away_secs.clamp(60, 3600);
+        self.cue_volume_pct = self.cue_volume_pct.clamp(50, 200);
+        self.cue_duration_secs = self.cue_duration_secs.clamp(1, 5);
         self
     }
 
@@ -311,6 +331,8 @@ fn migrate_legacy(table: &toml::Table, cfg: &mut Config) -> bool {
         "eye_rest_secs",
         "dnd_start",
         "dnd_end",
+        "dnd_enabled",
+        "hotkey_enabled",
     ];
     if !legacy_keys.iter().any(|k| table.contains_key(*k)) {
         return false;
@@ -342,6 +364,10 @@ fn migrate_legacy(table: &toml::Table, cfg: &mut Config) -> bool {
     // 某些旧版本有独立的免打扰总开关；关掉过就用“起止相同”表示未启用
     if flag("dnd_enabled") == Some(false) {
         cfg.quiet_end = cfg.quiet_start.clone();
+    }
+    // 旧版本允许关闭全局热键，尊重该偏好
+    if flag("hotkey_enabled") == Some(false) {
+        cfg.hotkey_enabled = false;
     }
     true
 }
@@ -497,5 +523,23 @@ global_mute_hotkey = "Ctrl+Shift+E"
         assert!(migrate_legacy(&table, &mut cfg));
         assert_eq!(cfg.quiet_start, cfg.quiet_end);
         assert!(!cfg.in_quiet_hours(chrono::NaiveTime::from_hms_opt(3, 0, 0).unwrap()));
+    }
+
+    #[test]
+    fn legacy_disabled_hotkey_is_carried_over() {
+        let table: toml::Table = "hotkey_enabled = false".parse().unwrap();
+        let mut cfg = Config::default();
+        assert!(migrate_legacy(&table, &mut cfg));
+        assert!(!cfg.hotkey_enabled);
+    }
+
+    #[test]
+    fn sanitize_clamps_cue_volume_and_duration() {
+        let mut c = Config::default();
+        c.cue_volume_pct = 500;
+        c.cue_duration_secs = 30;
+        let c = c.sanitized();
+        assert_eq!(c.cue_volume_pct, 200);
+        assert_eq!(c.cue_duration_secs, 5);
     }
 }

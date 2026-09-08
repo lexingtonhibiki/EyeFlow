@@ -23,7 +23,7 @@ SetCompressor /SOLID lzma
 !define PRODUCT_NAME "EyeFlow"
 ; CI 通过 /DPRODUCT_VERSION=x.y.z 注入真实版本(不带 v 前缀);本地直接编译时回退到默认值
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.2.0"
+  !define PRODUCT_VERSION "0.3.0"
 !endif
 !define PRODUCT_PUBLISHER "lexingtonhibiki"
 !define PRODUCT_DIR "$LOCALAPPDATA\${PRODUCT_NAME}"
@@ -107,10 +107,11 @@ Section "Uninstall"
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
 
-    ; 3. 用户数据:配置与统计(含解析失败时产生的 .bak 备份)
+    ; 3. 用户数据:配置、统计、日志与备份文件,一并清理,不留残留
     Delete "${CONFIG_DIR}\config.toml"
     Delete "${CONFIG_DIR}\config.toml.bak-*"
     Delete "${CONFIG_DIR}\stats.toml"
+    Delete "${CONFIG_DIR}\eyeflow.log*"
     RMDir "${CONFIG_DIR}"
 
     ; 4. 开始菜单

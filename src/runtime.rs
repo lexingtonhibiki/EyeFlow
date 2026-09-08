@@ -9,17 +9,24 @@
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
 use crate::audio::AudioPlayer;
 use crate::autostart;
 use crate::config::Config;
-use crate::core::{Action, Core, Phase};
+use crate::core::{Action, ContextState, Core, Phase};
 use crate::event::Event;
 use crate::tray::{Tray, TrayCommand};
 use crate::ui::{self, SettingsAction, SettingsState};
 
 const PAUSE_DURATION: Duration = Duration::from_secs(3600);
+/// Ctrl+Shift+E = 立即休息（组合键由操作系统全局独占，可在设置中关闭）
+fn global_hotkey() -> HotKey {
+    HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE)
+}
+/// 声音是唯一提醒通道（游戏 / 全屏 / 不可打扰）时，提示音至少持续 2 秒
+const SOUND_ONLY_MIN_CUE_SECS: u64 = 2;
 
 pub struct Runtime {
     pub core: Core,
@@ -30,8 +37,8 @@ pub struct Runtime {
     pub settings_focus: bool,
     pub quit: bool,
     rx: Receiver<Event>,
-    _hotkeys: Option<GlobalHotKeyManager>,
-    hotkey_id: Option<u32>,
+    hotkeys: Option<GlobalHotKeyManager>,
+    registered_hotkey: Option<HotKey>,
 }
 
 impl Runtime {
@@ -41,9 +48,8 @@ impl Runtime {
         audio: AudioPlayer,
         tray: Tray,
         hotkeys: Option<GlobalHotKeyManager>,
-        hotkey_id: Option<u32>,
     ) -> Self {
-        Self {
+        let mut rt = Self {
             core,
             audio,
             tray,
@@ -51,9 +57,42 @@ impl Runtime {
             settings_focus: false,
             quit: false,
             rx,
-            _hotkeys: hotkeys,
-            hotkey_id,
+            hotkeys,
+            registered_hotkey: None,
+        };
+        if let Err(e) = rt.apply_hotkey_enabled(rt.core.cfg.hotkey_enabled) {
+            log::warn!("全局热键注册失败: {e}");
         }
+        rt
+    }
+
+    /// 注册 / 注销全局热键。组合键是操作系统级全局独占资源，
+    /// 用户可能与其他软件冲突，因此必须允许关闭（每次提醒限一次的“延后”不受影响）。
+    pub fn apply_hotkey_enabled(&mut self, on: bool) -> Result<(), String> {
+        let hotkey = global_hotkey();
+        if on {
+            let Some(mgr) = &self.hotkeys else {
+                return Err("热键管理器不可用".to_string());
+            };
+            if self.registered_hotkey.is_some() {
+                return Ok(());
+            }
+            mgr.register(hotkey).map_err(|e| e.to_string())?;
+            self.registered_hotkey = Some(hotkey);
+            log::info!("全局热键 Ctrl+Shift+E 已注册");
+        } else if self.registered_hotkey.take().is_some() {
+            if let Some(mgr) = &self.hotkeys {
+                let _ = mgr.unregister(hotkey);
+            }
+            log::info!("全局热键 Ctrl+Shift+E 已注销");
+        }
+        self.tray.set_hotkey_hint(on);
+        Ok(())
+    }
+
+    /// 全局热键当前是否已注册（设置窗显示用）
+    pub fn hotkey_active(&self) -> bool {
+        self.registered_hotkey.is_some()
     }
 
     /// 是否需要一个 UI 会话（有窗口要显示）。
@@ -74,9 +113,13 @@ impl Runtime {
             self.handle_tray(cmd, now);
         }
         while let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() {
-            if ev.state == HotKeyState::Pressed && Some(ev.id) == self.hotkey_id {
+            let active = self
+                .registered_hotkey
+                .as_ref()
+                .is_some_and(|hk| ev.id == hk.id());
+            if ev.state == HotKeyState::Pressed && active {
                 log::info!("热键：立即休息");
-                self.core.start_break_now(now);
+                self.core.start_break_now(Instant::now());
             }
         }
 
@@ -85,7 +128,16 @@ impl Runtime {
             match action {
                 Action::PlayCue => {
                     if self.core.cfg.sound_enabled {
-                        self.audio.play(self.core.cfg.sound_preset);
+                        let mut secs = self.core.cfg.cue_duration_secs;
+                        // 游戏 / 全屏 / 不可打扰时预告面板不可见，声音是唯一通道 → 自动增强
+                        if self.core.state == ContextState::Gaming {
+                            secs = secs.max(SOUND_ONLY_MIN_CUE_SECS);
+                        }
+                        self.audio.play_cue(
+                            self.core.cfg.sound_preset,
+                            self.core.cfg.cue_volume_pct,
+                            secs,
+                        );
                     }
                 }
             }
@@ -108,7 +160,6 @@ impl Runtime {
             self.settings_focus = true;
         }
     }
-
     fn handle_tray(&mut self, cmd: TrayCommand, now: Instant) {
         match cmd {
             TrayCommand::OpenSettings => self.open_settings(),
@@ -156,6 +207,11 @@ impl Runtime {
                 }
                 self.tray.set_enabled(cfg.enabled);
                 self.tray.set_sound(cfg.sound_enabled);
+                if cfg.hotkey_enabled != self.registered_hotkey.is_some() {
+                    if let Err(e) = self.apply_hotkey_enabled(cfg.hotkey_enabled) {
+                        log::error!("应用热键设置失败: {e}");
+                    }
+                }
                 if let Some(s) = &mut self.settings {
                     s.saved = cfg.clone();
                     s.draft = cfg;
@@ -180,7 +236,22 @@ impl Runtime {
                     }
                 }
             }
-            SettingsAction::Preview(preset) => self.audio.play(preset),
+            SettingsAction::SetHotkeyEnabled(on) => {
+                if let Err(e) = self.apply_hotkey_enabled(on) {
+                    log::error!("应用热键设置失败: {e}");
+                }
+                self.core.cfg.hotkey_enabled = on;
+                self.persist_config();
+                if let Some(s) = &mut self.settings {
+                    s.saved.hotkey_enabled = on;
+                    s.draft.hotkey_enabled = on;
+                }
+            }
+            SettingsAction::Preview(preset) => self.audio.play_cue(
+                preset,
+                self.core.cfg.cue_volume_pct,
+                self.core.cfg.cue_duration_secs,
+            ),
             SettingsAction::OpenConfigDir => {
                 let dir = crate::config::config_dir();
                 let _ = std::fs::create_dir_all(&dir);

@@ -28,6 +28,7 @@ mod id {
 pub struct Tray {
     icon: TrayIcon,
     enabled_item: CheckMenuItem,
+    rest_item: MenuItem,
     sound_item: CheckMenuItem,
     pause_item: MenuItem,
     tooltip: String,
@@ -85,6 +86,7 @@ impl Tray {
         Ok(Self {
             icon: tray,
             enabled_item,
+            rest_item,
             sound_item,
             pause_item,
             tooltip,
@@ -129,6 +131,15 @@ impl Tray {
 
     pub fn set_sound(&self, on: bool) {
         self.sound_item.set_checked(on);
+    }
+
+    /// 全局热键启用/关闭时同步菜单上的快捷键提示
+    pub fn set_hotkey_hint(&self, enabled: bool) {
+        self.rest_item.set_text(if enabled {
+            "立即休息\tCtrl+Shift+E"
+        } else {
+            "立即休息"
+        });
     }
 
     pub fn set_paused(&self, paused: bool) {

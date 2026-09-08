@@ -36,9 +36,11 @@ impl AudioPlayer {
         self.sink.is_some()
     }
 
-    pub fn play(&self, preset: SoundPreset) {
+    /// 播放提示音：按音量百分比(50~200)放大，并把短图案循环铺满设定时长。
+    pub fn play_cue(&self, preset: SoundPreset, volume_pct: u32, duration_secs: u64) {
         if let Some(sink) = &self.sink {
-            sink.mixer().add(VecSource::new(generate(preset)));
+            sink.mixer()
+                .add(VecSource::new(render(preset, volume_pct, duration_secs)));
         }
     }
 }
@@ -88,6 +90,31 @@ pub fn generate(preset: SoundPreset) -> Vec<f32> {
         SoundPreset::DigitalDrop => digital_drop(),
         SoundPreset::TripleBeep => triple_beep(),
     }
+}
+
+/// 把提示音渲染到目标时长与音量。
+///
+/// 背景音乐 / 视频场景下，零点几秒的单次短音几乎必然被掩蔽：以 0.15 s 间隔
+/// 循环短图案直到铺满 `duration_secs`(1~5 s)，对应“重复呈现”的可察觉性原则；
+/// `volume_pct` 50~200，>100 为主动放大(基准峰值 0.4，2× 仍留有余量，末端限幅)。
+pub fn render(preset: SoundPreset, volume_pct: u32, duration_secs: u64) -> Vec<f32> {
+    let base = generate(preset);
+    let target = (duration_secs.clamp(1, 10) as f64 * SAMPLE_RATE as f64) as usize;
+    let gap = (0.15 * SAMPLE_RATE as f64) as usize;
+    let mut out = Vec::with_capacity(target);
+    while out.len() < target {
+        if !out.is_empty() {
+            let pad = gap.min(target - out.len());
+            out.extend(std::iter::repeat_n(0.0f32, pad));
+        }
+        let take = base.len().min(target - out.len());
+        out.extend_from_slice(&base[..take]);
+    }
+    let volume = (volume_pct.clamp(10, 400) as f32 / 100.0).min(2.0);
+    for s in out.iter_mut() {
+        *s = (*s * volume).clamp(-0.95, 0.95);
+    }
+    out
 }
 
 // ------------------------------------------------------------ 合成工具
@@ -206,5 +233,39 @@ mod tests {
         let s = gentle_chime();
         assert!(s[0].abs() < 1e-3);
         assert!(s[s.len() - 1].abs() < 1e-3);
+    }
+
+    #[test]
+    fn render_reaches_target_duration_by_repeating() {
+        for p in SoundPreset::ALL {
+            for secs in [1u64, 3, 5] {
+                let s = render(p, 100, secs);
+                let expect = secs as usize * SAMPLE_RATE as usize;
+                assert_eq!(s.len(), expect, "{p:?} @{secs}s");
+                assert!(s.iter().all(|v| v.abs() <= 1.0));
+            }
+        }
+    }
+
+    #[test]
+    fn render_scales_volume_and_limits() {
+        let quiet = render(SoundPreset::GentleChime, 50, 1);
+        let loud = render(SoundPreset::GentleChime, 200, 1);
+        let peak_quiet = quiet.iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        let peak_loud = loud.iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        assert!(
+            peak_loud > peak_quiet * 3.0,
+            "loud {peak_loud} vs quiet {peak_quiet}"
+        );
+        assert!(peak_loud <= 0.95, "limiter");
+        // 极端值被夹紧而不是 panic
+        assert_eq!(
+            render(SoundPreset::SoftTap, 0, 0).len(),
+            SAMPLE_RATE as usize
+        );
+        assert_eq!(
+            render(SoundPreset::SoftTap, 9999, 99).len(),
+            10 * SAMPLE_RATE as usize
+        );
     }
 }

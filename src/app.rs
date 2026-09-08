@@ -137,23 +137,27 @@ impl<'a> UiSession<'a> {
         let reminder_line = rt.reminder_line(now);
         let state_label = rt.core.state.label();
         let audio_ok = rt.audio.available();
+        let hotkey_active = rt.hotkey_active();
         let focus = std::mem::take(&mut rt.settings_focus);
         let Some(state) = rt.settings.as_mut() else {
             return;
         };
         let id = ViewportId::from_hash_of("eyeflow-settings");
         let monitor = monitor_size(ctx);
-        let (w, h) = (640.0, 780.0_f32.min(monitor.y - 80.0));
+        // 用户要求默认约 700×780 物理像素：除以缩放得到逻辑尺寸，再按屏幕余量夹紧
+        let ppp = ctx.pixels_per_point().max(0.5);
+        let (w, h) = (700.0 / ppp, (780.0 / ppp).min(monitor.y - 60.0).max(480.0));
         let builder = ViewportBuilder::default()
             .with_title("EyeFlow 设置")
             .with_inner_size([w, h])
-            .with_min_inner_size([560.0, 480.0])
+            .with_min_inner_size([420.0, 420.0])
             .with_position([(monitor.x - w) / 2.0, (monitor.y - h) / 2.0])
             .with_resizable(true);
 
         let view = SettingsView {
             state_label,
             reminder_line,
+            hotkey_active,
             stats: &rt.core.stats,
             audio_ok,
         };
@@ -164,7 +168,7 @@ impl<'a> UiSession<'a> {
             }
             let close = ui.input(|i| i.viewport().close_requested());
             let actions = egui::CentralPanel::default()
-                .frame(egui::Frame::central_panel(ui.style()).inner_margin(14.0))
+                .frame(egui::Frame::central_panel(ui.style()).inner_margin(12.0))
                 .show(ui, |ui| ui::show(ui, state, &view))
                 .inner;
             (actions, close)

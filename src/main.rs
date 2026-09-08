@@ -19,7 +19,6 @@ mod ui;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::GlobalHotKeyManager;
 
 use crate::config::Config;
@@ -64,10 +63,10 @@ fn main() {
             return;
         }
     };
-    let (hotkeys, hotkey_id) = register_hotkey();
+    let hotkeys = create_hotkey_manager();
 
     let mut core = core::Core::new(cfg, stats, Instant::now());
-    // EYEFLOW_DEMO=1：20 秒后触发一次提醒并打开设置窗，便于演示 / 截图 / 验收
+    // EYEFLOW_DEMO=1：60 秒后触发一次提醒并打开设置窗，便于演示 / 截图 / 验收
     let demo = std::env::var_os("EYEFLOW_DEMO").is_some();
     if demo {
         core.cfg.heads_up_secs = 45; // 仅内存中生效：把预告窗口拉长便于截图验收
@@ -75,7 +74,8 @@ fn main() {
         log::info!("演示模式：60 秒后触发提醒，预告 45 秒");
     }
 
-    let mut rt = Runtime::new(core, rx, audio, tray, hotkeys, hotkey_id);
+    // 是否注册全局热键由 cfg.hotkey_enabled 决定，见 Runtime::new
+    let mut rt = Runtime::new(core, rx, audio, tray, hotkeys);
     if demo {
         rt.open_settings();
     }
@@ -158,20 +158,13 @@ fn pump_win32_messages() {
     }
 }
 
-fn register_hotkey() -> (Option<GlobalHotKeyManager>, Option<u32>) {
-    let manager = match GlobalHotKeyManager::new() {
-        Ok(m) => m,
+/// 创建全局热键管理器；具体注册与否由 `Runtime::apply_hotkey_enabled` 按配置决定。
+fn create_hotkey_manager() -> Option<GlobalHotKeyManager> {
+    match GlobalHotKeyManager::new() {
+        Ok(m) => Some(m),
         Err(e) => {
             log::warn!("全局热键管理器创建失败: {e}");
-            return (None, None);
-        }
-    };
-    let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE);
-    match manager.register(hotkey) {
-        Ok(()) => (Some(manager), Some(hotkey.id())),
-        Err(e) => {
-            log::warn!("注册 Ctrl+Shift+E 失败（可能被其他程序占用）: {e}");
-            (Some(manager), None)
+            None
         }
     }
 }

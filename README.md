@@ -54,7 +54,7 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 - **完整提醒链路**:预告浮窗(不抢焦点)→ 休息界面(倒计时 + 一条权威护眼贴士)→ 自动计入坚持统计
 - **用户始终可控**:延后 5 分钟(每次提醒限 1 次)、跳过、立即开始、暂停 1 小时、免打扰时段
 - **严格模式**(可选,默认关):休息界面变为全屏暗色遮罩
-- **5 种合成提示音**:gentle_chime / soft_tap / water_drop / digital_drop / triple_beep;无音频设备自动降级为静音
+- **5 种合成提示音**:gentle_chime / soft_tap / water_drop / digital_drop / triple_beep;音量 50%~200%、时长 1~5 秒可调(听歌 / 看视频时建议 2~3 秒);无音频设备自动降级为静音
 - **坚持统计**:今日完成(短/长/自然)、跳过、延后次数、连续坚持天数
 - **托盘 + 热键**:左键单击/双击打开设置;Ctrl+Shift+E 立即休息;tooltip 显示当前状态与下次休息时间
 - **轻量**:Rust 单进程,无 Electron / WebView;exe 约 7 MB;平时没有任何窗口和 GPU 上下文,空闲常驻约 16 MB,只在显示浮窗 / 设置时才短暂启动 UI 会话([ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md))
@@ -103,7 +103,7 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 
 ### 全局热键
 
-- `Ctrl+Shift+E`:立即休息(固定,不可配置)。
+- `Ctrl+Shift+E`:立即休息。组合键是操作系统级**全局独占**资源,可能与其他软件冲突,可在设置 → 系统 中随时关闭;关闭后托盘菜单的“立即休息”不受影响。
 
 ### 一次提醒的完整链路
 
@@ -144,6 +144,9 @@ heads_up_secs = 15             # 预告提前量(秒;长休息预告为 30 秒)
 postpone_secs = 300            # 延后时长(5 分钟;每次提醒最多延后 1 次)
 sound_enabled = true           # 提示音开关
 sound_preset = "gentle_chime"  # 提示音预设:gentle_chime / soft_tap / water_drop / digital_drop / triple_beep
+cue_volume_pct = 100           # 提示音音量 50~200%(>100 为主动放大,适配音乐/视频场景)
+cue_duration_secs = 1          # 提示音时长 1~5 秒(短图案循环铺满;全屏时声音是唯一通道,自动至少 2 秒)
+hotkey_enabled = true          # 全局热键 Ctrl+Shift+E(立即休息);会全局独占组合键,可关闭
 visual_enabled = true          # 视觉提醒(预告浮窗 + 休息界面);关闭后仅声音
 strict_mode = false            # 严格模式:休息界面变为全屏暗色遮罩
 quiet_start = "00:00"          # 免打扰时段开始
@@ -220,6 +223,7 @@ EyeFlow 的关键决策都有编号的决策记录(ADR)与调研支撑:
 | [ADR-0005](docs/adr/0005-autostart-hkcu-run-default-on.md) | 开机自启用 HKCU\Run,安装默认开启 |
 | [ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md) | UI 宿主:按需启动的 eframe 会话,空闲时不持有 GL 上下文(含内存实测) |
 | [docs/portability-notes.md](docs/portability-notes.md) | 跨平台移植路径与内存/维护成本评估(Qt、UPX 取舍) |
+| [docs/report-v0.3.md](docs/report-v0.3.md) | v0.3:提示音音量/时长的依据(ISO 7731、WCAG 1.4.7)、热键可关闭、卸载无残留、设置窗尺寸 |
 | [docs/research/](docs/research/) | 科学证据(02)、竞品 UX(03)、Windows UX 规范(04)、发布迁移(06)等调研 |
 
 ## License

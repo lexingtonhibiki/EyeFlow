@@ -36,6 +36,8 @@ pub struct SettingsView<'a> {
     pub state_label: &'a str,
     /// “下次休息约 12 分钟后 / 即将休息 / 休息中 / 已暂停 / 提醒已关闭”
     pub reminder_line: String,
+    /// 全局热键当前是否已注册（显示用）
+    pub hotkey_active: bool,
     pub stats: &'a Stats,
     pub audio_ok: bool,
 }
@@ -46,27 +48,28 @@ pub enum SettingsAction {
     RestNow,
     ResetDefaults,
     SetAutostart(bool),
+    SetHotkeyEnabled(bool),
     Preview(SoundPreset),
     OpenConfigDir,
 }
 
 pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Vec<SettingsAction> {
     let mut actions = Vec::new();
-    ui.spacing_mut().item_spacing = egui::vec2(10.0, 8.0);
+    ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             status_card(ui, view, &mut actions);
-            ui.add_space(6.0);
+            ui.add_space(4.0);
             rhythm_card(ui, s);
-            ui.add_space(6.0);
+            ui.add_space(4.0);
             delivery_card(ui, s, view, &mut actions);
-            ui.add_space(6.0);
+            ui.add_space(4.0);
             context_card(ui, s);
-            ui.add_space(6.0);
-            system_card(ui, s, &mut actions);
-            ui.add_space(10.0);
+            ui.add_space(4.0);
+            system_card(ui, s, view, &mut actions);
+            ui.add_space(8.0);
             footer(ui, s, &mut actions);
         });
 
@@ -76,8 +79,8 @@ pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Ve
 fn card<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.group(|ui| {
         ui.set_min_width(ui.available_width());
-        ui.label(egui::RichText::new(title).strong().size(15.0));
-        ui.add_space(4.0);
+        ui.label(egui::RichText::new(title).strong().size(14.0));
+        ui.add_space(2.0);
         add(ui)
     })
     .inner
@@ -218,7 +221,24 @@ fn delivery_card(
                 ui.weak("（未检测到音频输出设备）");
             }
         });
-        ui.weak("提示音只在休息结束、以及游戏/全屏中到点时播放；预告出现时保持安静。");
+        ui.add_enabled_ui(s.draft.sound_enabled, |ui| {
+            let mut vol = s.draft.cue_volume_pct as f32;
+            let mut dur = s.draft.cue_duration_secs as u32;
+            ui.horizontal(|ui| {
+                ui.label("提示音音量");
+                ui.add(egui::Slider::new(&mut vol, 50.0..=200.0).suffix(" %"));
+            });
+            ui.horizontal(|ui| {
+                ui.label("提示音时长");
+                ui.add(egui::Slider::new(&mut dur, 1..=5).suffix(" 秒"));
+            });
+            s.draft.cue_volume_pct = vol as u32;
+            s.draft.cue_duration_secs = dur as u64;
+        });
+        ui.weak(
+            "听歌 / 看视频时短促的声音容易被背景声掩蔽：建议把时长调到 2~3 秒（重复呈现更易察觉），\
+             音量最高可放大到 200%。全屏游戏 / 视频中声音是唯一提醒通道，会自动至少响 2 秒。",
+        );
     });
 }
 
@@ -282,7 +302,12 @@ fn time_editor(ui: &mut egui::Ui, salt: &str, minutes: &mut u32) {
     *minutes = h * 60 + m;
 }
 
-fn system_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<SettingsAction>) {
+fn system_card(
+    ui: &mut egui::Ui,
+    s: &mut SettingsState,
+    view: &SettingsView,
+    actions: &mut Vec<SettingsAction>,
+) {
     card(ui, "系统", |ui| {
         let before = s.autostart;
         ui.checkbox(
@@ -295,7 +320,24 @@ fn system_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<Setti
         if let Some(err) = &s.autostart_error {
             ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
         }
-        ui.label("全局热键：Ctrl+Shift+E = 立即休息（v0.2 固定）");
+        let before_hotkey = s.draft.hotkey_enabled;
+        ui.horizontal(|ui| {
+            ui.checkbox(
+                &mut s.draft.hotkey_enabled,
+                "全局热键 Ctrl+Shift+E = 立即休息",
+            );
+            if s.draft.hotkey_enabled && !view.hotkey_active && before_hotkey {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 80, 80),
+                    "注册失败：组合键可能已被其他程序占用",
+                );
+            }
+        });
+        if s.draft.hotkey_enabled != before_hotkey {
+            actions.push(SettingsAction::SetHotkeyEnabled(s.draft.hotkey_enabled));
+        }
+        ui.weak("全局热键由操作系统全局独占，可能与其他软件冲突，可随时关闭；关闭后仍可用托盘菜单“立即休息”。");
+
         ui.horizontal(|ui| {
             ui.weak(format!("配置文件：{}", Config::path().display()));
             if ui.small_button("打开目录").clicked() {
