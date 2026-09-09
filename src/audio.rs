@@ -89,6 +89,8 @@ pub fn generate(preset: SoundPreset) -> Vec<f32> {
         SoundPreset::WaterDrop => water_drop(),
         SoundPreset::DigitalDrop => digital_drop(),
         SoundPreset::TripleBeep => triple_beep(),
+        // 自定义音频走文件解码路径；没有可用文件时退回默认风铃
+        SoundPreset::Custom => gentle_chime(),
     }
 }
 

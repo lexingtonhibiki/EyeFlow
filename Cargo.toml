@@ -1,6 +1,6 @@
 [package]
 name = "eyeflow"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.95"
 description = "EyeFlow — context-aware eye-care break reminder for Windows / 上下文感知的极简护眼提醒工具"
@@ -20,8 +20,16 @@ egui = "0.36"
 tray-icon = "0.24"
 global-hotkey = "0.8"
 
-# Audio — synthesized cues only, so no decoders needed
-rodio = { version = "0.22", default-features = false, features = ["playback"] }
+# Audio — synthesized cues plus decoders for user-supplied files (wav / mp3 / ogg / flac / m4a)
+rodio = { version = "0.22", default-features = false, features = ["playback", "wav", "mp3", "vorbis", "flac", "mp4"] }
+
+# Native file dialogs (custom cue / strict-mode wallpaper) and image decoding for the wallpaper
+rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
+
+# Optional, opt-in update check against the GitHub Releases API
+ureq = "3"
+serde_json = "1"
 
 # Windows API
 windows = { version = "0.62", features = [

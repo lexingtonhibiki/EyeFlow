@@ -40,7 +40,7 @@ impl FlowSensitivity {
     }
 }
 
-/// 提示音预设
+/// 提示音预设（`Custom` 使用 `custom_sound_path` 指向的用户音频文件）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SoundPreset {
     #[default]
@@ -54,15 +54,18 @@ pub enum SoundPreset {
     DigitalDrop,
     #[serde(rename = "triple_beep")]
     TripleBeep,
+    #[serde(rename = "custom")]
+    Custom,
 }
 
 impl SoundPreset {
-    pub const ALL: [SoundPreset; 5] = [
+    pub const ALL: [SoundPreset; 6] = [
         SoundPreset::GentleChime,
         SoundPreset::SoftTap,
         SoundPreset::WaterDrop,
         SoundPreset::DigitalDrop,
         SoundPreset::TripleBeep,
+        SoundPreset::Custom,
     ];
 
     pub fn label(self) -> &'static str {
@@ -72,6 +75,38 @@ impl SoundPreset {
             SoundPreset::WaterDrop => "水滴",
             SoundPreset::DigitalDrop => "数字降调",
             SoundPreset::TripleBeep => "三连短哔",
+            SoundPreset::Custom => "自定义音频…",
+        }
+    }
+}
+
+/// 严格模式背景图片的自适应方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WallpaperFit {
+    /// 等比放大铺满屏幕，超出部分居中裁掉
+    #[default]
+    #[serde(rename = "cover")]
+    Cover,
+    /// 等比缩放完整显示，四周留暗边
+    #[serde(rename = "contain")]
+    Contain,
+    /// 拉伸铺满（可能变形）
+    #[serde(rename = "stretch")]
+    Stretch,
+}
+
+impl WallpaperFit {
+    pub const ALL: [WallpaperFit; 3] = [
+        WallpaperFit::Cover,
+        WallpaperFit::Contain,
+        WallpaperFit::Stretch,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            WallpaperFit::Cover => "铺满裁剪",
+            WallpaperFit::Contain => "完整显示",
+            WallpaperFit::Stretch => "拉伸",
         }
     }
 }
@@ -143,6 +178,21 @@ pub struct Config {
     /// 是否启用全局热键 Ctrl+Shift+E（组合键是全局独占的，允许用户关闭）
     #[serde(default = "d_true")]
     pub hotkey_enabled: bool,
+    /// 自定义提示音文件（wav / mp3 / ogg / flac / m4a，≤ 5 分钟；`sound_preset = "custom"` 时使用）
+    #[serde(default)]
+    pub custom_sound_path: Option<String>,
+    /// 严格模式背景图片（png / jpg / webp / bmp / gif）
+    #[serde(default)]
+    pub strict_wallpaper_path: Option<String>,
+    /// 严格模式背景图片的自适应方式
+    #[serde(default)]
+    pub strict_wallpaper_fit: WallpaperFit,
+    /// 启动时检查更新（默认关闭；开启后每 24 小时访问一次 GitHub Releases API，不下载任何文件）
+    #[serde(default)]
+    pub update_check_enabled: bool,
+    /// 上次检查更新的 Unix 时间戳（秒）
+    #[serde(default)]
+    pub update_last_checked: Option<u64>,
 }
 
 fn d_true() -> bool {
@@ -208,6 +258,11 @@ impl Default for Config {
             cue_volume_pct: d_cue_volume(),
             cue_duration_secs: d_cue_duration(),
             hotkey_enabled: true,
+            custom_sound_path: None,
+            strict_wallpaper_path: None,
+            strict_wallpaper_fit: WallpaperFit::default(),
+            update_check_enabled: false,
+            update_last_checked: None,
         }
     }
 }

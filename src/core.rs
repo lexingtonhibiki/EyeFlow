@@ -174,12 +174,10 @@ impl Core {
         self.begin_break(now, is_long);
     }
 
-    /// 延后一次；长休息与已延后过的回合不允许，返回 false。
+    /// 延后一次：短休息与长休息都允许，但每个提醒回合只能延后一次（已延后过返回 false）。
+    /// 长休息延后后到点仍是长休息（用屏累计未清零），跳过则 10 分钟后再提示。
     pub fn postpone(&mut self, now: Instant) -> bool {
-        let Phase::HeadsUp { is_long, .. } = self.phase else {
-            return false;
-        };
-        if is_long || self.postponed_this_round {
+        if !matches!(self.phase, Phase::HeadsUp { .. }) || self.postponed_this_round {
             return false;
         }
         self.postponed_this_round = true;
@@ -191,7 +189,7 @@ impl Core {
     }
 
     pub fn can_postpone(&self) -> bool {
-        matches!(self.phase, Phase::HeadsUp { is_long: false, .. }) && !self.postponed_this_round
+        matches!(self.phase, Phase::HeadsUp { .. }) && !self.postponed_this_round
     }
 
     /// 跳过本次休息（预告阶段或休息进行中）
@@ -608,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn long_break_after_accumulated_screen_time_and_cannot_be_postponed() {
+    fn long_break_after_accumulated_screen_time_can_be_postponed_once() {
         let t0 = Instant::now();
         let mut c = core(600, t0);
         c.cfg.long_break_enabled = true;
@@ -637,21 +635,33 @@ mod tests {
         c.tick(t0 + S(1833), false);
         assert!(matches!(c.phase, Phase::HeadsUp { is_long: true, .. }));
         let t = t0 + S(1833);
+
+        // 长休息也允许延后一次（+5 分钟），到点仍是长休息
+        assert!(c.can_postpone());
+        assert!(c.postpone(t));
+        assert_eq!(c.stats.postponed, 1);
+        assert_eq!(c.phase, Phase::Idle);
+        let wait = c.next_break_in(t);
+        assert!(wait <= S(300) && wait >= S(299));
+        let t2 = t + S(271);
+        c.tick(t2, false);
+        assert!(matches!(c.phase, Phase::HeadsUp { is_long: true, .. }));
+        // 同一回合不能再延后
         assert!(!c.can_postpone());
-        assert!(!c.postpone(t));
+        assert!(!c.postpone(t2));
 
         // 跳过长休息 → 10 分钟后再提示，仍是长休息
-        c.skip(t);
+        c.skip(t2);
         assert_eq!(c.stats.skipped, 1);
-        let again = c.next_break_in(t);
+        let again = c.next_break_in(t2);
         assert!(again <= S(600) && again >= S(599));
-        c.tick(t + again - S(29), false);
+        c.tick(t2 + again - S(29), false);
         assert!(matches!(c.phase, Phase::HeadsUp { is_long: true, .. }));
 
         // 完成长休息 → 累计清零
-        c.tick(t + again + S(1), false);
+        c.tick(t2 + again + S(1), false);
         assert!(matches!(c.phase, Phase::Break { is_long: true, .. }));
-        c.tick(t + again + S(901), false);
+        c.tick(t2 + again + S(901), false);
         assert_eq!(c.stats.completed_long, 1);
         assert_eq!(c.screen_accum, Duration::ZERO);
     }
