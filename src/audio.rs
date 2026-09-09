@@ -4,11 +4,13 @@
 //! `Mixer::add` 会把音源统一重采样到设备采样率，这里固定按 48 kHz 合成即可。
 
 use std::f64::consts::PI;
+use std::fs::File;
+use std::io::BufReader;
 use std::num::NonZero;
 use std::time::Duration;
 
 use rodio::source::Source;
-use rodio::{DeviceSinkBuilder, MixerDeviceSink};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
 use crate::config::SoundPreset;
 
@@ -20,10 +22,65 @@ pub const CUSTOM_EXTENSIONS: &[&str] = &["wav", "mp3", "ogg", "flac", "m4a", "aa
 pub const CUSTOM_MAX_SECS: u64 = 300;
 
 /// 校验用户音频文件：存在、可解码、时长 ≤ 5 分钟。返回时长。
-/// （接口桩：由音频子任务实现）
 pub fn probe_custom(path: &std::path::Path) -> Result<Duration, String> {
-    let _ = path;
-    Err("自定义音频尚未实现".to_string())
+    probe_with_limit(path, Duration::from_secs(CUSTOM_MAX_SECS))
+}
+
+/// probe_custom 的可调时限版本：`limit` 为允许的最长时长。
+///
+/// 优先用解码器元数据 `total_duration()`；拿不到（如部分 mp3 / aac 流）时逐样本
+/// 计数估算时长，一旦估算超过 `limit + 1 s` 立即中断解码提前退出，避免长时间空转。
+fn probe_with_limit(path: &std::path::Path, limit: Duration) -> Result<Duration, String> {
+    let mut decoder = open_decoder(path)?;
+
+    if let Some(d) = decoder.total_duration() {
+        return check_duration(d, limit);
+    }
+
+    // total_duration 未知：按 sample_rate × channels 逐样本计数估算
+    let per_sec = u64::from(decoder.sample_rate().get()) * u64::from(decoder.channels().get());
+    let max_samples = ((limit + Duration::from_secs(1)).as_secs_f64() * per_sec as f64) as u64;
+    let mut counted: u64 = 0;
+    let mut overflow = false;
+    for _ in decoder.by_ref() {
+        counted += 1;
+        if counted >= max_samples {
+            overflow = true;
+            break;
+        }
+    }
+    if overflow {
+        // 只知道超出下界（limit + 1 s），报一个保守的估计时长
+        return check_duration(limit + Duration::from_secs(1), limit);
+    }
+    let est = Duration::from_secs_f64(counted as f64 / per_sec as f64);
+    check_duration(est, limit)
+}
+
+fn check_duration(d: Duration, limit: Duration) -> Result<Duration, String> {
+    if d > limit {
+        Err(duration_error(d, limit))
+    } else {
+        Ok(d)
+    }
+}
+
+fn duration_error(d: Duration, limit: Duration) -> String {
+    format!(
+        "时长 {} 分 {} 秒,超过 {} 分钟上限",
+        d.as_secs() / 60,
+        d.as_secs() % 60,
+        limit.as_secs() / 60
+    )
+}
+
+/// 打开文件并建立流式解码器（BufReader 包裹，不整包载入内存）。
+fn open_decoder(path: &std::path::Path) -> Result<Decoder<BufReader<File>>, String> {
+    if !path.is_file() {
+        return Err("文件不存在".to_string());
+    }
+    let file = File::open(path).map_err(|_| "文件不存在".to_string())?;
+    Decoder::new(BufReader::new(file)).map_err(|_| "无法解码:格式不支持或文件损坏".to_string())
 }
 
 pub struct AudioPlayer {
@@ -32,10 +89,20 @@ pub struct AudioPlayer {
 
 impl AudioPlayer {
     /// 流式播放用户音频文件一次（不整包载入内存），按音量百分比设置播放器音量。
-    /// （接口桩：由音频子任务实现）
+    ///
+    /// `Player` 被 drop 时会停止所有声音，这里用 `detach()` 放手让它在后台播完；
+    /// `take_duration(CUSTOM_MAX_SECS)` 兜底把超长文件截断到 5 分钟。
     pub fn play_custom(&self, path: &std::path::Path, volume_pct: u32) -> Result<(), String> {
-        let _ = (path, volume_pct, self.sink.is_some());
-        Err("自定义音频尚未实现".to_string())
+        let Some(sink) = &self.sink else {
+            return Ok(()); // 无音频设备：静默降级，与 play_cue 一致
+        };
+        let source = open_decoder(path)?;
+        let source = source.take_duration(Duration::from_secs(CUSTOM_MAX_SECS));
+        let player = Player::connect_new(sink.mixer());
+        player.set_volume(volume_pct.clamp(50, 200) as f32 / 100.0);
+        player.append(source);
+        player.detach(); // Player 被 drop 会停止播放；detach 后让声音在后台自然播完
+        Ok(())
     }
     pub fn new() -> Self {
         match DeviceSinkBuilder::open_default_sink() {
@@ -60,6 +127,12 @@ impl AudioPlayer {
             sink.mixer()
                 .add(VecSource::new(render(preset, volume_pct, duration_secs)));
         }
+    }
+}
+
+impl Default for AudioPlayer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -287,5 +360,81 @@ mod tests {
             render(SoundPreset::SoftTap, 9999, 99).len(),
             10 * SAMPLE_RATE as usize
         );
+    }
+
+    // ------------------------------------------------------------ 自定义音频
+
+    /// 手写 44 字节 RIFF 头 + 16-bit PCM 单声道样本，生成测试 WAV（无新增依赖）。
+    fn write_test_wav(name: &str, sample_rate: u32, secs: u64) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("eyeflow_audio_{}_{}", std::process::id(), name));
+        let samples = (0..sample_rate * secs as u32)
+            .map(|i| ((i as f64 * 0.1).sin() * 8000.0) as i16)
+            .collect::<Vec<i16>>();
+        let data_len = (samples.len() * 2) as u32;
+        let mut bytes = Vec::with_capacity(44 + data_len as usize);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes()); // fmt 块大小
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // 单声道
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte_rate
+        bytes.extend_from_slice(&2u16.to_le_bytes()); // block_align
+        bytes.extend_from_slice(&16u16.to_le_bytes()); // bits
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        for s in &samples {
+            bytes.extend_from_slice(&s.to_le_bytes());
+        }
+        std::fs::write(&path, bytes).expect("write wav");
+        path
+    }
+
+    #[test]
+    fn probe_missing_file_errors() {
+        let path = std::env::temp_dir().join("eyeflow_audio_no_such_file.wav");
+        let _ = std::fs::remove_file(&path);
+        let err = probe_custom(&path).unwrap_err();
+        assert!(err.contains("文件不存在"), "{err}");
+    }
+
+    #[test]
+    fn probe_measures_one_second_wav() {
+        let path = write_test_wav("one_sec.wav", 8_000, 1);
+        let d = probe_custom(&path).expect("probe 1s wav");
+        assert!(
+            d.abs_diff(Duration::from_secs(1)) <= Duration::from_millis(50),
+            "got {d:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn probe_enforces_limit() {
+        let path = write_test_wav("two_sec.wav", 8_000, 2);
+        let err = probe_with_limit(&path, Duration::from_secs(1)).unwrap_err();
+        assert!(err.contains("超过"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn probe_rejects_corrupt_mp3() {
+        let path =
+            std::env::temp_dir().join(format!("eyeflow_audio_{}_garbage.mp3", std::process::id()));
+        // LCG 伪随机字节，几乎不可能撞上任何合法文件头
+        let mut x = 0x2545_F491_u32;
+        let bytes = (0..4096)
+            .map(|_| {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (x >> 16) as u8
+            })
+            .collect::<Vec<u8>>();
+        std::fs::write(&path, bytes).expect("write mp3");
+        let err = probe_custom(&path).unwrap_err();
+        assert!(err.contains("无法解码"), "{err}");
+        let _ = std::fs::remove_file(&path);
     }
 }

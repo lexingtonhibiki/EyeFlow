@@ -31,6 +31,8 @@ pub struct Tray {
     rest_item: MenuItem,
     sound_item: CheckMenuItem,
     pause_item: MenuItem,
+    /// 只读的今日统计行（禁用态菜单项）
+    stats_item: MenuItem,
     tooltip: String,
 }
 
@@ -60,6 +62,7 @@ impl Tray {
             None,
         );
         let quit_item = MenuItem::with_id(MenuId(id::QUIT.into()), "退出", true, None);
+        let stats_item = MenuItem::with_id(MenuId("stats".into()), "今日休息 0 次", false, None);
 
         let menu = Menu::new();
         menu.append(&open_item)?;
@@ -68,6 +71,8 @@ impl Tray {
         menu.append(&rest_item)?;
         menu.append(&pause_item)?;
         menu.append(&sound_item)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&stats_item)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_item)?;
 
@@ -89,6 +94,7 @@ impl Tray {
             rest_item,
             sound_item,
             pause_item,
+            stats_item,
             tooltip,
         })
     }
@@ -140,6 +146,13 @@ impl Tray {
         } else {
             "立即休息"
         });
+    }
+
+    /// 今日统计行（内容变化时才写）
+    pub fn set_stats_line(&self, text: &str) {
+        if self.stats_item.text() != text {
+            self.stats_item.set_text(text);
+        }
     }
 
     pub fn set_paused(&self, paused: bool) {

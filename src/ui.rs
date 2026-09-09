@@ -2,8 +2,9 @@
 
 use std::time::{Duration, Instant};
 
-use crate::config::{format_hhmm, parse_hhmm, Config, FlowSensitivity, SoundPreset};
+use crate::config::{format_hhmm, parse_hhmm, Config, FlowSensitivity, SoundPreset, WallpaperFit};
 use crate::stats::Stats;
+use crate::wallpaper::{self, WallpaperCache};
 
 pub struct SettingsState {
     /// 正在编辑的副本
@@ -13,6 +14,11 @@ pub struct SettingsState {
     pub autostart: bool,
     pub autostart_error: Option<String>,
     pub saved_at: Option<Instant>,
+    /// 自定义提示音：选中文件的说明 / 校验错误
+    pub custom_sound_info: Option<String>,
+    pub custom_sound_error: Option<String>,
+    /// 严格模式背景预览用的纹理缓存（随设置窗生命周期）
+    pub wallpaper: WallpaperCache,
 }
 
 impl SettingsState {
@@ -23,12 +29,29 @@ impl SettingsState {
             autostart,
             autostart_error: None,
             saved_at: None,
+            custom_sound_info: None,
+            custom_sound_error: None,
+            wallpaper: WallpaperCache::new(),
         }
     }
 
     pub fn has_unsaved(&self) -> bool {
         self.draft != self.saved
     }
+}
+
+/// 更新检查状态（设置窗展示）
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum UpdateStatus {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    Available {
+        latest: String,
+        url: String,
+    },
+    Failed(String),
 }
 
 /// 设置窗口需要展示的只读运行状态
@@ -40,6 +63,7 @@ pub struct SettingsView<'a> {
     pub hotkey_active: bool,
     pub stats: &'a Stats,
     pub audio_ok: bool,
+    pub update_status: &'a UpdateStatus,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +74,12 @@ pub enum SettingsAction {
     SetAutostart(bool),
     SetHotkeyEnabled(bool),
     Preview(SoundPreset),
+    PreviewCustom(String),
+    PickCustomSound,
+    ClearCustomSound,
+    PickWallpaper,
+    ClearWallpaper,
+    CheckUpdateNow,
     OpenConfigDir,
 }
 
@@ -97,14 +127,36 @@ fn status_card(ui: &mut egui::Ui, view: &SettingsView, actions: &mut Vec<Setting
             });
         });
         let st = view.stats;
-        ui.weak(format!(
-            "今日完成 {} 次休息（其中自然休息 {}）· 跳过 {} · 延后 {} · 连续坚持 {} 天",
-            st.completed_today(),
-            st.completed_natural,
-            st.skipped,
-            st.postponed,
-            st.streak_days
-        ));
+        let good = egui::Color32::from_rgb(70, 170, 100);
+        let warn = egui::Color32::from_rgb(230, 150, 40);
+        let bad = egui::Color32::from_rgb(220, 80, 80);
+        let muted = ui.visuals().weak_text_color();
+        // 延后次数按今日累计变色：0 灰 → 1~2 橙 → ≥3 红，让“欠账”一眼可见
+        let postponed_color = match st.postponed {
+            0 => muted,
+            1..=2 => warn,
+            _ => bad,
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.weak("今日完成");
+            ui.colored_label(
+                if st.completed_today() > 0 {
+                    good
+                } else {
+                    muted
+                },
+                format!("{} 次", st.completed_today()),
+            );
+            ui.weak(format!("（其中自然休息 {}）· 跳过", st.completed_natural));
+            ui.colored_label(
+                if st.skipped > 0 { bad } else { muted },
+                format!("{} 次", st.skipped),
+            );
+            ui.weak("· 延后");
+            ui.colored_label(postponed_color, format!("{} 次", st.postponed));
+            ui.weak(format!("· 连续坚持 {} 天", st.streak_days));
+        });
     });
 }
 
@@ -166,7 +218,9 @@ fn rhythm_card(ui: &mut egui::Ui, s: &mut SettingsState) {
             });
             s.draft.long_break_after_secs = (after_h * 3600.0).round() as u64;
             s.draft.long_break_secs = long_m as u64 * 60;
-            ui.weak("AOA：连续用屏 2 小时后休息 15 分钟。长休息不可延后，跳过后 10 分钟再提示。");
+            ui.weak(
+                "AOA：连续用屏 2 小时后休息 15 分钟。长休息同样可延后一次；跳过后 10 分钟再提示。",
+            );
         });
 
         ui.add_space(4.0);
@@ -197,9 +251,11 @@ fn delivery_card(
         ui.add_enabled_ui(s.draft.visual_enabled, |ui| {
             ui.checkbox(
                 &mut s.draft.strict_mode,
-                "严格模式：休息面板改为全屏暗色遮罩",
+                "严格模式：休息面板改为全屏遮罩（可自选背景图片）",
             );
+            ui.add_enabled_ui(s.draft.strict_mode, |ui| wallpaper_section(ui, s, actions));
         });
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.draft.sound_enabled, "提示音");
             ui.add_enabled_ui(s.draft.sound_enabled, |ui| {
@@ -210,17 +266,28 @@ fn delivery_card(
                             ui.selectable_value(&mut s.draft.sound_preset, p, p.label());
                         }
                     });
+                let custom = s.draft.sound_preset == SoundPreset::Custom;
+                let can_preview = view.audio_ok && (!custom || s.draft.custom_sound_path.is_some());
                 if ui
-                    .add_enabled(view.audio_ok, egui::Button::new("▶ 试听"))
+                    .add_enabled(can_preview, egui::Button::new("▶ 试听"))
                     .clicked()
                 {
-                    actions.push(SettingsAction::Preview(s.draft.sound_preset));
+                    if custom {
+                        if let Some(p) = &s.draft.custom_sound_path {
+                            actions.push(SettingsAction::PreviewCustom(p.clone()));
+                        }
+                    } else {
+                        actions.push(SettingsAction::Preview(s.draft.sound_preset));
+                    }
                 }
             });
             if !view.audio_ok {
                 ui.weak("（未检测到音频输出设备）");
             }
         });
+        if s.draft.sound_preset == SoundPreset::Custom {
+            ui.add_enabled_ui(s.draft.sound_enabled, |ui| custom_sound_row(ui, s, actions));
+        }
         ui.add_enabled_ui(s.draft.sound_enabled, |ui| {
             let mut vol = s.draft.cue_volume_pct as f32;
             let mut dur = s.draft.cue_duration_secs as u32;
@@ -231,6 +298,9 @@ fn delivery_card(
             ui.horizontal(|ui| {
                 ui.label("提示音时长");
                 ui.add(egui::Slider::new(&mut dur, 1..=5).suffix(" 秒"));
+                if s.draft.sound_preset == SoundPreset::Custom {
+                    ui.weak("（自定义音频按文件本身长度播放一次）");
+                }
             });
             s.draft.cue_volume_pct = vol as u32;
             s.draft.cue_duration_secs = dur as u64;
@@ -240,6 +310,83 @@ fn delivery_card(
              音量最高可放大到 200%。全屏游戏 / 视频中声音是唯一提醒通道，会自动至少响 2 秒。",
         );
     });
+}
+
+fn custom_sound_row(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<SettingsAction>) {
+    ui.horizontal(|ui| {
+        ui.label("　");
+        if ui.button("选择音频文件…").clicked() {
+            actions.push(SettingsAction::PickCustomSound);
+        }
+        if s.draft.custom_sound_path.is_some() && ui.small_button("清除").clicked() {
+            actions.push(SettingsAction::ClearCustomSound);
+        }
+    });
+    let fallback_name = s
+        .draft
+        .custom_sound_path
+        .as_deref()
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .map(|n| n.to_string_lossy().into_owned());
+    match (&s.custom_sound_error, &s.custom_sound_info, fallback_name) {
+        (Some(err), _, _) => {
+            ui.colored_label(egui::Color32::from_rgb(220, 80, 80), format!("　{err}"));
+        }
+        (None, Some(info), _) => {
+            ui.weak(format!("　已选择：{info}"));
+        }
+        (None, None, Some(name)) => {
+            ui.weak(format!("　当前：{name}"));
+        }
+        _ => {
+            ui.weak("　支持 wav / mp3 / ogg / flac / m4a / aac，时长不超过 5 分钟。");
+        }
+    }
+}
+
+fn wallpaper_section(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<SettingsAction>) {
+    ui.horizontal(|ui| {
+        ui.label("　背景图片");
+        if ui.button("选择图片…").clicked() {
+            actions.push(SettingsAction::PickWallpaper);
+        }
+        if s.draft.strict_wallpaper_path.is_some() && ui.small_button("清除").clicked() {
+            actions.push(SettingsAction::ClearWallpaper);
+        }
+        ui.label("自适应");
+        egui::ComboBox::from_id_salt("wallpaper_fit")
+            .selected_text(s.draft.strict_wallpaper_fit.label())
+            .show_ui(ui, |ui| {
+                for f in WallpaperFit::ALL {
+                    ui.selectable_value(&mut s.draft.strict_wallpaper_fit, f, f.label());
+                }
+            });
+    });
+    let Some(path) = s.draft.strict_wallpaper_path.clone() else {
+        ui.weak("　未选择图片时使用纯暗色遮罩。支持 png / jpg / webp / bmp / gif。");
+        return;
+    };
+    let fit = s.draft.strict_wallpaper_fit;
+    let ctx = ui.ctx().clone();
+    let loaded = s.wallpaper.get(&ctx, Some(&path)).cloned();
+    match loaded {
+        Some(tex) => {
+            ui.horizontal(|ui| {
+                ui.label("　");
+                let width = (ui.available_width() - 8.0).clamp(240.0, 480.0);
+                wallpaper::preview(ui, &tex, fit, width);
+            });
+            ui.weak("　预览即为全屏遮罩的实际裁剪效果（16:9）；切换“自适应”即时更新。");
+        }
+        None => {
+            let err = s
+                .wallpaper
+                .last_error()
+                .unwrap_or("图片加载中…")
+                .to_string();
+            ui.colored_label(egui::Color32::from_rgb(220, 80, 80), format!("　{err}"));
+        }
+    }
 }
 
 fn context_card(ui: &mut egui::Ui, s: &mut SettingsState) {
@@ -262,7 +409,7 @@ fn context_card(ui: &mut egui::Ui, s: &mut SettingsState) {
             ui.add(egui::Slider::new(&mut away_m, 1..=30).suffix(" 分钟无操作"));
         });
         s.draft.away_secs = away_m as u64 * 60;
-        ui.weak("离开时计时暂停；离开时间超过休息时长即视为已休息。全屏游戏 / 演示 / 独占应用中只响提示音，退出后补发预告。");
+        ui.weak("离开时计时暂停；进入离开状态即视为一次自然休息。全屏游戏 / 演示 / 独占应用中只响提示音，退出后补发预告。");
 
         ui.add_space(4.0);
         let mut qs = parse_hhmm(&s.draft.quiet_start);
@@ -337,6 +484,37 @@ fn system_card(
             actions.push(SettingsAction::SetHotkeyEnabled(s.draft.hotkey_enabled));
         }
         ui.weak("全局热键由操作系统全局独占，可能与其他软件冲突，可随时关闭；关闭后仍可用托盘菜单“立即休息”。");
+
+        ui.add_space(2.0);
+        ui.checkbox(
+            &mut s.draft.update_check_enabled,
+            "启动时检查更新（每 24 小时至多一次，仅访问 GitHub Releases API，不下载任何文件）",
+        );
+        ui.horizontal(|ui| {
+            ui.weak(format!("当前版本 v{}", crate::update::current_version()));
+            if ui.small_button("立即检查").clicked() {
+                actions.push(SettingsAction::CheckUpdateNow);
+            }
+            match view.update_status {
+                UpdateStatus::Idle => {}
+                UpdateStatus::Checking => {
+                    ui.weak("正在检查…");
+                }
+                UpdateStatus::UpToDate => {
+                    ui.colored_label(egui::Color32::from_rgb(70, 170, 100), "已是最新版本 ✓");
+                }
+                UpdateStatus::Available { latest, url } => {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 150, 40),
+                        format!("有新版本 v{latest}"),
+                    );
+                    ui.hyperlink_to("打开发布页", url);
+                }
+                UpdateStatus::Failed(e) => {
+                    ui.weak(format!("检查失败：{e}"));
+                }
+            }
+        });
 
         ui.horizontal(|ui| {
             ui.weak(format!("配置文件：{}", Config::path().display()));

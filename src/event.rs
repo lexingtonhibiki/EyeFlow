@@ -5,12 +5,14 @@ use crate::core::Sensors;
 
 /// 后台线程 → 主线程的事件。
 ///
-/// 只有两种：按键时间戳（心流判定需要精确到按键）与 1 Hz 传感器快照。
+/// 按键时间戳（心流判定需要精确到按键）、1 Hz 传感器快照、可选的更新检查结果。
 /// 托盘菜单、热键都由各自 crate 的全局 channel 在主线程轮询，不经此总线。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Event {
     KeyPress(Instant),
     Sensors(Sensors),
+    /// 后台线程完成的更新检查结果：Ok(最新版本) 或 Err(失败原因)
+    UpdateChecked(Result<String, String>),
 }
 
 static UI_CTX: Mutex<Option<egui::Context>> = Mutex::new(None);

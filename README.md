@@ -5,7 +5,7 @@
 EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入心流、在全屏游戏、还是已经离开座位——到点的提醒只会**顺延**到更合适的时机、换一种更轻的形态,而**不会消失**。
 
 - 免费开源(MIT) · Rust 单进程 · 无 Electron / WebView
-- 便携 exe 约 7 MB;空闲常驻约 16 MB(未打开窗口时),窗口显示期间因 GPU 上下文短暂升至约 200 MB,关闭后回落到 60~90 MB(显卡驱动残留,实测见 [ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md))
+- 便携 exe 约 10 MB;空闲常驻约 16 MB(未打开窗口时),窗口显示期间因 GPU 上下文短暂升至约 200 MB,关闭后回落到 60~90 MB(显卡驱动残留,实测见 [ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md))
 
 [![CI](https://github.com/lexingtonhibiki/eyeflow/actions/workflows/ci.yml/badge.svg)](https://github.com/lexingtonhibiki/eyeflow/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/lexingtonhibiki/eyeflow?include_prereleases)](https://github.com/lexingtonhibiki/eyeflow/releases)
@@ -21,9 +21,13 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 | <img src="assets/icon-preview.png" width="96" alt="EyeFlow 图标"> | ![预告浮窗](assets/screenshots/heads-up.png) | ![休息界面](assets/screenshots/break-panel.png) |
 
 <details>
-<summary>设置窗口</summary>
+<summary>设置窗口 / 严格模式自选壁纸</summary>
 
 ![设置](assets/screenshots/settings.png)
+
+严格模式 + 自选背景图片(铺满裁剪 + 暗色蒙层),倒计时与贴士叠在图上:
+
+![严格模式壁纸](assets/screenshots/strict-wallpaper.png)
 
 </details>
 
@@ -44,7 +48,7 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 | 全屏/游戏处理 | 自动降级:仅提示音,退出后补发预告 | 需手写 JSON 进程排除 | 无 | 有(macOS) |
 | 心流处理 | 顺延到停歇 8 秒后投递 | 无 | 无 | 深度专注检测(macOS) |
 | 坚持统计 | 有(本地 stats.toml) | 无 | 有 | 有 |
-| 体积 | 单文件约 7 MB(Rust) | 约 100 MB 级(Electron) | 数 MB | 原生 |
+| 体积 | 单文件约 10 MB(Rust) | 约 100 MB 级(Electron) | 数 MB | 原生 |
 
 ## 功能特性
 
@@ -52,12 +56,12 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 - **提醒只顺延、不消失**:心流中顺延到输入停歇 8 秒后完整投递;游戏中只响提示音,退出全屏后补发预告([ADR-0002](docs/adr/0002-reminders-are-deferred-never-dropped.md))
 - **双层休息**:短休息(15~25 分钟三角随机、峰值 20 分钟、持续 30 秒)+ 长休息(连续用屏 2 小时 → 15 分钟)([ADR-0001](docs/adr/0001-aoa-20-20-20-two-tier-breaks.md))
 - **完整提醒链路**:预告浮窗(不抢焦点)→ 休息界面(倒计时 + 一条权威护眼贴士)→ 自动计入坚持统计
-- **用户始终可控**:延后 5 分钟(每次提醒限 1 次)、跳过、立即开始、暂停 1 小时、免打扰时段
-- **严格模式**(可选,默认关):休息界面变为全屏暗色遮罩
-- **5 种合成提示音**:gentle_chime / soft_tap / water_drop / digital_drop / triple_beep;音量 50%~200%、时长 1~5 秒可调(听歌 / 看视频时建议 2~3 秒);无音频设备自动降级为静音
+- **用户始终可控**:延后 5 分钟(每次提醒限 1 次,长休息同样可延后)、跳过、立即开始、暂停 1 小时、免打扰时段;今日延后次数在设置窗按 0 / 1~2 / ≥3 次灰 / 橙 / 红着色
+- **严格模式**(可选,默认关):休息界面变为全屏遮罩,可自选背景图片,三种自适应方式 + 实时裁剪预览
+- **5 种合成提示音 + 自定义音频**:gentle_chime / soft_tap / water_drop / digital_drop / triple_beep,或自选 wav / mp3 / ogg / flac / m4a 文件(≤ 5 分钟);音量 50%~200%、时长 1~5 秒可调(听歌 / 看视频时建议 2~3 秒);无音频设备自动降级为静音
 - **坚持统计**:今日完成(短/长/自然)、跳过、延后次数、连续坚持天数
 - **托盘 + 热键**:左键单击/双击打开设置;Ctrl+Shift+E 立即休息;tooltip 显示当前状态与下次休息时间
-- **轻量**:Rust 单进程,无 Electron / WebView;exe 约 7 MB;平时没有任何窗口和 GPU 上下文,空闲常驻约 16 MB,只在显示浮窗 / 设置时才短暂启动 UI 会话([ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md))
+- **轻量**:Rust 单进程,无 Electron / WebView;exe 约 10 MB;平时没有任何窗口和 GPU 上下文,空闲常驻约 16 MB,只在显示浮窗 / 设置时才短暂启动 UI 会话([ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md))
 - **隐私友好**:纯本地运行,无网络、无遥测、无账号
 - **单实例**:重复启动直接退出
 
@@ -77,9 +81,9 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 
 ### 安装版
 
-1. 下载 `EyeFlow-<版本>-Setup.exe` 并运行;
-2. 安装完成时可选"立即启动";安装默认写入开机自启(可在设置界面关闭);
-3. 卸载:系统"设置 → 应用 → 安装的应用",或开始菜单中的 Uninstall EyeFlow。
+1. 下载 `EyeFlow-<版本>-Setup.exe` 并运行;安装选项页可勾选是否创建桌面快捷方式;
+2. 安装完成时可选"立即启动";安装默认写入开机自启(可在设置界面关闭);首次运行会自动打开设置窗;
+3. 卸载:系统"设置 → 应用 → 安装的应用",或开始菜单中的 Uninstall EyeFlow(无残留:程序、配置、统计、日志、快捷方式、注册表项全部清理)。
 
 > **关于 SmartScreen**:安装包与 exe 目前未做代码签名,首次运行时 Windows SmartScreen 可能提示"Windows 已保护你的电脑"。请点击 **更多信息 → 仍要运行**。
 
@@ -111,7 +115,7 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 2. **休息界面**(屏幕居中,置顶不抢焦点):大倒计时 + 一条来自 AOA/AAO 的护眼贴士;点击 **[继续工作]** 记为跳过;倒计时走完自动**完成**并播结束音;
 3. **结算**:本次结果计入坚持统计(今日完成 / 跳过 / 延后 / 连续坚持天数)。
 
-补充规则:长休息不可延后;跳过长休息后 10 分钟会再次提示;严格模式(默认关)下休息界面变为全屏暗色遮罩。
+补充规则:长休息可延后一次,到点后仍是长休息;跳过长休息后 10 分钟会再次提示;严格模式(默认关)下休息界面变为全屏遮罩,可在设置里选一张背景图片并预览裁剪效果。
 
 ### 上下文行为
 
@@ -143,12 +147,16 @@ long_break_secs = 900          # 长休息时长(15 分钟)
 heads_up_secs = 15             # 预告提前量(秒;长休息预告为 30 秒)
 postpone_secs = 300            # 延后时长(5 分钟;每次提醒最多延后 1 次)
 sound_enabled = true           # 提示音开关
-sound_preset = "gentle_chime"  # 提示音预设:gentle_chime / soft_tap / water_drop / digital_drop / triple_beep
+sound_preset = "gentle_chime"  # 提示音预设:gentle_chime / soft_tap / water_drop / digital_drop / triple_beep / custom
+custom_sound_path = ""         # sound_preset = "custom" 时使用的音频文件(wav / mp3 / ogg / flac / m4a / aac,≤ 5 分钟)
 cue_volume_pct = 100           # 提示音音量 50~200%(>100 为主动放大,适配音乐/视频场景)
 cue_duration_secs = 1          # 提示音时长 1~5 秒(短图案循环铺满;全屏时声音是唯一通道,自动至少 2 秒)
 hotkey_enabled = true          # 全局热键 Ctrl+Shift+E(立即休息);会全局独占组合键,可关闭
 visual_enabled = true          # 视觉提醒(预告浮窗 + 休息界面);关闭后仅声音
-strict_mode = false            # 严格模式:休息界面变为全屏暗色遮罩
+strict_mode = false            # 严格模式:休息界面变为全屏遮罩
+strict_wallpaper_path = ""     # 严格模式背景图片(png / jpg / webp / bmp / gif),留空为纯暗色
+strict_wallpaper_fit = "cover" # 背景自适应:cover(铺满裁剪)/ contain(完整显示)/ stretch(拉伸)
+update_check_enabled = false   # 启动时检查更新(每 24 小时至多一次,仅访问 GitHub Releases API,不下载文件)
 quiet_start = "00:00"          # 免打扰时段开始
 quiet_end = "08:00"            # 免打扰时段结束
 flow_sensitivity = "Medium"    # 心流判定灵敏度:Low / Medium / High
@@ -172,7 +180,7 @@ away_secs = 180                # 无输入多久判定为离开(秒)
 git clone https://github.com/lexingtonhibiki/eyeflow.git
 cd eyeflow
 cargo build --release
-:: 产物:target\release\eyeflow.exe(约 7 MB)
+:: 产物:target\release\eyeflow.exe(约 10 MB)
 
 :: 一键构建 + 打包(检测到 NSIS 时输出 dist\EyeFlow-<版本>-Setup.exe):
 build-release.cmd
@@ -198,7 +206,9 @@ CI 会跑 `cargo test --locked` 与 `cargo build --release --locked`;推送 `v*.
 
 ## 隐私
 
-EyeFlow **纯本地运行**:无任何网络请求、无遥测、无账号、无更新自检。全部数据只有两个文件(`config.toml` 与 `stats.toml`),都保存在本机 `%APPDATA%\eyeflow\`。键盘监测仅在本进程内记录按键时间戳用于心流判定——不记录按键内容、不写盘、不上传。
+EyeFlow **默认不发起任何网络请求**:无遥测、无账号、无自动下载。全部数据只有两个文件(`config.toml` 与 `stats.toml`),都保存在本机 `%APPDATA%\eyeflow\`。键盘监测仅在本进程内记录按键时间戳用于心流判定——不记录按键内容、不写盘、不上传。
+
+唯一的可选联网功能是**更新检查**(设置 → 系统,默认关闭):开启后每 24 小时至多访问一次 GitHub Releases API(`api.github.com/repos/lexingtonhibiki/eyeflow/releases/latest`),只比对版本号并在设置窗提示,不下载、不安装任何文件。
 
 ## Roadmap
 
@@ -224,6 +234,7 @@ EyeFlow 的关键决策都有编号的决策记录(ADR)与调研支撑:
 | [ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md) | UI 宿主:按需启动的 eframe 会话,空闲时不持有 GL 上下文(含内存实测) |
 | [docs/portability-notes.md](docs/portability-notes.md) | 跨平台移植路径与内存/维护成本评估(Qt、UPX 取舍) |
 | [docs/report-v0.3.md](docs/report-v0.3.md) | v0.3:提示音音量/时长的依据(ISO 7731、WCAG 1.4.7)、热键可关闭、卸载无残留、设置窗尺寸 |
+| [docs/report-v0.4.md](docs/report-v0.4.md) | v0.4:自定义提示音、严格模式壁纸与裁剪预览、长休息可延后、更新检查评估、GitHub 邮箱隐私处理 |
 | [docs/research/](docs/research/) | 科学证据(02)、竞品 UX(03)、Windows UX 规范(04)、发布迁移(06)等调研 |
 
 ## License

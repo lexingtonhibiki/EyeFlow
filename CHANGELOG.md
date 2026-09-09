@@ -4,6 +4,23 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.4.0] - Unreleased
+
+### Added
+
+- **自定义提示音**：设置 → 提示音 → “自定义音频…”，支持 wav / mp3 / ogg / flac / m4a / aac，时长 ≤ 5 分钟（选择时即校验并显示时长）；流式播放不整包载入内存，超长自动截断，解码失败回退默认风铃
+- **严格模式自选背景图片**：png / jpg / webp / bmp / gif；三种自适应（铺满裁剪 / 完整显示 / 拉伸），设置窗内 16:9 **实时裁剪预览**；最长边 > 2560 px 自动缩小以控制内存；图片上叠暗色蒙层保证倒计时可读
+- **长休息也可延后一次**（用户要求）：预告面板上“延后 N 分钟”对长休息同样可用；到点后仍是长休息，跳过则 10 分钟再提示
+- **今日延后次数颜色化**：设置窗“现在”卡片中完成 / 跳过 / 延后分别着色，延后 0 次灰、1~2 次橙、≥ 3 次红；托盘 tooltip 有延后时附带次数；托盘菜单新增只读的“今日休息 N 次 · 跳过 · 延后”统计行
+- **安装器“创建桌面快捷方式”勾选**（默认勾选，静默安装沿用默认），卸载同步删除
+- **可选的更新检查**（默认关闭）：开启后每 24 小时至多访问一次 GitHub Releases API，只比对版本号、不下载任何文件，结果显示在设置窗；“立即检查”按钮可随时手动触发
+- **首次运行引导**：没有配置文件时启动后自动打开设置窗
+
+### Changed
+
+- 版本号默认值升至 0.4.0；rodio 启用 wav / mp3 / vorbis / flac / mp4 解码器（便携 exe 相应增大）
+- 新增依赖：rfd（原生文件对话框）、image（图片解码）、ureq + serde_json（更新检查）
+
 ## [0.3.0] - Unreleased
 
 围绕“在听歌 / 看视频时提醒根本听不见”的反馈，补全提示音的可控性，并放开全局热键的占用。
@@ -71,6 +88,7 @@ v0.2 是一次整体重写:从"一声提示音的空壳"补全为完整的"预�
 - egui 设置窗口与 `%APPDATA%\eyeflow\config.toml` 配置持久化
 - NSIS 安装包(HKCU\Run 自启 + 卸载清理)
 
+[0.4.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lexingtonhibiki/eyeflow/releases/tag/v0.1.0

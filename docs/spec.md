@@ -65,8 +65,8 @@
 | ID | 需求 | 说明 |
 |----|------|------|
 | F1 | 双层休息调度 | 短休息:15~25 分钟三角随机(峰值 20 分钟)、持续 30 秒;长休息:连续用屏累计 2 小时后下一次短休息升级为 15 分钟长休息,默认开启(ADR-0001) |
-| F2 | 预告(Heads-up) | 休息开始前 15 秒预告(长休息 30 秒);可选 现在开始 / 延后 5 分钟(每次提醒限 1 次)/ 跳过;长休息不可延后 |
-| F3 | 休息界面(Break panel) | 居中、置顶、不抢焦点;大倒计时 + 一条 AOA/AAO 权威护眼贴士;[继续工作] = 跳过;倒计时结束自动完成并播结束音;严格模式可选全屏暗色遮罩(默认关) |
+| F2 | 预告(Heads-up) | 休息开始前 15 秒预告(长休息 30 秒);可选 现在开始 / 延后 5 分钟(每次提醒限 1 次,长休息同样可延后)/ 跳过 |
+| F3 | 休息界面(Break panel) | 居中、置顶、不抢焦点;大倒计时 + 一条 AOA/AAO 权威护眼贴士;[继续工作] = 跳过;倒计时结束自动完成并播结束音;严格模式可选全屏遮罩(默认关),可自选背景图片(png/jpg/webp/bmp/gif,三种自适应 + 设置窗内 16:9 实时裁剪预览) |
 | F4 | 上下文感知 | 桌面 / 心流 / 游戏 / 离开 四态;上下文只改变提醒的投递时机与形态,不取消提醒(ADR-0002) |
 | F5 | 心流顺延 | 30 秒滑窗按键数达阈值(低 40 / 中 70 / 高 100,过滤按键自动重复);到点后顺延到最后按键停歇 8 秒再投递 |
 | F6 | 游戏/不可打扰降级 | SHQueryUserNotificationState ≠ ACCEPTS(独占全屏/演示/锁屏等)或前台窗口全屏且无标题栏时:立即仅响提示音,视觉部分顺延,退出后补发预告(ADR-0004) |
@@ -104,9 +104,17 @@
 | heads_up_secs | 15 | 预告提前量(秒;长休息预告为 30 秒) |
 | postpone_secs | 300 | 延后时长(5 分钟;每次提醒最多延后 1 次) |
 | sound_enabled | true | 提示音开关 |
-| sound_preset | "gentle_chime" | 提示音预设:gentle_chime / soft_tap / water_drop / digital_drop / triple_beep |
+| sound_preset | "gentle_chime" | 提示音预设:gentle_chime / soft_tap / water_drop / digital_drop / triple_beep / custom |
+| custom_sound_path | (空) | 自定义提示音文件(wav / mp3 / ogg / flac / m4a / aac,≤ 5 分钟),`sound_preset = "custom"` 时使用 |
+| cue_volume_pct | 100 | 提示音音量 50~200%(>100 为主动放大) |
+| cue_duration_secs | 1 | 提示音时长 1~5 秒;声音是唯一通道(游戏/全屏)时自动至少 2 秒 |
+| hotkey_enabled | true | 全局热键 Ctrl+Shift+E 是否注册(可关闭以避免与其他软件冲突) |
 | visual_enabled | true | 视觉提醒(预告浮窗 + 休息界面);关闭后仅声音 |
-| strict_mode | false | 严格模式:休息界面变为全屏暗色遮罩 |
+| strict_mode | false | 严格模式:休息界面变为全屏遮罩 |
+| strict_wallpaper_path | (空) | 严格模式背景图片;留空为纯暗色遮罩 |
+| strict_wallpaper_fit | "cover" | 背景自适应:cover / contain / stretch |
+| update_check_enabled | false | 启动时检查更新(每 24 小时至多一次,仅访问 GitHub Releases API) |
+| update_last_checked | (空) | 上次检查更新的 Unix 时间戳(程序维护) |
 | quiet_start | "00:00" | 免打扰时段开始 |
 | quiet_end | "08:00" | 免打扰时段结束 |
 | flow_sensitivity | "Medium" | 心流判定灵敏度:Low / Medium / High |
@@ -172,7 +180,7 @@ EyeFlow 的核心是一个四状态机,根据用户行为自动切换(检测由�
 
 **顺延 / 补发规则(ADR-0002):** 上下文只能改变提醒的投递时机与形态,不能取消提醒。`should_remind` 到点后不再由分支决定是否重置,而是由投递结果决定;计时器区分"重置 / 暂停 / 顺延中"三态。"顺延(Defer)"是系统自动推后,与用户主动的"延后(Postpone)"严格区分(CONTEXT.md)。
 
-**其他投递规则:** 延后仅在预告阶段可用且每次提醒限 1 次;长休息不可延后,跳过后 10 分钟再提示;免打扰时段 / 暂停 1 小时期间不投递,结束后若已到点则 60 秒后投递;游戏/不可打扰中退出后补发一次预告。
+**其他投递规则:** 延后仅在预告阶段可用且每次提醒限 1 次(短休息与长休息均可,v0.4 起);长休息跳过后 10 分钟再提示;免打扰时段 / 暂停 1 小时期间不投递,结束后若已到点则 60 秒后投递;游戏/不可打扰中退出后补发一次预告。
 
 #### 4.2.2 运行模式与事件循环(ADR-0006)
 

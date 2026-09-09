@@ -15,6 +15,7 @@ mod stats;
 mod tips;
 mod tray;
 mod ui;
+mod update;
 mod wallpaper;
 
 use std::sync::mpsc;
@@ -40,6 +41,8 @@ fn main() {
         return;
     }
 
+    // 首次运行（还没有配置文件）：启动后自动打开设置窗做一次引导
+    let first_run = !Config::path().exists();
     let cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
@@ -51,7 +54,7 @@ fn main() {
 
     let (tx, rx) = mpsc::channel();
     detector::start_keyboard_hook(tx.clone());
-    detector::start_sensor_thread(tx);
+    detector::start_sensor_thread(tx.clone());
 
     let audio = audio::AudioPlayer::new();
 
@@ -76,8 +79,11 @@ fn main() {
     }
 
     // 是否注册全局热键由 cfg.hotkey_enabled 决定，见 Runtime::new
-    let mut rt = Runtime::new(core, rx, audio, tray, hotkeys);
-    if demo {
+    let mut rt = Runtime::new(core, rx, tx, audio, tray, hotkeys);
+    if demo || first_run {
+        if first_run {
+            log::info!("首次运行：打开设置窗引导");
+        }
         rt.open_settings();
     }
 

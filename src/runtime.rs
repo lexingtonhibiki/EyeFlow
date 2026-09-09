@@ -6,19 +6,20 @@
 //!
 //! 这样无论窗口开不开，提醒计时、托盘与热键都不会停摆（v0.1 的设置窗会冻结一切）。
 
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
-use crate::audio::AudioPlayer;
+use crate::audio::{self, AudioPlayer};
 use crate::autostart;
-use crate::config::Config;
+use crate::config::{Config, SoundPreset};
 use crate::core::{Action, ContextState, Core, Phase};
 use crate::event::Event;
 use crate::tray::{Tray, TrayCommand};
-use crate::ui::{self, SettingsAction, SettingsState};
+use crate::ui::{self, SettingsAction, SettingsState, UpdateStatus};
+use crate::update;
 
 const PAUSE_DURATION: Duration = Duration::from_secs(3600);
 /// Ctrl+Shift+E = 立即休息（组合键由操作系统全局独占，可在设置中关闭）
@@ -36,7 +37,9 @@ pub struct Runtime {
     /// 设置窗已打开时再次请求 → 下一帧把它拉到前台
     pub settings_focus: bool,
     pub quit: bool,
+    pub update_status: UpdateStatus,
     rx: Receiver<Event>,
+    tx: Sender<Event>,
     hotkeys: Option<GlobalHotKeyManager>,
     registered_hotkey: Option<HotKey>,
 }
@@ -45,6 +48,7 @@ impl Runtime {
     pub fn new(
         core: Core,
         rx: Receiver<Event>,
+        tx: Sender<Event>,
         audio: AudioPlayer,
         tray: Tray,
         hotkeys: Option<GlobalHotKeyManager>,
@@ -56,14 +60,68 @@ impl Runtime {
             settings: None,
             settings_focus: false,
             quit: false,
+            update_status: UpdateStatus::Idle,
             rx,
+            tx,
             hotkeys,
             registered_hotkey: None,
         };
         if let Err(e) = rt.apply_hotkey_enabled(rt.core.cfg.hotkey_enabled) {
             log::warn!("全局热键注册失败: {e}");
         }
+        if update::is_due(&rt.core.cfg, update::now_unix()) {
+            rt.spawn_update_check();
+        }
         rt
+    }
+
+    /// 在后台线程查询 GitHub Releases，结果经事件总线回到主线程。
+    pub fn spawn_update_check(&mut self) {
+        if matches!(self.update_status, UpdateStatus::Checking) {
+            return;
+        }
+        self.update_status = UpdateStatus::Checking;
+        let tx = self.tx.clone();
+        std::thread::Builder::new()
+            .name("eyeflow-update-check".into())
+            .spawn(move || {
+                let result = update::check().map(|info| {
+                    if info.is_newer {
+                        format!("{}|{}", info.latest, info.url)
+                    } else {
+                        String::new()
+                    }
+                });
+                let _ = tx.send(Event::UpdateChecked(result));
+                crate::event::wake_ui();
+            })
+            .ok();
+    }
+
+    fn on_update_checked(&mut self, result: Result<String, String>) {
+        self.update_status = match result {
+            Ok(s) if s.is_empty() => UpdateStatus::UpToDate,
+            Ok(s) => {
+                let (latest, url) = s
+                    .split_once('|')
+                    .unwrap_or((s.as_str(), update::RELEASES_URL));
+                log::info!("发现新版本 v{latest}: {url}");
+                UpdateStatus::Available {
+                    latest: latest.to_string(),
+                    url: url.to_string(),
+                }
+            }
+            Err(e) => {
+                log::warn!("更新检查失败: {e}");
+                UpdateStatus::Failed(e)
+            }
+        };
+        self.core.cfg.update_last_checked = Some(update::now_unix());
+        self.persist_config();
+        if let Some(s) = &mut self.settings {
+            s.saved.update_last_checked = self.core.cfg.update_last_checked;
+            s.draft.update_last_checked = self.core.cfg.update_last_checked;
+        }
     }
 
     /// 注册 / 注销全局热键。组合键是操作系统级全局独占资源，
@@ -107,6 +165,7 @@ impl Runtime {
             match ev {
                 Event::KeyPress(t) => self.core.on_key(t),
                 Event::Sensors(s) => self.core.set_sensors(s),
+                Event::UpdateChecked(result) => self.on_update_checked(result),
             }
         }
         for cmd in self.tray.poll() {
@@ -128,16 +187,9 @@ impl Runtime {
             match action {
                 Action::PlayCue => {
                     if self.core.cfg.sound_enabled {
-                        let mut secs = self.core.cfg.cue_duration_secs;
                         // 游戏 / 全屏 / 不可打扰时预告面板不可见，声音是唯一通道 → 自动增强
-                        if self.core.state == ContextState::Gaming {
-                            secs = secs.max(SOUND_ONLY_MIN_CUE_SECS);
-                        }
-                        self.audio.play_cue(
-                            self.core.cfg.sound_preset,
-                            self.core.cfg.cue_volume_pct,
-                            secs,
-                        );
+                        let sound_only = self.core.state == ContextState::Gaming;
+                        self.play_cue(sound_only);
                     }
                 }
             }
@@ -148,6 +200,38 @@ impl Runtime {
         let tip = self.tooltip_text(now);
         self.tray.set_tooltip(&tip);
         self.tray.set_paused(self.core.is_paused(now));
+        let st = &self.core.stats;
+        self.tray.set_stats_line(&format!(
+            "今日休息 {} 次 · 跳过 {} · 延后 {}",
+            st.completed_today(),
+            st.skipped,
+            st.postponed
+        ));
+    }
+
+    /// 按当前配置播放提示音：自定义音频优先，失败或未设置时回退到合成预设。
+    fn play_cue(&self, sound_only: bool) {
+        let cfg = &self.core.cfg;
+        let mut secs = cfg.cue_duration_secs;
+        if sound_only {
+            secs = secs.max(SOUND_ONLY_MIN_CUE_SECS);
+        }
+        if cfg.sound_preset == SoundPreset::Custom {
+            if let Some(path) = cfg.custom_sound_path.as_deref() {
+                match self
+                    .audio
+                    .play_custom(std::path::Path::new(path), cfg.cue_volume_pct)
+                {
+                    Ok(()) => return,
+                    Err(e) => log::warn!("自定义提示音播放失败（{e}），回退默认提示音"),
+                }
+            }
+            self.audio
+                .play_cue(SoundPreset::GentleChime, cfg.cue_volume_pct, secs);
+        } else {
+            self.audio
+                .play_cue(cfg.sound_preset, cfg.cue_volume_pct, secs);
+        }
     }
 
     pub fn open_settings(&mut self) {
@@ -201,6 +285,7 @@ impl Runtime {
     pub fn apply_settings_action(&mut self, action: SettingsAction, now: Instant) {
         match action {
             SettingsAction::Save(cfg) => {
+                let check_now = cfg.update_check_enabled && !self.core.cfg.update_check_enabled;
                 self.core.apply_config(cfg.clone(), now);
                 if let Err(e) = cfg.save() {
                     log::error!("保存配置失败: {e}");
@@ -216,6 +301,9 @@ impl Runtime {
                     s.saved = cfg.clone();
                     s.draft = cfg;
                     s.saved_at = Some(now);
+                }
+                if check_now {
+                    self.spawn_update_check();
                 }
                 log::info!("配置已更新");
             }
@@ -252,6 +340,72 @@ impl Runtime {
                 self.core.cfg.cue_volume_pct,
                 self.core.cfg.cue_duration_secs,
             ),
+            SettingsAction::PreviewCustom(path) => {
+                let volume = self
+                    .settings
+                    .as_ref()
+                    .map(|s| s.draft.cue_volume_pct)
+                    .unwrap_or(self.core.cfg.cue_volume_pct);
+                if let Err(e) = self.audio.play_custom(std::path::Path::new(&path), volume) {
+                    if let Some(s) = &mut self.settings {
+                        s.custom_sound_error = Some(format!("播放失败：{e}"));
+                    }
+                }
+            }
+            SettingsAction::PickCustomSound => {
+                let picked = rfd::FileDialog::new()
+                    .set_title("选择提示音文件（≤ 5 分钟）")
+                    .add_filter("音频文件", audio::CUSTOM_EXTENSIONS)
+                    .pick_file();
+                let Some(path) = picked else {
+                    return;
+                };
+                let Some(s) = &mut self.settings else {
+                    return;
+                };
+                match audio::probe_custom(&path) {
+                    Ok(len) => {
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        s.custom_sound_info =
+                            Some(format!("{name}（{}）", ui::human_duration(len)));
+                        s.custom_sound_error = None;
+                        s.draft.custom_sound_path = Some(path.display().to_string());
+                        s.draft.sound_preset = SoundPreset::Custom;
+                    }
+                    Err(e) => {
+                        s.custom_sound_error = Some(e);
+                    }
+                }
+            }
+            SettingsAction::ClearCustomSound => {
+                if let Some(s) = &mut self.settings {
+                    s.draft.custom_sound_path = None;
+                    s.custom_sound_info = None;
+                    s.custom_sound_error = None;
+                    if s.draft.sound_preset == SoundPreset::Custom {
+                        s.draft.sound_preset = SoundPreset::GentleChime;
+                    }
+                }
+            }
+            SettingsAction::PickWallpaper => {
+                let picked = rfd::FileDialog::new()
+                    .set_title("选择严格模式背景图片")
+                    .add_filter("图片", crate::wallpaper::WALLPAPER_EXTENSIONS)
+                    .pick_file();
+                if let (Some(path), Some(s)) = (picked, &mut self.settings) {
+                    s.draft.strict_wallpaper_path = Some(path.display().to_string());
+                }
+            }
+            SettingsAction::ClearWallpaper => {
+                if let Some(s) = &mut self.settings {
+                    s.draft.strict_wallpaper_path = None;
+                    s.wallpaper.invalidate();
+                }
+            }
+            SettingsAction::CheckUpdateNow => self.spawn_update_check(),
             SettingsAction::OpenConfigDir => {
                 let dir = crate::config::config_dir();
                 let _ = std::fs::create_dir_all(&dir);
@@ -285,12 +439,19 @@ impl Runtime {
     }
 
     fn tooltip_text(&self, now: Instant) -> String {
+        let st = &self.core.stats;
+        let postponed = if st.postponed > 0 {
+            format!(" · 延后 {} 次", st.postponed)
+        } else {
+            String::new()
+        };
         format!(
-            "EyeFlow — {}\n{}\n今日完成 {} 次 · 连续 {} 天",
+            "EyeFlow — {}\n{}\n今日完成 {} 次{} · 连续 {} 天",
             self.core.state.label(),
             self.reminder_line(now),
-            self.core.stats.completed_today(),
-            self.core.stats.streak_days
+            st.completed_today(),
+            postponed,
+            st.streak_days
         )
     }
 }

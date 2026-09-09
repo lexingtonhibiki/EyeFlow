@@ -11,10 +11,12 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, ViewportBuilder, ViewportCommand, ViewportId};
 
+use crate::config::WallpaperFit;
 use crate::core::{Core, Phase};
 use crate::runtime::Runtime;
 use crate::tips;
 use crate::ui::{self, SettingsView};
+use crate::wallpaper::{self, WallpaperCache};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PanelKind {
@@ -38,6 +40,8 @@ pub struct UiSession<'a> {
     panel_noactivate_applied: bool,
     /// 会话结束条件满足后再多画几帧，避免阶段切换瞬间反复拆建 GL 上下文
     idle_frames: u32,
+    /// 严格模式背景图纹理（随会话生命周期）
+    wallpaper: WallpaperCache,
 }
 
 impl<'a> UiSession<'a> {
@@ -53,6 +57,7 @@ impl<'a> UiSession<'a> {
             panel_kind: PanelKind::None,
             panel_noactivate_applied: false,
             idle_frames: 0,
+            wallpaper: WallpaperCache::new(),
         }
     }
 
@@ -105,6 +110,18 @@ impl<'a> UiSession<'a> {
             PanelKind::None => unreachable!(),
         };
 
+        // 严格模式背景图：在借用 rt 之前取好纹理（TextureHandle 克隆是 Arc 级别）
+        let wall = if kind == PanelKind::BreakFullscreen {
+            let path = self.rt.core.cfg.strict_wallpaper_path.clone();
+            let fit = self.rt.core.cfg.strict_wallpaper_fit;
+            self.wallpaper
+                .get(ctx, path.as_deref())
+                .cloned()
+                .map(|tex| (tex, fit))
+        } else {
+            None
+        };
+
         let rt = &mut *self.rt;
         let noactivate_applied = &mut self.panel_noactivate_applied;
         ctx.show_viewport_immediate(id, builder, |ui, _class| {
@@ -113,8 +130,10 @@ impl<'a> UiSession<'a> {
             }
             let action = match kind {
                 PanelKind::HeadsUp => draw_heads_up(ui, &rt.core, now),
-                PanelKind::Break => draw_break(ui, &rt.core, now, false),
-                PanelKind::BreakFullscreen => draw_break(ui, &rt.core, now, true),
+                PanelKind::Break => draw_break(ui, &rt.core, now, false, None),
+                PanelKind::BreakFullscreen => {
+                    draw_break(ui, &rt.core, now, true, wall.as_ref().map(|(t, f)| (t, *f)))
+                }
                 PanelKind::None => None,
             };
             match action {
@@ -160,6 +179,7 @@ impl<'a> UiSession<'a> {
             hotkey_active,
             stats: &rt.core.stats,
             audio_ok,
+            update_status: &rt.update_status,
         };
 
         let (actions, close) = ctx.show_viewport_immediate(id, builder, |ui, _class| {
@@ -266,11 +286,12 @@ fn draw_heads_up(ui: &mut egui::Ui, core: &Core, now: Instant) -> Option<PanelAc
                 let postpone_label = format!("延后 {} 分钟", core.cfg.postpone_secs / 60);
                 if ui
                     .add_enabled(core.can_postpone(), egui::Button::new(postpone_label))
-                    .on_disabled_hover_text(if is_long {
-                        "长休息不可延后（连续用屏 2 小时是底线）"
+                    .on_hover_text(if is_long {
+                        "长休息也可延后一次；到点后仍是长休息"
                     } else {
                         "每次提醒只能延后一次"
                     })
+                    .on_disabled_hover_text("每次提醒只能延后一次")
                     .clicked()
                 {
                     action = Some(PanelAction::Postpone);
@@ -294,6 +315,7 @@ fn draw_break(
     core: &Core,
     now: Instant,
     fullscreen: bool,
+    wallpaper_tex: Option<(&egui::TextureHandle, WallpaperFit)>,
 ) -> Option<PanelAction> {
     let Phase::Break {
         started,
@@ -329,6 +351,10 @@ fn draw_break(
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(fill).inner_margin(24.0))
         .show(ui, |ui| {
+            if let Some((tex, fit)) = wallpaper_tex {
+                // 自选背景先于文字绘制（同一图层按调用顺序叠放），内含暗色蒙层保证可读
+                wallpaper::paint_fullscreen(ui, tex, fit, ui.clip_rect());
+            }
             ui.vertical_centered(|ui| {
                 if fullscreen {
                     ui.add_space((ui.available_height() * 0.26).max(0.0));
