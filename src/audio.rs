@@ -14,11 +14,29 @@ use crate::config::SoundPreset;
 
 const SAMPLE_RATE: u32 = 48_000;
 
+/// 自定义提示音支持的扩展名（rodio 解码器：wav / mp3 / vorbis / flac / mp4-aac）
+pub const CUSTOM_EXTENSIONS: &[&str] = &["wav", "mp3", "ogg", "flac", "m4a", "aac"];
+/// 自定义提示音最长时长（秒）
+pub const CUSTOM_MAX_SECS: u64 = 300;
+
+/// 校验用户音频文件：存在、可解码、时长 ≤ 5 分钟。返回时长。
+/// （接口桩：由音频子任务实现）
+pub fn probe_custom(path: &std::path::Path) -> Result<Duration, String> {
+    let _ = path;
+    Err("自定义音频尚未实现".to_string())
+}
+
 pub struct AudioPlayer {
     sink: Option<MixerDeviceSink>,
 }
 
 impl AudioPlayer {
+    /// 流式播放用户音频文件一次（不整包载入内存），按音量百分比设置播放器音量。
+    /// （接口桩：由音频子任务实现）
+    pub fn play_custom(&self, path: &std::path::Path, volume_pct: u32) -> Result<(), String> {
+        let _ = (path, volume_pct, self.sink.is_some());
+        Err("自定义音频尚未实现".to_string())
+    }
     pub fn new() -> Self {
         match DeviceSinkBuilder::open_default_sink() {
             Ok(mut sink) => {

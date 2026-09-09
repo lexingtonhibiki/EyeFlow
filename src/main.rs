@@ -15,6 +15,7 @@ mod stats;
 mod tips;
 mod tray;
 mod ui;
+mod wallpaper;
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
