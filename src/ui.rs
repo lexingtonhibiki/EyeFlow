@@ -374,7 +374,7 @@ fn wallpaper_section(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec
             ui.horizontal(|ui| {
                 ui.label("　");
                 let width = (ui.available_width() - 8.0).clamp(240.0, 480.0);
-                wallpaper::preview(ui, &tex, fit, width);
+                wallpaper::preview(ui, &tex, fit, width, wallpaper::OverlayStyle::default());
             });
             ui.weak("　预览即为全屏遮罩的实际裁剪效果（16:9）；切换“自适应”即时更新。");
         }

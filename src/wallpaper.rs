@@ -5,6 +5,19 @@
 
 use crate::config::WallpaperFit;
 
+/// 严格模式蒙层样式：`alpha` 为不透明度(0.0~0.85)，`gradient` 为上深下浅的垂直渐变。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayStyle {
+    pub alpha: f32,
+    pub gradient: bool,
+}
+
+impl Default for OverlayStyle {
+    fn default() -> Self {
+        Self { alpha: 0.55, gradient: false }
+    }
+}
+
 /// 支持的图片扩展名
 pub const WALLPAPER_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif"];
 
@@ -150,6 +163,7 @@ pub fn paint_fullscreen(
     tex: &egui::TextureHandle,
     fit: WallpaperFit,
     rect: egui::Rect,
+    overlay: OverlayStyle,
 ) {
     let painter = ui.painter();
     // 深色底：Contain 的留边处可见，也兜住纹理未覆盖的区域
@@ -158,7 +172,18 @@ pub fn paint_fullscreen(
     let dest = dest_rel.translate(rect.min.to_vec2());
     painter.image(tex.id(), dest, uv, egui::Color32::WHITE);
     // 半透明暗色叠层：保证上层倒计时文字可读
-    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(140));
+    paint_overlay(painter, rect, overlay);
+}
+
+/// 叠层：`gradient=false` 均匀；`true` 为上深下浅的垂直渐变（顶 alpha → 35% alpha）。
+/// 【子任务实现】当前为均匀近似占位。
+fn paint_overlay(painter: &egui::Painter, rect: egui::Rect, overlay: OverlayStyle) {
+    let _ = overlay.gradient;
+    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(to_alpha8(overlay.alpha)));
+}
+
+pub fn to_alpha8(alpha01: f32) -> u8 {
+    (alpha01.clamp(0.0, 0.85) * 255.0).round() as u8
 }
 
 /// 设置窗中的 16:9 裁剪预览框（宽度 `width`），实时反映 `fit` 的裁剪结果。
@@ -167,6 +192,7 @@ pub fn preview(
     tex: &egui::TextureHandle,
     fit: WallpaperFit,
     width: f32,
+    overlay: OverlayStyle,
 ) -> egui::Response {
     let width = width.max(0.0);
     let size = egui::vec2(width, width * 9.0 / 16.0);

@@ -353,7 +353,7 @@ fn draw_break(
         .show(ui, |ui| {
             if let Some((tex, fit)) = wallpaper_tex {
                 // 自选背景先于文字绘制（同一图层按调用顺序叠放），内含暗色蒙层保证可读
-                wallpaper::paint_fullscreen(ui, tex, fit, ui.clip_rect());
+                wallpaper::paint_fullscreen(ui, tex, fit, ui.clip_rect(), wallpaper::OverlayStyle::default());
             }
             ui.vertical_centered(|ui| {
                 if fullscreen {

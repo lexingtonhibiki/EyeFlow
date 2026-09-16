@@ -17,6 +17,7 @@ mod tray;
 mod ui;
 mod update;
 mod wallpaper;
+mod edgedim;
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
