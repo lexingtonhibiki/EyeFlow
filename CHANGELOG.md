@@ -114,8 +114,8 @@ v0.2 是一次整体重写:从"一声提示音的空壳"补全为完整的"预�
 - egui 设置窗口与 `%APPDATA%\eyeflow\config.toml` 配置持久化
 - NSIS 安装包(HKCU\Run 自启 + 卸载清理)
 
-[0.5.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/lexingtonhibiki/eyeflow/releases/tag/v0.1.0
+[0.5.0]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/lexingtonhibiki/EyeFlow/releases/tag/v0.1.0

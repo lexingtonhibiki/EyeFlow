@@ -7,12 +7,12 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 - 免费开源(MIT) · Rust 单进程 · 无 Electron / WebView
 - 便携 exe 约 10 MB;空闲常驻约 16 MB(未打开窗口时),窗口显示期间因 GPU 上下文短暂升至约 200 MB,关闭后回落到 60~90 MB(显卡驱动残留,实测见 [ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md))
 
-[![CI](https://github.com/lexingtonhibiki/eyeflow/actions/workflows/ci.yml/badge.svg)](https://github.com/lexingtonhibiki/eyeflow/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/lexingtonhibiki/eyeflow?include_prereleases)](https://github.com/lexingtonhibiki/eyeflow/releases)
+[![CI](https://github.com/lexingtonhibiki/EyeFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/lexingtonhibiki/EyeFlow/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/lexingtonhibiki/eyeflow?include_prereleases)](https://github.com/lexingtonhibiki/EyeFlow/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64-0078d6)](#下载安装)
 
-> 说明:本文仓库地址均写作 `https://github.com/lexingtonhibiki/eyeflow`,以实际创建的仓库为准。
+> 说明:本文仓库地址均写作 `https://github.com/lexingtonhibiki/EyeFlow`,以实际创建的仓库为准。
 
 ## 界面预览
 
@@ -77,7 +77,7 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 
 ## 下载安装
 
-系统要求:Windows 10 / 11,x64。前往 [Releases](https://github.com/lexingtonhibiki/eyeflow/releases) 页面:
+系统要求:Windows 10 / 11,x64。前往 [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) 页面:
 
 ### 安装版
 
@@ -181,7 +181,7 @@ away_secs = 180                # 无输入多久判定为离开(秒)
 - **NSIS 3**(可选):仅在需要生成安装包时使用。
 
 ```bat
-git clone https://github.com/lexingtonhibiki/eyeflow.git
+git clone https://github.com/lexingtonhibiki/EyeFlow.git
 cd eyeflow
 cargo build --release
 :: 产物:target\release\eyeflow.exe(约 10 MB)
