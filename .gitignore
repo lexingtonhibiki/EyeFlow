@@ -14,3 +14,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.rs.bk
+
+# 本机交接记录(不入库)
+/PROJECT_STATE.md
