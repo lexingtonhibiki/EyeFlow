@@ -133,20 +133,20 @@ mod tests {
         let pos = b.position.unwrap();
         let size = b.inner_size.unwrap();
         assert_eq!(pos, egui::pos2(0.0, 0.0));
-        assert_eq!(size, [1000.0, 60.0]);
+        assert_eq!(size, egui::vec2(1000.0, 60.0));
         let (_, b2) = viewport(Edge::Right, 1, m);
         assert_eq!(b2.position.unwrap(), egui::pos2(1000.0 - 60.0, 0.0));
-        assert_eq!(b2.inner_size.unwrap(), [60.0, 800.0]);
+        assert_eq!(b2.inner_size.unwrap(), egui::vec2(60.0, 800.0));
         let (_, b3) = viewport(Edge::Bottom, 1, m);
         assert_eq!(b3.position.unwrap(), egui::pos2(0.0, 800.0 - 60.0));
         let (_, b4) = viewport(Edge::Left, 1, m);
-        assert_eq!(b4.inner_size.unwrap(), [60.0, 800.0]);
+        assert_eq!(b4.inner_size.unwrap(), egui::vec2(60.0, 800.0));
     }
 
     #[test]
     fn edge_width_is_capped_on_tiny_screens() {
         let m = egui::vec2(100.0, 100.0);
         let (_, b) = viewport(Edge::Left, 1, m);
-        assert_eq!(b.inner_size.unwrap(), [25.0, 100.0]);
+        assert_eq!(b.inner_size.unwrap(), egui::vec2(25.0, 100.0));
     }
 }
