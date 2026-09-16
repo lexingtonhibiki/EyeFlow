@@ -80,7 +80,7 @@ v0.2 把它重写成一个真正“会看情况”的护眼提醒：**预告 →
 - 夜间“降级而非停止”、自定义热键、Toast 辅助通道、winget 清单：见 README Roadmap。
 
 ## 7. 迁移说明
-- 新仓库 `E:\Projects\MyGitHub\eyeflow` 已 `git init`，基线提交为 v0.1 原始源码，随后一次提交为 v0.2 重写；未推送到远端。`Cargo.toml` 里 `repository` 写作 `https://github.com/lexingtonhibiki/eyeflow`（按你的 git 用户名推断），创建远端后 `git remote add origin … && git push -u origin main`，打 `v0.2.0` 标签即触发发布流水线。
+- 新仓库 `E:\Projects\MyGitHub\eyeflow` 已 `git init`，基线提交为 v0.1 原始源码，随后一次提交为 v0.2 重写；未推送到远端。`Cargo.toml` 里 `repository` 写作 `https://github.com/lexingtonhibiki/EyeFlow`（按你的 git 用户名推断），创建远端后 `git remote add origin … && git push -u origin main`，打 `v0.2.0` 标签即触发发布流水线。
 - 原目录 `E:\Workspaces\Hanako\eyeflow` 未删除、未修改源码，只新增了 `docs/research/*.md` 调研报告；其中 4 个 `target*` 目录（≈970 MB）是 rustup 迁盘留下的空壳缓存，确认无用后可整体删除该旧目录。
 - 本地构建：`cargo build --release`（GNU 工具链 + windres 已验证），`build-release.cmd` 一键生成 `dist\EyeFlow-<ver>-Setup.exe`。
 

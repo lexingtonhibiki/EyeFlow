@@ -8,7 +8,7 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 - 便携 exe 约 10 MB;空闲常驻约 16 MB(未打开窗口时),窗口显示期间因 GPU 上下文短暂升至约 200 MB,关闭后回落到 60~90 MB(显卡驱动残留,实测见 [ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md))
 
 [![CI](https://github.com/lexingtonhibiki/EyeFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/lexingtonhibiki/EyeFlow/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/lexingtonhibiki/eyeflow?include_prereleases)](https://github.com/lexingtonhibiki/EyeFlow/releases)
+[![Release](https://img.shields.io/github/v/release/lexingtonhibiki/EyeFlow?include_prereleases)](https://github.com/lexingtonhibiki/EyeFlow/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64-0078d6)](#下载安装)
 
@@ -212,7 +212,7 @@ CI 会跑 `cargo test --locked` 与 `cargo build --release --locked`;推送 `v*.
 
 EyeFlow **默认不发起任何网络请求**:无遥测、无账号、无自动下载。全部数据只有两个文件(`config.toml` 与 `stats.toml`),都保存在本机 `%APPDATA%\eyeflow\`。键盘监测仅在本进程内记录按键时间戳用于心流判定——不记录按键内容、不写盘、不上传。
 
-唯一的可选联网功能是**更新检查**(设置 → 系统,默认关闭):开启后每 24 小时至多访问一次 GitHub Releases API(`api.github.com/repos/lexingtonhibiki/eyeflow/releases/latest`),只比对版本号并在设置窗提示,不下载、不安装任何文件。
+唯一的可选联网功能是**更新检查**(设置 → 系统,默认关闭):开启后每 24 小时至多访问一次 GitHub Releases API(`api.github.com/repos/lexingtonhibiki/EyeFlow/releases/latest`),只比对版本号并在设置窗提示,不下载、不安装任何文件。
 
 ## Roadmap
 
