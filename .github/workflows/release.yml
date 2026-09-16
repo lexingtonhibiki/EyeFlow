@@ -43,11 +43,14 @@ jobs:
       # installer.nsi 内的 Icon/File/OutFile 相对路径以脚本所在目录(installer\)解析,
       # dist\ 须预先存在;PRODUCT_VERSION 由 /D 注入(不带 v 前缀)。
       # 产物: dist\EyeFlow-<ver>-Setup.exe
+      # choco 安装 NSIS 后当前任务的 PATH 不会刷新,优先用绝对路径,回退到 shim。
       - name: Build installer
         shell: cmd
         run: |
           if not exist dist mkdir dist
-          makensis /DPRODUCT_VERSION=${{ steps.ver.outputs.version }} installer\installer.nsi
+          set "NSIS_EXE=C:\Program Files (x86)\NSIS\makensis.exe"
+          if not exist "%NSIS_EXE%" set "NSIS_EXE=makensis"
+          "%NSIS_EXE%" /DPRODUCT_VERSION=${{ steps.ver.outputs.version }} installer\installer.nsi
 
       - name: Package portable zip and SHA256
         shell: pwsh
