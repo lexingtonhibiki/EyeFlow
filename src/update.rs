@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::config::Config;
 
 pub const RELEASES_URL: &str = "https://github.com/lexingtonhibiki/eyeflow/releases";
-const API_URL: &str = "https://api.github.com/repos/lexingtonhibiki/eyeflow/releases/latest";
+const API_URL: &str = "https://api.github.com/repos/lexingtonhibiki/EyeFlow/releases/latest";
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
 pub fn current_version() -> &'static str {
