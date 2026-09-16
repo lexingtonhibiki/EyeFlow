@@ -224,6 +224,10 @@ EyeFlow **默认不发起任何网络请求**:无遥测、无账号、无自动�
 - [ ] winget 包(`winget install eyeflow`)
 - [ ] 浮窗改为 Win32 自绘(GDI/Direct2D),彻底摆脱 GL 上下文,消除显卡驱动的内存残留
 
+## 贡献
+
+分支模型(`main` 稳定 / `dev` 集成 / `feature/*` 工作)、发布流程与开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 ## 设计与决策记录
 
 EyeFlow 的关键决策都有编号的决策记录(ADR)与调研支撑:
