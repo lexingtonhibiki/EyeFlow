@@ -24,6 +24,7 @@ enum PanelKind {
     HeadsUp,
     Break,
     BreakFullscreen,
+    Flash,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +39,7 @@ pub struct UiSession<'a> {
     panel_epoch: u64,
     panel_kind: PanelKind,
     panel_noactivate_applied: bool,
+    edgedim_applied: bool,
     /// 会话结束条件满足后再多画几帧，避免阶段切换瞬间反复拆建 GL 上下文
     idle_frames: u32,
     /// 严格模式背景图纹理（随会话生命周期）
@@ -56,6 +58,7 @@ impl<'a> UiSession<'a> {
             panel_epoch: 0,
             panel_kind: PanelKind::None,
             panel_noactivate_applied: false,
+            edgedim_applied: false,
             idle_frames: 0,
             wallpaper: WallpaperCache::new(),
         }
@@ -63,15 +66,21 @@ impl<'a> UiSession<'a> {
 
     fn show_panel(&mut self, ctx: &egui::Context, now: Instant) {
         let core = &self.rt.core;
-        let kind = match core.phase {
-            Phase::Idle => PanelKind::None,
-            _ if !core.cfg.visual_enabled => PanelKind::None,
-            Phase::HeadsUp { .. } => PanelKind::HeadsUp,
-            Phase::Break { .. } => {
-                if core.cfg.strict_mode {
-                    PanelKind::BreakFullscreen
-                } else {
-                    PanelKind::Break
+        // 休息完成的“欢迎回来”闪屏（独立于阶段机）
+        let flash = core.cfg.visual_enabled && core.flash_active(now);
+        let kind = if flash {
+            PanelKind::Flash
+        } else {
+            match core.phase {
+                Phase::Idle => PanelKind::None,
+                _ if !core.cfg.visual_enabled => PanelKind::None,
+                Phase::HeadsUp { .. } => PanelKind::HeadsUp,
+                Phase::Break { .. } => {
+                    if core.cfg.strict_mode {
+                        PanelKind::BreakFullscreen
+                    } else {
+                        PanelKind::Break
+                    }
                 }
             }
         };
@@ -83,6 +92,29 @@ impl<'a> UiSession<'a> {
             self.panel_epoch += 1;
             self.panel_kind = kind;
             self.panel_noactivate_applied = false;
+            self.edgedim_applied = false;
+        }
+
+        // 预告期的四边渐暗（4 条半透明细边窗口；与预告浮窗共享 epoch，切换即重建）
+        let monitor0 = monitor_size(ctx);
+        if kind == PanelKind::HeadsUp {
+            for edge in crate::edgedim::ALL {
+                let (dim_id, dim_builder) =
+                    crate::edgedim::viewport(edge, self.panel_epoch, monitor0);
+                ctx.show_viewport_immediate(dim_id, dim_builder, |ui, _class| {
+                    crate::edgedim::paint(ui);
+                    ui.ctx().request_repaint_after(Duration::from_millis(250));
+                });
+            }
+            if !self.edgedim_applied {
+                // 点击穿透 + 整窗半透明（每个 epoch 的新窗口施加一次）
+                self.edgedim_applied = crate::edgedim::apply_window_styles(
+                    self.panel_epoch,
+                    crate::edgedim::EDGE_ALPHA,
+                );
+            }
+        } else {
+            self.edgedim_applied = false;
         }
 
         let id = ViewportId::from_hash_of(("eyeflow-panel", self.panel_epoch));
@@ -107,17 +139,26 @@ impl<'a> UiSession<'a> {
                     .with_position([(monitor.x - w) / 2.0, (monitor.y - h) / 2.0])
             }
             PanelKind::BreakFullscreen => base.with_fullscreen(true),
+            PanelKind::Flash => {
+                let (w, h) = (420.0, 132.0);
+                base.with_inner_size([w, h])
+                    .with_position([(monitor.x - w) / 2.0, (monitor.y - h) / 2.0])
+            }
             PanelKind::None => unreachable!(),
         };
 
-        // 严格模式背景图：在借用 rt 之前取好纹理（TextureHandle 克隆是 Arc 级别）
+        // 严格模式背景图 + 蒙层样式：在借用 rt 之前取好（克隆都是 Arc / Copy 级别）
         let wall = if kind == PanelKind::BreakFullscreen {
             let path = self.rt.core.cfg.strict_wallpaper_path.clone();
             let fit = self.rt.core.cfg.strict_wallpaper_fit;
+            let overlay = wallpaper::OverlayStyle {
+                alpha: self.rt.core.cfg.strict_overlay_pct as f32 / 100.0,
+                gradient: self.rt.core.cfg.strict_overlay_gradient,
+            };
             self.wallpaper
                 .get(ctx, path.as_deref())
                 .cloned()
-                .map(|tex| (tex, fit))
+                .map(|tex| (tex, fit, overlay))
         } else {
             None
         };
@@ -131,13 +172,18 @@ impl<'a> UiSession<'a> {
             let action = match kind {
                 PanelKind::HeadsUp => draw_heads_up(ui, &rt.core, now),
                 PanelKind::Break => draw_break(ui, &rt.core, now, false, None),
-                PanelKind::BreakFullscreen => {
-                    draw_break(ui, &rt.core, now, true, wall.as_ref().map(|(t, f)| (t, *f)))
-                }
+                PanelKind::BreakFullscreen => draw_break(
+                    ui,
+                    &rt.core,
+                    now,
+                    true,
+                    wall.as_ref().map(|(t, f, o)| (t, *f, *o)),
+                ),
+                PanelKind::Flash => draw_flash(ui, &rt.core),
                 PanelKind::None => None,
             };
             match action {
-                Some(PanelAction::StartNow) => rt.core.start_break_now(now),
+                Some(PanelAction::StartNow) => rt.on_manual_break_start(now),
                 Some(PanelAction::Postpone) => {
                     rt.core.postpone(now);
                 }
@@ -212,7 +258,8 @@ impl eframe::App for UiSession<'_> {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
             return;
         }
-        if self.rt.needs_ui() {
+        let now = Instant::now();
+        if self.rt.needs_ui(now) {
             self.idle_frames = 0;
         } else {
             self.idle_frames += 1;
@@ -310,12 +357,36 @@ fn draw_heads_up(ui: &mut egui::Ui, core: &Core, now: Instant) -> Option<PanelAc
     action
 }
 
+fn draw_flash(ui: &mut egui::Ui, core: &Core) -> Option<PanelAction> {
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::NONE
+                .fill(ui.visuals().panel_fill)
+                .stroke(egui::Stroke::new(1.0, accent(ui).gamma_multiply(0.6)))
+                .inner_margin(18.0),
+        )
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "👏 做得好！今日第 {} 次休息",
+                        core.stats.completed_today()
+                    ))
+                    .size(17.0)
+                    .strong(),
+                );
+                ui.weak("回来啦——眨眨眼，看看 6 米外。");
+            });
+        });
+    None
+}
+
 fn draw_break(
     ui: &mut egui::Ui,
     core: &Core,
     now: Instant,
     fullscreen: bool,
-    wallpaper_tex: Option<(&egui::TextureHandle, WallpaperFit)>,
+    wallpaper_tex: Option<(&egui::TextureHandle, WallpaperFit, wallpaper::OverlayStyle)>,
 ) -> Option<PanelAction> {
     let Phase::Break {
         started,
@@ -333,6 +404,7 @@ fn draw_break(
     let mut action = None;
 
     let fill = if fullscreen {
+        // 有壁纸时 paint_fullscreen 会自己铺底色，这里只是兜底
         Color32::from_rgb(14, 18, 26)
     } else {
         ui.visuals().panel_fill
@@ -351,9 +423,9 @@ fn draw_break(
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(fill).inner_margin(24.0))
         .show(ui, |ui| {
-            if let Some((tex, fit)) = wallpaper_tex {
-                // 自选背景先于文字绘制（同一图层按调用顺序叠放），内含暗色蒙层保证可读
-                wallpaper::paint_fullscreen(ui, tex, fit, ui.clip_rect(), wallpaper::OverlayStyle::default());
+            if let Some((tex, fit, overlay)) = wallpaper_tex {
+                // 自选背景 + 可调蒙层先于文字绘制（同一图层按调用顺序叠放）
+                wallpaper::paint_fullscreen(ui, tex, fit, ui.clip_rect(), overlay);
             }
             ui.vertical_centered(|ui| {
                 if fullscreen {

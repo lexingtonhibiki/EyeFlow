@@ -12,7 +12,7 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::Shell::{
-    SHQueryUserNotificationState, QUNS_ACCEPTS_NOTIFICATIONS, QUNS_NOT_PRESENT,
+    SHQueryUserNotificationState, QUNS_PRESENTATION_MODE, QUNS_QUIET_TIME,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, GetMessageW, GetShellWindow, GetWindowLongW,
@@ -28,10 +28,20 @@ use crate::event::{wake_ui, Event};
 
 /// 采样一次传感器快照（约 3 个廉价 Win32 调用）。
 pub fn sample_sensors() -> Sensors {
+    // QUNS 忙碌（演示模式等）或“前台全屏无边框窗口”→ 游戏 / 全屏；
+    // QUNS_RUNNING_D3D_FULL_SCREEN / QUNS_APP 必须与矩形佐证同时出现：
+    // 部分机器（后台 D3D 挂件、崩溃残留）会长期谎报独占全屏，
+    // 无条件采信会把视觉提醒永久静音（“效果不佳”的环境性放大器）。
+    let rect_fs = foreground_is_fullscreen();
+    let quns = unsafe { SHQueryUserNotificationState() };
+    // D3D 独占 / 商店应用全屏不单独采信（长期谎报的机器上会永久静音提醒），
+    // 只要矩形佐证（前台全屏无边框）成立，rect_fs 本身就会置为全屏。
+    let quns_busy = matches!(quns, Ok(st) if st == QUNS_PRESENTATION_MODE || st == QUNS_QUIET_TIME);
+    let fullscreen = quns_busy || rect_fs;
     Sensors {
         idle_secs: idle_millis() / 1000,
-        fullscreen: foreground_is_fullscreen(),
-        interruptible: system_accepts_notifications(),
+        fullscreen,
+        interruptible: !fullscreen,
     }
 }
 
@@ -83,14 +93,6 @@ pub fn idle_millis() -> u64 {
         } else {
             0
         }
-    }
-}
-
-/// 官方“此刻是否适合打扰用户”。锁屏/屏保（NOT_PRESENT）交给空闲逻辑处理，因此视为可打扰。
-pub fn system_accepts_notifications() -> bool {
-    match unsafe { SHQueryUserNotificationState() } {
-        Ok(state) => state == QUNS_ACCEPTS_NOTIFICATIONS || state == QUNS_NOT_PRESENT,
-        Err(_) => true,
     }
 }
 

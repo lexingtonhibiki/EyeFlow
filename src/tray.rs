@@ -76,8 +76,16 @@ impl Tray {
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_item)?;
 
-        let rgba = crate::icon::render_rgba(32);
-        let icon = Icon::from_rgba(rgba, 32, 32)?;
+        // 按 DPI 动态渲染托盘图标（16/24/32/48…），避免固定 32×32 被 Shell 拉伸发糊
+        #[allow(clippy::missing_safety_doc)]
+        let icon_size = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                windows::Win32::UI::WindowsAndMessaging::SM_CXICON,
+            )
+            .clamp(16, 64) as u32
+        };
+        let rgba = crate::icon::render_rgba(icon_size);
+        let icon = Icon::from_rgba(rgba, icon_size, icon_size)?;
 
         let tooltip = "EyeFlow 护眼提醒".to_string();
         let tray = TrayIconBuilder::new()

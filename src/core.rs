@@ -85,6 +85,11 @@ const LONG_REPROMPT: Duration = Duration::from_secs(600);
 const AWAY_RESETS_ACCUM: Duration = Duration::from_secs(15 * 60);
 /// 暂停 / 免打扰结束后，若早已到点，多久后投递
 const RESUME_GRACE: Duration = Duration::from_secs(60);
+/// 相邻两次 tick 超过该间隔视为经历了睡眠 / 挂起。
+/// 10 分钟以内的挂起较罕见且只影响一条预告；完整的电源事件桥在 Roadmap。
+const SLEEP_GAP: Duration = Duration::from_secs(600);
+/// 休息完成后的“欢迎回来”闪屏时长
+const COMPLETED_FLASH: Duration = Duration::from_secs(3);
 
 pub struct Core {
     pub cfg: Config,
@@ -98,6 +103,8 @@ pub struct Core {
     pub screen_accum: Duration,
     /// 休息面板轮换到第几条贴士
     pub tip_index: usize,
+    /// 刚完成一次休息的“欢迎回来”闪屏截止时间（None = 无）
+    pub completed_flash_until: Option<Instant>,
 
     due: Instant,
     last_tick: Instant,
@@ -120,6 +127,7 @@ impl Core {
             paused_until: None,
             screen_accum: Duration::ZERO,
             tip_index: 0,
+            completed_flash_until: None,
             due: now,
             last_tick: now,
             keys: VecDeque::with_capacity(256),
@@ -252,6 +260,17 @@ impl Core {
         let dt = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
         self.prune_keys(now);
+
+        // 0. 睡眠 / 挂起会把整段时长算进 dt（Windows 计时含睡眠时间）。
+        //    超过 10 分钟视为“离席归来”：当作一次自然休息，清零用屏累计并顺延，
+        //    避免醒来瞬间被轰炸预告、或误升 15 分钟长休息。
+        if dt > SLEEP_GAP {
+            self.screen_accum = Duration::ZERO;
+            self.phase = Phase::Idle;
+            self.stats.record_completed(Completed::Natural);
+            self.schedule_next(now);
+            return actions;
+        }
 
         // 1. 上下文状态
         let idle = Duration::from_secs(self.sensors.idle_secs);
@@ -405,8 +424,14 @@ impl Core {
         if is_long {
             self.screen_accum = Duration::ZERO;
         }
+        self.completed_flash_until = Some(now + COMPLETED_FLASH);
         self.phase = Phase::Idle;
         self.schedule_next(now);
+    }
+
+    /// 休息刚完成的“欢迎回来”闪屏是否仍应显示。
+    pub fn flash_active(&self, now: Instant) -> bool {
+        self.completed_flash_until.is_some_and(|t| now < t)
     }
 
     fn schedule_next(&mut self, now: Instant) {
@@ -461,6 +486,9 @@ mod tests {
     fn desktop_full_cycle_heads_up_then_break_then_complete() {
         let t0 = Instant::now();
         let mut c = core(1200, t0);
+        // 相邻 tick 间隔都保持在 10 分钟内（否则被判定为睡眠 / 挂起）
+        assert!(c.tick(t0 + S(100), false).is_empty());
+        assert!(c.tick(t0 + S(500), false).is_empty());
         assert!(c.tick(t0 + S(1000), false).is_empty());
         assert_eq!(c.phase, Phase::Idle);
 
@@ -658,9 +686,10 @@ mod tests {
         c.tick(t2 + again - S(29), false);
         assert!(matches!(c.phase, Phase::HeadsUp { is_long: true, .. }));
 
-        // 完成长休息 → 累计清零
+        // 完成长休息 → 累计清零（中途补一次 tick，避免间隔超过 10 分钟被判睡眠）
         c.tick(t2 + again + S(1), false);
         assert!(matches!(c.phase, Phase::Break { is_long: true, .. }));
+        c.tick(t2 + again + S(451), false);
         c.tick(t2 + again + S(901), false);
         assert_eq!(c.stats.completed_long, 1);
         assert_eq!(c.screen_accum, Duration::ZERO);
@@ -684,6 +713,33 @@ mod tests {
     }
 
     #[test]
+    fn sleep_gap_treated_as_natural_rest_and_reschedules() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        c.tick(t0 + S(100), false);
+        // 相邻 tick 间隔 900 秒 => 睡眠 / 挂起
+        c.tick(t0 + S(100) + S(900), false);
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.stats.completed_natural, 1);
+        assert_eq!(c.screen_accum, Duration::ZERO);
+        let now = t0 + S(1001);
+        assert!(c.next_break_in(now) >= S(599), "必须顺延而不是立即轰炸");
+        assert!(!c.flash_active(now));
+    }
+
+    #[test]
+    fn completed_break_flashes_welcome_back() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        c.tick(t0 + S(586), false);
+        c.tick(t0 + S(601), false);
+        assert!(matches!(c.phase, Phase::Break { .. }));
+        c.tick(t0 + S(632), false);
+        assert!(c.flash_active(t0 + S(633)), "完成后 3 秒内显示欢迎回来");
+        assert!(!c.flash_active(t0 + S(663)), "3 秒后自动消失");
+    }
+
+    #[test]
     fn sound_only_mode_delivers_cue_and_counts() {
         let t0 = Instant::now();
         let mut c = core(600, t0);
@@ -704,3 +760,4 @@ mod tests {
         assert_eq!(c.stats.completed_short, 1);
     }
 }
+// 追加测试到 tests 模块（由集成脚本定位插入）

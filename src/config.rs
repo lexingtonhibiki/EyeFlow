@@ -193,6 +193,18 @@ pub struct Config {
     /// 上次检查更新的 Unix 时间戳（秒）
     #[serde(default)]
     pub update_last_checked: Option<u64>,
+    /// 点击『现在开始』/『立即休息』时播放提示音（结束音照常）
+    #[serde(default = "d_true")]
+    pub start_cue_enabled: bool,
+    /// 休息进行中按 Esc 跳过（严格模式下不可用）
+    #[serde(default = "d_true")]
+    pub esc_skip_enabled: bool,
+    /// 严格模式蒙层浓度（0~85，百分比）
+    #[serde(default = "d_overlay_pct")]
+    pub strict_overlay_pct: u32,
+    /// 严格模式蒙层用上深下浅的垂直渐变
+    #[serde(default)]
+    pub strict_overlay_gradient: bool,
 }
 
 fn d_true() -> bool {
@@ -234,6 +246,9 @@ fn d_cue_volume() -> u32 {
 fn d_cue_duration() -> u64 {
     1
 }
+fn d_overlay_pct() -> u32 {
+    55
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -263,6 +278,10 @@ impl Default for Config {
             strict_wallpaper_fit: WallpaperFit::default(),
             update_check_enabled: false,
             update_last_checked: None,
+            start_cue_enabled: true,
+            esc_skip_enabled: true,
+            strict_overlay_pct: d_overlay_pct(),
+            strict_overlay_gradient: false,
         }
     }
 }
@@ -346,6 +365,7 @@ impl Config {
         self.away_secs = self.away_secs.clamp(60, 3600);
         self.cue_volume_pct = self.cue_volume_pct.clamp(50, 200);
         self.cue_duration_secs = self.cue_duration_secs.clamp(1, 5);
+        self.strict_overlay_pct = self.strict_overlay_pct.clamp(0, 85);
         self
     }
 

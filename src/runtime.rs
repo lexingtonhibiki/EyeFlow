@@ -42,6 +42,8 @@ pub struct Runtime {
     tx: Sender<Event>,
     hotkeys: Option<GlobalHotKeyManager>,
     registered_hotkey: Option<HotKey>,
+    /// 休息期间临时注册的 Esc（面板不抢焦点收不到键盘，只能走全局热键）
+    esc_registered: bool,
 }
 
 impl Runtime {
@@ -65,6 +67,7 @@ impl Runtime {
             tx,
             hotkeys,
             registered_hotkey: None,
+            esc_registered: false,
         };
         if let Err(e) = rt.apply_hotkey_enabled(rt.core.cfg.hotkey_enabled) {
             log::warn!("全局热键注册失败: {e}");
@@ -153,10 +156,42 @@ impl Runtime {
         self.registered_hotkey.is_some()
     }
 
+    /// 手动开始休息（预告“现在开始”/ 托盘 / 热键）：可选播放一声开始提示音。
+    pub fn on_manual_break_start(&mut self, now: Instant) {
+        self.core.start_break_now(now);
+        if self.core.cfg.sound_enabled && self.core.cfg.start_cue_enabled {
+            self.play_cue(false);
+        }
+    }
+
+    /// 休息期间临时注册 / 注销 Esc 全局热键（每帧同步，开销可忽略）。
+    fn sync_esc_hotkey(&mut self) {
+        let wanted = self.core.cfg.esc_skip_enabled
+            && !self.core.cfg.strict_mode
+            && matches!(self.core.phase, Phase::Break { .. });
+        if wanted == self.esc_registered {
+            return;
+        }
+        let Some(mgr) = &self.hotkeys else {
+            return;
+        };
+        let esc = HotKey::new(None, Code::Escape);
+        if wanted {
+            match mgr.register(esc) {
+                Ok(()) => self.esc_registered = true,
+                Err(e) => log::debug!("Esc 热键注册失败: {e}"),
+            }
+        } else if self.esc_registered {
+            let _ = mgr.unregister(esc);
+            self.esc_registered = false;
+        }
+    }
+
     /// 是否需要一个 UI 会话（有窗口要显示）。
-    pub fn needs_ui(&self) -> bool {
+    pub fn needs_ui(&self, now: Instant) -> bool {
         self.settings.is_some()
             || (self.core.cfg.visual_enabled && !matches!(self.core.phase, Phase::Idle))
+            || (self.core.cfg.visual_enabled && self.core.flash_active(now))
     }
 
     /// 处理所有待处理输入并推进调度核心一步。两种模式都调用它。
@@ -171,14 +206,19 @@ impl Runtime {
         for cmd in self.tray.poll() {
             self.handle_tray(cmd, now);
         }
+        self.sync_esc_hotkey();
         while let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() {
-            let active = self
+            let pressed = ev.state == HotKeyState::Pressed;
+            let user_hotkey = self
                 .registered_hotkey
                 .as_ref()
                 .is_some_and(|hk| ev.id == hk.id());
-            if ev.state == HotKeyState::Pressed && active {
+            if pressed && user_hotkey {
                 log::info!("热键：立即休息");
-                self.core.start_break_now(Instant::now());
+                self.on_manual_break_start(now);
+            } else if pressed && self.esc_registered {
+                log::info!("Esc：跳过本次休息");
+                self.core.skip(now);
             }
         }
 
@@ -257,7 +297,7 @@ impl Runtime {
                     s.draft.enabled = enabled;
                 }
             }
-            TrayCommand::RestNow => self.core.start_break_now(now),
+            TrayCommand::RestNow => self.on_manual_break_start(now),
             TrayCommand::TogglePause => {
                 if self.core.is_paused(now) {
                     self.core.resume();
@@ -307,10 +347,27 @@ impl Runtime {
                 }
                 log::info!("配置已更新");
             }
-            SettingsAction::RestNow => self.core.start_break_now(now),
+            SettingsAction::RestNow => self.on_manual_break_start(now),
             SettingsAction::ResetDefaults => {
+                let defaults = Config::default();
                 if let Some(s) = &mut self.settings {
-                    s.draft = Config::default();
+                    s.draft = defaults.clone();
+                }
+                // 即时保存语义：恢复默认也立即落盘
+                self.core.apply_config(defaults.clone(), now);
+                if let Err(e) = defaults.save() {
+                    log::error!("保存默认配置失败: {e}");
+                }
+                self.tray.set_enabled(defaults.enabled);
+                self.tray.set_sound(defaults.sound_enabled);
+                if defaults.hotkey_enabled != self.registered_hotkey.is_some() {
+                    if let Err(e) = self.apply_hotkey_enabled(defaults.hotkey_enabled) {
+                        log::error!("应用热键设置失败: {e}");
+                    }
+                }
+                if let Some(s) = &mut self.settings {
+                    s.saved = defaults;
+                    s.saved_at = Some(now);
                 }
             }
             SettingsAction::SetAutostart(on) => {
@@ -335,18 +392,16 @@ impl Runtime {
                     s.draft.hotkey_enabled = on;
                 }
             }
-            SettingsAction::Preview(preset) => self.audio.play_cue(
+            SettingsAction::Preview {
                 preset,
-                self.core.cfg.cue_volume_pct,
-                self.core.cfg.cue_duration_secs,
-            ),
-            SettingsAction::PreviewCustom(path) => {
-                let volume = self
-                    .settings
-                    .as_ref()
-                    .map(|s| s.draft.cue_volume_pct)
-                    .unwrap_or(self.core.cfg.cue_volume_pct);
-                if let Err(e) = self.audio.play_custom(std::path::Path::new(&path), volume) {
+                volume_pct,
+                duration_secs,
+            } => self.audio.play_cue(preset, volume_pct, duration_secs),
+            SettingsAction::PreviewCustom { path, volume_pct } => {
+                if let Err(e) = self
+                    .audio
+                    .play_custom(std::path::Path::new(&path), volume_pct)
+                {
                     if let Some(s) = &mut self.settings {
                         s.custom_sound_error = Some(format!("播放失败：{e}"));
                     }
@@ -428,10 +483,13 @@ impl Runtime {
             "已暂停 1 小时".to_string()
         } else {
             match self.core.phase {
-                Phase::Idle => format!(
-                    "下次休息约 {}后",
-                    ui::human_duration(self.core.next_break_in(now))
-                ),
+                // 具体钟点比“约 12 分钟后”更直观（快赢审计 #4）
+                Phase::Idle => {
+                    let at = chrono::Local::now()
+                        + chrono::Duration::from_std(self.core.next_break_in(now))
+                            .unwrap_or_default();
+                    format!("下次休息 {}", at.format("%H:%M"))
+                }
                 Phase::HeadsUp { .. } => "即将休息".to_string(),
                 Phase::Break { .. } => "休息中".to_string(),
             }

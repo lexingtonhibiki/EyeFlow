@@ -156,6 +156,10 @@ visual_enabled = true          # 视觉提醒(预告浮窗 + 休息界面);关�
 strict_mode = false            # 严格模式:休息界面变为全屏遮罩
 strict_wallpaper_path = ""     # 严格模式背景图片(png / jpg / webp / bmp / gif),留空为纯暗色
 strict_wallpaper_fit = "cover" # 背景自适应:cover(铺满裁剪)/ contain(完整显示)/ stretch(拉伸)
+strict_overlay_pct = 55        # 严格模式蒙层浓度 0~85%
+strict_overlay_gradient = false # 蒙层用上深下浅的垂直渐变
+start_cue_enabled = true       # 点击“现在开始/立即休息”时播放提示音
+esc_skip_enabled = true        # 休息中按 Esc 跳过(严格模式下不可用)
 update_check_enabled = false   # 启动时检查更新(每 24 小时至多一次,仅访问 GitHub Releases API,不下载文件)
 quiet_start = "00:00"          # 免打扰时段开始
 quiet_end = "08:00"            # 免打扰时段结束
@@ -212,7 +216,9 @@ EyeFlow **默认不发起任何网络请求**:无遥测、无账号、无自动�
 
 ## Roadmap
 
+- [x] 预告期四边渐暗;休息完成“欢迎回来”反馈;休息中按 Esc 跳过
 - [ ] 多显示器:休息界面 / 严格模式遮罩覆盖所有屏幕
+- [ ] 完整的电源 / 锁屏事件桥(睡眠超 10 分钟已自动按离席处理)
 - [ ] 自定义全局热键
 - [ ] Toast / 系统通知作为辅助提醒通道
 - [ ] winget 包(`winget install eyeflow`)

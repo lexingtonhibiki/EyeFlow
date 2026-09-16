@@ -8,6 +8,7 @@ mod core;
 mod detector;
 mod event;
 // 与 build.rs / examples 共享；ICO 编码部分在主程序里不会用到
+mod edgedim;
 #[allow(dead_code)]
 mod icon;
 mod runtime;
@@ -17,7 +18,6 @@ mod tray;
 mod ui;
 mod update;
 mod wallpaper;
-mod edgedim;
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -75,6 +75,7 @@ fn main() {
     let demo = std::env::var_os("EYEFLOW_DEMO").is_some();
     if demo {
         core.cfg.heads_up_secs = 45; // 仅内存中生效：把预告窗口拉长便于截图验收
+        core.cfg.away_secs = 7200; // 演示时忽略离开判定，保证一定会投递
         core.set_due_in(Instant::now(), Duration::from_secs(60));
         log::info!("演示模式：60 秒后触发提醒，预告 45 秒");
     }
@@ -99,7 +100,7 @@ fn main() {
             break;
         }
         let backoff = ui_backoff_until.is_some_and(|t| now < t);
-        if rt.needs_ui() && !backoff {
+        if rt.needs_ui(now) && !backoff {
             match run_ui_session(&mut rt) {
                 Ok(()) => ui_backoff_until = None,
                 Err(e) => {

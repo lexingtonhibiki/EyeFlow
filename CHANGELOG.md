@@ -4,6 +4,32 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.5.0] - Unreleased
+
+按“低成本高体验”调研（docs/research/07、08）落地的第一批改进。
+
+### Added
+
+- **预告期四边渐暗**：预告浮窗之外，屏幕四边同时出现向内渐隐的暗色渐变（透明、点击穿透、不抢焦点），余光即可感知——LookAway / SafeEyes 验证过的手法
+- **休息完成“欢迎回来”闪屏**：完成后居中停留 3 秒显示“👏 做得好！今日第 N 次休息”，给正反馈
+- **休息中按 Esc 跳过**：休息期间临时注册 Esc 全局热键（面板不抢焦点收不到键盘）；设置可关；严格模式下不可用
+- **严格模式蒙层可调**：浓度 0~85% 滑条 + “上深下浅”渐变开关，实时反映在裁剪预览里
+- **『现在开始』/『立即休息』可选播放提示音**（默认开，设置可关）
+- **托盘图标按 DPI 动态渲染**（16/24/32/48），高分屏不再发糊
+
+### Fixed
+
+- **部分机器长期谎报“D3D 独占全屏”导致视觉提醒被永久静音**（后台 D3D 挂件 / 崩溃残留会让 SHQueryUserNotificationState 恒为 RUNNING_D3D_FULL_SCREEN）——现在 D3D / 商店应用全屏必须与“前台全屏无边框窗口”矩形佐证同时出现才判定为游戏
+- 预告期的边缘渐暗 / 休息面板会把自己判成“全屏应用”——全屏检测排除本进程窗口
+- 演示模式（EYEFLOW_DEMO）忽略离开判定，保证演示一定投递
+- **睡眠 / 挂起轰炸**：Windows 计时包含睡眠时间，合盖超过 10 分钟后开盖会立即轰炸预告、并把睡眠时长灌进用屏累计（误升长休息）。现在跨过 10 分钟阈值视为“离席归来”：记一次自然休息、清零累计、顺延排期（完整的电源 / 锁屏事件桥在 Roadmap）
+- tooltip“下次休息”从约数改为**具体钟点**（如下次休息 14:32）
+
+### Changed
+
+- **设置改为“修改即保存”**：每个控件变更立即持久化（滑条在松手时提交），不再需要点“保存”；恢复默认同样立即生效
+- 版本号默认值升至 0.5.0
+
 ## [0.4.0] - Unreleased
 
 ### Added
@@ -88,6 +114,7 @@ v0.2 是一次整体重写:从"一声提示音的空壳"补全为完整的"预�
 - egui 设置窗口与 `%APPDATA%\eyeflow\config.toml` 配置持久化
 - NSIS 安装包(HKCU\Run 自启 + 卸载清理)
 
+[0.5.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lexingtonhibiki/eyeflow/compare/v0.1.0...v0.2.0

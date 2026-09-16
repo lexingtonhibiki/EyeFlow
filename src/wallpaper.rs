@@ -14,7 +14,10 @@ pub struct OverlayStyle {
 
 impl Default for OverlayStyle {
     fn default() -> Self {
-        Self { alpha: 0.55, gradient: false }
+        Self {
+            alpha: 0.55,
+            gradient: false,
+        }
     }
 }
 
@@ -26,6 +29,12 @@ const MAX_TEXTURE_SIDE: u32 = 2560;
 
 /// Contain 模式留边 / 整体底色（深蓝黑）。
 const BACKDROP: egui::Color32 = egui::Color32::from_rgb(14, 18, 26);
+
+/// 蒙层不透明度上限：再浓就完全遮住壁纸了。
+const MAX_OVERLAY_ALPHA: f32 = 0.85;
+
+/// 渐变模式底部不透明度系数：底部 = 顶部浓度的 35%。
+const GRADIENT_BOTTOM_FACTOR: f32 = 0.35;
 
 /// 纹理缓存：路径变化时重新解码上传；解码失败记录错误。
 #[derive(Default)]
@@ -175,18 +184,45 @@ pub fn paint_fullscreen(
     paint_overlay(painter, rect, overlay);
 }
 
-/// 叠层：`gradient=false` 均匀；`true` 为上深下浅的垂直渐变（顶 alpha → 35% alpha）。
-/// 【子任务实现】当前为均匀近似占位。
+/// 叠层：`gradient=false` 均匀一层黑；`true` 为垂直渐变（顶部 `alpha` → 底部 35% `alpha`）。
+/// 始终覆盖整个 `rect`，Contain 的留边与 Cover 一样被蒙层盖住，保证倒计时文字可读。
 fn paint_overlay(painter: &egui::Painter, rect: egui::Rect, overlay: OverlayStyle) {
-    let _ = overlay.gradient;
-    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(to_alpha8(overlay.alpha)));
+    if overlay.alpha <= 0.0 || rect.is_negative() {
+        return;
+    }
+    let top = egui::Color32::from_black_alpha(to_alpha8(overlay.alpha));
+    if !overlay.gradient {
+        painter.rect_filled(rect, 0.0, top);
+        return;
+    }
+    // egui 没有矩形渐变原语，用一个四顶点 Mesh（两个三角形）垂直插值：
+    // 顶点颜色是位置的仿射函数时，三角形重心插值精确还原线性渐变，对角线不引入误差。
+    let bottom = egui::Color32::from_black_alpha(to_alpha8(gradient_alpha_at(overlay.alpha, 1.0)));
+    let mut mesh = egui::Mesh::default();
+    mesh.reserve_vertices(4);
+    mesh.reserve_triangles(2);
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(rect.right_bottom(), bottom);
+    mesh.colored_vertex(rect.left_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(mesh));
 }
 
+/// 把 0~1 的不透明度夹紧到 [`MAX_OVERLAY_ALPHA`] 并量化为 u8。
 pub fn to_alpha8(alpha01: f32) -> u8 {
-    (alpha01.clamp(0.0, 0.85) * 255.0).round() as u8
+    (alpha01.clamp(0.0, MAX_OVERLAY_ALPHA) * 255.0).round() as u8
 }
 
-/// 设置窗中的 16:9 裁剪预览框（宽度 `width`），实时反映 `fit` 的裁剪结果。
+/// 纯数学：渐变模式下垂直方向 `t`（0=顶，1=底）处的浓度，线性从顶部 `top_alpha01`
+/// 过渡到底部 [`GRADIENT_BOTTOM_FACTOR`] 倍，`t` 越界时夹紧。
+fn gradient_alpha_at(top_alpha01: f32, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    top_alpha01 * (1.0 - t) + top_alpha01 * GRADIENT_BOTTOM_FACTOR * t
+}
+
+/// 设置窗中的 16:9 裁剪预览框（宽度 `width`），实时反映 `fit` 的裁剪与蒙层效果。
 pub fn preview(
     ui: &mut egui::Ui,
     tex: &egui::TextureHandle,
@@ -202,6 +238,8 @@ pub fn preview(
     let (uv, dest_rel) = crop_uv(tex.size_vec2(), size, fit);
     let dest = dest_rel.translate(rect.min.to_vec2());
     painter.image(tex.id(), dest, uv, egui::Color32::WHITE);
+    // 与实际休息面板一致：图片之上、描边之下叠蒙层
+    paint_overlay(painter, rect, overlay);
     let outline = ui.visuals().widgets.noninteractive.bg_stroke;
     painter.rect_stroke(
         rect,
@@ -210,7 +248,16 @@ pub fn preview(
         egui::StrokeKind::Inside,
     );
     let [w, h] = tex.size();
-    response.on_hover_text(format!("原图 {w}×{h} px · 当前模式：{}", fit.label()))
+    let percent = (f32::from(to_alpha8(overlay.alpha)) / 2.55).round() as i32;
+    let shape = if overlay.gradient {
+        "（上深下浅）"
+    } else {
+        ""
+    };
+    response.on_hover_text(format!(
+        "原图 {w}×{h} px · 当前模式：{} · 蒙层 {percent}%{shape}",
+        fit.label()
+    ))
 }
 
 #[cfg(test)]
@@ -341,5 +388,44 @@ mod tests {
             assert_eq!(dest.size(), egui::Vec2::ZERO);
             assert_rect_eq(uv, full_uv());
         }
+    }
+
+    /// to_alpha8 边界：0 与负数 → 0；0.85 → 217；超上限（如 1.0）夹紧到 0.85
+    #[test]
+    fn to_alpha8_clamps_to_max_overlay_alpha() {
+        assert_eq!(to_alpha8(0.0), 0);
+        assert_eq!(to_alpha8(-0.3), 0); // 超下限夹紧
+        assert_eq!(to_alpha8(0.55), 140); // 0.55 * 255 = 140.25
+        assert_eq!(to_alpha8(MAX_OVERLAY_ALPHA), 217); // 0.85 * 255 = 216.75
+        assert_eq!(to_alpha8(1.0), 217); // 超上限夹紧到 0.85
+    }
+
+    /// 渐变浓度：顶部 = alpha，底部 = 35% alpha，中点取均值，越界 t 夹紧
+    #[test]
+    fn gradient_alpha_at_fades_top_to_bottom() {
+        let top = 0.6;
+        assert!(approx(gradient_alpha_at(top, 0.0), 0.6));
+        assert!(approx(
+            gradient_alpha_at(top, 1.0),
+            0.6 * GRADIENT_BOTTOM_FACTOR
+        ));
+        assert!(approx(
+            gradient_alpha_at(top, 0.5),
+            0.6 * (1.0 + GRADIENT_BOTTOM_FACTOR) / 2.0
+        ));
+        assert!(approx(gradient_alpha_at(top, -1.0), 0.6)); // 夹紧到顶部
+        assert!(approx(
+            gradient_alpha_at(top, 2.0),
+            0.6 * GRADIENT_BOTTOM_FACTOR
+        )); // 夹紧到底部
+    }
+
+    /// 渐变底部浓度经 to_alpha8 后仍是合法 u8 且不超过顶部
+    #[test]
+    fn gradient_bottom_alpha_stays_within_top() {
+        let top = MAX_OVERLAY_ALPHA;
+        let bottom = to_alpha8(gradient_alpha_at(top, 1.0));
+        assert!(bottom < to_alpha8(top));
+        assert!(bottom > 0);
     }
 }
