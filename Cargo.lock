@@ -877,7 +877,7 @@ checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
 name = "eyeflow"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "eframe",

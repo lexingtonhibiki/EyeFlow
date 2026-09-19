@@ -4,6 +4,12 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.5.1] - Unreleased
+
+### Fixed
+
+- **预告期屏幕四边闪烁**：边缘渐暗原用 4 个 egui/glow 视口窗口 + 整窗 LWA_ALPHA 半透明——分层 GL 窗口每次交换缓冲都会以 alpha 重绘，叠加周期性 repaint 表现为四边闪烁。改为 **4 个原生 Win32 静态窗口**（黑画刷 + WS_EX_LAYERED/TRANSPARENT/NOACTIVATE/TOPMOST + LWA_ALPHA），零渲染循环即零闪烁；实测连续 3 帧（间隔 1 秒）边缘区域像素差分为 0。窗口进程生命周期内复用（预告开始显示、结束隐藏），几何用物理像素，不再依赖根锚点视口的缩放换算
+
 ## [0.5.0] - Unreleased
 
 按“低成本高体验”调研（docs/research/07、08）落地的第一批改进。
@@ -114,6 +120,7 @@ v0.2 是一次整体重写:从"一声提示音的空壳"补全为完整的"预�
 - egui 设置窗口与 `%APPDATA%\eyeflow\config.toml` 配置持久化
 - NSIS 安装包(HKCU\Run 自启 + 卸载清理)
 
+[0.5.1]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.2.0...v0.3.0

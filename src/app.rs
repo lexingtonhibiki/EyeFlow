@@ -39,7 +39,6 @@ pub struct UiSession<'a> {
     panel_epoch: u64,
     panel_kind: PanelKind,
     panel_noactivate_applied: bool,
-    edgedim_applied: bool,
     /// 会话结束条件满足后再多画几帧，避免阶段切换瞬间反复拆建 GL 上下文
     idle_frames: u32,
     /// 严格模式背景图纹理（随会话生命周期）
@@ -58,7 +57,6 @@ impl<'a> UiSession<'a> {
             panel_epoch: 0,
             panel_kind: PanelKind::None,
             panel_noactivate_applied: false,
-            edgedim_applied: false,
             idle_frames: 0,
             wallpaper: WallpaperCache::new(),
         }
@@ -92,30 +90,16 @@ impl<'a> UiSession<'a> {
             self.panel_epoch += 1;
             self.panel_kind = kind;
             self.panel_noactivate_applied = false;
-            self.edgedim_applied = false;
         }
 
-        // 预告期的四边渐暗（4 条半透明细边窗口；与预告浮窗共享 epoch，切换即重建）
-        let monitor0 = monitor_size(ctx);
-        if kind == PanelKind::HeadsUp {
-            for edge in crate::edgedim::ALL {
-                let (dim_id, dim_builder) =
-                    crate::edgedim::viewport(edge, self.panel_epoch, monitor0);
-                ctx.show_viewport_immediate(dim_id, dim_builder, |ui, _class| {
-                    crate::edgedim::paint(ui);
-                    ui.ctx().request_repaint_after(Duration::from_millis(250));
-                });
-            }
-            if !self.edgedim_applied {
-                // 点击穿透 + 整窗半透明（每个 epoch 的新窗口施加一次）
-                self.edgedim_applied = crate::edgedim::apply_window_styles(
-                    self.panel_epoch,
-                    crate::edgedim::EDGE_ALPHA,
-                );
-            }
+        // 预告期的四边渐暗：原生 Win32 静态边窗（无渲染循环 → 无闪烁）。
+        // 幂等：预告开始 show()，结束/换阶段 hide()。失败仅失去边暗效果，忽略返回值。
+        let _ = if kind == PanelKind::HeadsUp {
+            crate::edgedim::show()
         } else {
-            self.edgedim_applied = false;
-        }
+            crate::edgedim::hide();
+            true
+        };
 
         let id = ViewportId::from_hash_of(("eyeflow-panel", self.panel_epoch));
         let title = format!("EyeFlow Reminder {}", self.panel_epoch);

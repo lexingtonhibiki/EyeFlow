@@ -26,7 +26,7 @@ SetCompressor /SOLID lzma
 !define PRODUCT_NAME "EyeFlow"
 ; CI 通过 /DPRODUCT_VERSION=x.y.z 注入真实版本(不带 v 前缀);本地直接编译时回退到默认值
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.5.0"
+  !define PRODUCT_VERSION "0.5.1"
 !endif
 !define PRODUCT_PUBLISHER "lexingtonhibiki"
 !define PRODUCT_DIR "$LOCALAPPDATA\${PRODUCT_NAME}"
