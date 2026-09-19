@@ -4,6 +4,12 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.5.2] - Unreleased
+
+### Removed
+
+- **预告期四边渐暗（边缘渐暗）**：用户反馈影响性能——四条全屏宽度的合成层窗口即便不重绘也会带来持续的合成开销与视觉干扰。“余光可感”的收益抵不过这份代价，预告提醒以右下角浮窗为准。功能实现与闪烁修复过程留档在 docs/lessons.md §2.3 追记
+
 ## [0.5.1] - Unreleased
 
 ### Fixed
@@ -120,6 +126,7 @@ v0.2 是一次整体重写:从"一声提示音的空壳"补全为完整的"预�
 - egui 设置窗口与 `%APPDATA%\eyeflow\config.toml` 配置持久化
 - NSIS 安装包(HKCU\Run 自启 + 卸载清理)
 
+[0.5.2]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/lexingtonhibiki/EyeFlow/compare/v0.3.0...v0.4.0

@@ -8,7 +8,6 @@ mod core;
 mod detector;
 mod event;
 // 与 build.rs / examples 共享；ICO 编码部分在主程序里不会用到
-mod edgedim;
 #[allow(dead_code)]
 mod icon;
 mod runtime;

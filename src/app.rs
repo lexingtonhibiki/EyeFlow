@@ -92,15 +92,6 @@ impl<'a> UiSession<'a> {
             self.panel_noactivate_applied = false;
         }
 
-        // 预告期的四边渐暗：原生 Win32 静态边窗（无渲染循环 → 无闪烁）。
-        // 幂等：预告开始 show()，结束/换阶段 hide()。失败仅失去边暗效果，忽略返回值。
-        let _ = if kind == PanelKind::HeadsUp {
-            crate::edgedim::show()
-        } else {
-            crate::edgedim::hide();
-            true
-        };
-
         let id = ViewportId::from_hash_of(("eyeflow-panel", self.panel_epoch));
         let title = format!("EyeFlow Reminder {}", self.panel_epoch);
         let monitor = monitor_size(ctx);

@@ -1,6 +1,6 @@
 [package]
 name = "eyeflow"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 rust-version = "1.95"
 description = "EyeFlow — context-aware eye-care break reminder for Windows / 上下文感知的极简护眼提醒工具"
