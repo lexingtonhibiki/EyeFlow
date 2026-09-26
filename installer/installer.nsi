@@ -25,8 +25,10 @@ SetCompressor /SOLID lzma
 
 !define PRODUCT_NAME "EyeFlow"
 ; CI 通过 /DPRODUCT_VERSION=x.y.z 注入真实版本(不带 v 前缀);本地直接编译时回退到默认值
+; ⚠️ 这个兜底值只在「不经 CI 直接敲 makensis」时才生效,但它就是本地跑出来的
+;    安装包上的版本号 —— 下次发版记得同步改这里(当前 v0.6.1)。
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.5.2"
+  !define PRODUCT_VERSION "0.6.1"
 !endif
 !define PRODUCT_PUBLISHER "lexingtonhibiki"
 !define PRODUCT_DIR "$LOCALAPPDATA\${PRODUCT_NAME}"
@@ -53,13 +55,21 @@ Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
 
-; ---------------- 安装选项页(桌面快捷方式) ----------------
+; ---------------- 安装选项页(桌面快捷方式 + 界面语言) ----------------
 
 Var DesktopShortcut   ; ${BST_CHECKED} = 创建;静默安装(/S)沿用 .onInit 的默认值
 Var DlgCheckbox
+; 界面语言:0 = 简体中文(language = "zh-CN"),1 = English(language = "en-US")
+; 静默安装(/S)不弹选项页,沿用 .onInit 的默认值 0(中文)
+Var LangChoice
+Var DlgLangZh
+Var DlgLangEn
 
 Function .onInit
     StrCpy $DesktopShortcut ${BST_CHECKED}
+    ; 默认中文(需求原文:「默认中文,可以选英文」)。
+    ; 与 :127 的 MessageBox /SD IDNO 同一哲学 —— 静默安装不做额外命令行覆盖。
+    StrCpy $LangChoice 0
 FunctionEnd
 
 Function OptionsPageCreate
@@ -75,11 +85,31 @@ Function OptionsPageCreate
     ${NSD_SetState} $DlgCheckbox $DesktopShortcut
     ${NSD_CreateLabel} 0 48u 100% 36u "开始菜单快捷方式与开机自启会自动创建;开机自启可在设置界面或任务管理器“启动应用”中随时关闭。"
     Pop $2
+
+    ; 界面语言组。本组标签是本脚本里**唯一**的中英并列文案 —— 其余三条
+    ; (安装选项 / 桌面快捷方式 / 自动创建说明)保持中文,与"安装器界面仅中文"的裁决一致。
+    ; 用 First/Additional 配对:前者带 WS_GROUP,两个单选才会互斥成组。
+    ${NSD_CreateLabel} 0 90u 100% 12u "界面语言 / UI Language:"
+    Pop $3
+    ${NSD_CreateFirstRadioButton} 0 104u 100% 12u "中文(简体)"
+    Pop $DlgLangZh
+    ${NSD_CreateAdditionalRadioButton} 0 118u 100% 12u "English"
+    Pop $DlgLangEn
+    ; 回填:用户在上一页按了「上一步」再回来时,选项页会重建,必须重新落状态
+    ${If} $LangChoice == 1
+        ${NSD_SetState} $DlgLangEn ${BST_CHECKED}
+    ${Else}
+        ${NSD_SetState} $DlgLangZh ${BST_CHECKED}
+    ${EndIf}
+
     nsDialogs::Show
 FunctionEnd
 
 Function OptionsPageLeave
     ${NSD_GetState} $DlgCheckbox $DesktopShortcut
+    ; BM_GETCHECK:English 被选中 → 1,中文被选中 → 0,正好就是 $LangChoice 的取值域。
+    ; 万一两个都没选中(本脚本不会出现),得到 0 = 中文,仍是安全默认。
+    ${NSD_GetState} $DlgLangEn $LangChoice
 FunctionEnd
 
 ; ------- Install -------
@@ -93,6 +123,44 @@ Section "Install" SEC_MAIN
 
     ; 1. 主程序
     File "..\target\release\eyeflow.exe"
+
+    ; 1b. 界面语言:预置 config.toml,让应用侧的首次运行判定落在 false 上。
+    ;     应用侧 main.rs 是 `let first_run = !Config::path().exists();`,只要这里
+    ;     建好了 config.toml,语言就 100% 由安装器决定,不会再走
+    ;     GetUserDefaultLocaleName() 那条分支 —— 一行 Rust 都不用改。
+    ;     ${CONFIG_DIR} 与应用侧 Config::path() 逐字一致(%APPDATA%\eyeflow)。
+    ;     ⚠️ 两个单选项都必须写:选中文也要写 language = "zh-CN"。不写的话,
+    ;        英文系统上「选中文」→ config.toml 不存在 → first_run = true →
+    ;        系统 locale 返回 en-US → 英文界面,「默认中文」直接失效。
+    ;     ⚠️ 守卫是 IfNot FileExists —— 覆盖安装/升级绝不能动用户已有的配置。
+    ;     卸载会删掉整个 ${CONFIG_DIR}(见 Uninstall 段),所以"卸载后重装"=
+    ;        全新安装,会重新问一次,语义正确。
+    ;     单行 TOML 对应用是完整可解析的:serde 缺字段走 default,首行之外的
+    ;     所有配置项拿默认值;migrate_legacy 见不到 legacy 键直接 return false。
+    ${IfNot} ${FileExists} "${CONFIG_DIR}\config.toml"
+        CreateDirectory "${CONFIG_DIR}"
+        ClearErrors
+        FileOpen $0 "${CONFIG_DIR}\config.toml" w
+        ${If} ${Errors}
+            DetailPrint "警告:无法写入 ${CONFIG_DIR}\config.toml,应用将回落到系统显示语言"
+        ${Else}
+            ${If} $LangChoice == 1
+                ; 引号用【单引号】包整个字符串 —— NSIS 的单引号串是逐字字面量,
+                ; 里面的 " 原样写进去。实测:双引号串里写 $\" 会报
+                ; "unterminated string parsing line"(NSIS 3.09 本机实测),
+                ; 而 FileWrite 收 3 个参数的那条路更早失败。
+                FileWrite $0 'language = "en-US"'
+                DetailPrint "已写入界面语言配置(English)"
+            ${Else}
+                FileWrite $0 'language = "zh-CN"'
+                DetailPrint "已写入界面语言配置(简体中文)"
+            ${EndIf}
+            FileWrite $0 "$\r$\n"
+            FileClose $0
+        ${EndIf}
+    ${Else}
+        DetailPrint "已存在 ${CONFIG_DIR}\config.toml,保留用户现有设置(不覆写)"
+    ${EndIf}
 
     ; 2. 生成卸载程序
     WriteUninstaller "$INSTDIR\uninstall.exe"
