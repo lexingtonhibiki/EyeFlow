@@ -2,16 +2,14 @@
 ///
 /// 全部改写自 AOA / AAO 官方页面的表述（docs/research/02-science-evidence.md），
 /// 刻意避开“保护视力 / 防近视 / 防止眼损伤”等与 AAO 定位冲突的说法。
-pub const TIPS: &[&str] = &[
-    "把视线移到 6 米（20 英尺）以外的地方，让眼睛的调节肌放松。",
-    "盯着屏幕时眨眼会从每分钟约 15 次降到 5~7 次——现在多眨几次，完整地闭合。",
-    "看向窗外最远的一个点，停留到倒计时结束。",
-    "顺便活动一下肩颈：屏幕顶端应略低于视线，距离约一臂。",
-    "眼睛干涩时可以轻轻闭眼几秒，让泪膜重新铺开。",
-    "屏幕亮度和周围环境接近时最不累眼，休息时看看环境光是否合适。",
-    "连续用屏 2 小时后，值得起身离开屏幕 15 分钟。",
+///
+/// 文案本体在 `locales/*.toml` 的 `tip.1`~`tip.7`（v0.6 起）。本模块只保留
+/// **key**，让贴士也走上同一条 `tr()` 通路——`pick()` 每次返回 `&'static str`，
+/// 调用点（`app.rs:437`）直接交给 `RichText::new`，每帧零分配。
+pub const TIP_KEYS: &[&str] = &[
+    "tip.1", "tip.2", "tip.3", "tip.4", "tip.5", "tip.6", "tip.7",
 ];
 
 pub fn pick(index: usize) -> &'static str {
-    TIPS[index % TIPS.len()]
+    crate::tr::tr(TIP_KEYS[index % TIP_KEYS.len()])
 }

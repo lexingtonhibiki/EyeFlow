@@ -26,13 +26,24 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # v0.2 重写期间允许格式化暂不达标,不阻塞 CI;稳定后可移除 continue-on-error
-      - name: Format check (advisory)
+      # 阻塞。`cargo fmt` 零成本、不会因工具链差异误报，
+      # 而一个永远不挡人的格式检查等于没有——v0.2 到现在四轮迭代它一直挂着
+      # continue-on-error（见 ADR-0007 判决七）。
+      - name: Format check
         run: cargo fmt --check
-        continue-on-error: true
 
-      # 暂不开启 -D warnings(重写期告警预期偏多);稳定后切换为 `cargo clippy --all-targets -- -D warnings`
-      - name: Clippy (advisory)
+      # 生产代码（--bins）阻塞：今天已经是零警告，守住它不花钱。
+      # 注意用 `--bins` 而不是 ADR-0007 判决七原文的 `--lib --bins`——
+      # 本项目是纯 bin crate，没有 lib target，`cargo clippy --lib --bins`
+      # 会直接报 "no library targets found" 而根本跑不起来。
+      # --all-targets 保持 advisory：clippy 的 lint 集合每个 stable 版本都在变，
+      # 一旦对测试代码也 -D warnings，下一次例行工具链升级就会红灯，
+      # 而唯一能修的人是作者、修法往往是加 #[allow]——
+      # lint 工具一旦变成税就会催生 #[allow] 通胀，那比现在更糟。
+      - name: Clippy (production code, blocking)
+        run: cargo clippy --bins -- -D warnings
+
+      - name: Clippy (all targets, advisory)
         run: cargo clippy --all-targets
         continue-on-error: true
 
@@ -41,3 +52,37 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --locked
+
+      # 带在线更新检查的构建：默认 feature 关掉了 TLS 栈，
+      # 这个 job 保证那条路径不会悄悄烂掉（见 ADR-0007 判决五）。
+      - name: Build release binary (with update-check feature)
+        run: cargo build --release --locked --features update-check
+
+  msrv:
+    name: MSRV 1.95
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cargo.toml 的 `rust-version = "1.95"` 此前从未被验证过——
+      # 装饰性的 MSRV 等于没有 MSRV：破坏它不会在 CI 里出现，
+      # 而是用户升级 rustup 之后、发版之后立刻遇到。
+      - name: Install MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+
+      - name: Check
+        run: cargo check --locked
+
+      - name: Test
+        run: cargo test --locked
+
+# 刻意不加 GNU 工具链矩阵（ADR-0007 判决七）。
+# docs/lessons.md §3.3 那次事故的教训是「写显式断言」（用 egui::vec2 而不是依赖类型推断），
+# 不是「矩阵翻倍」——为一个已经根因消除的 bug 类别付永久 CI 成本是错配。
+# 替代方案：推前在本机跑一遍 GNU（本机默认工具链就是 GNU，成本近零），
+# 见 CONTRIBUTING.md。

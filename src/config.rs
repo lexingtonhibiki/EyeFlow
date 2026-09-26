@@ -31,15 +31,29 @@ impl FlowSensitivity {
         FlowSensitivity::High,
     ];
 
-    pub fn label(self) -> &'static str {
+    /// 短名（进 `ComboBox::selected_text`）。
+    ///
+    /// v0.5.2 这里返回的是「低（30 秒内持续输入 > 40 键）」这种**短名 + 括号规则**
+    /// 塞进一个宽度受行宽约束的选择框。英文直译是 45 个字符，在 700 px 窗口里
+    /// 要么撑爆布局要么被省略号截断，而它是用户打开下拉框之前唯一能看到的那个值。
+    /// → 拆成短名（这里）+ 独立的 `desc_key()` 悬停说明（ADR-0008 §b）。
+    pub fn key(self) -> &'static str {
         match self {
-            FlowSensitivity::Low => "低（30 秒内持续输入 > 40 键）",
-            FlowSensitivity::Medium => "中（30 秒内持续输入 > 70 键）",
-            FlowSensitivity::High => "高（30 秒内持续输入 > 100 键）",
+            FlowSensitivity::Low => "flow.low",
+            FlowSensitivity::Medium => "flow.medium",
+            FlowSensitivity::High => "flow.high",
+        }
+    }
+
+    /// 「30 秒内持续输入 > N 键」那条规则，供 `on_hover_text` 用。
+    pub fn desc_key(self) -> &'static str {
+        match self {
+            FlowSensitivity::Low => "flow.low_desc",
+            FlowSensitivity::Medium => "flow.medium_desc",
+            FlowSensitivity::High => "flow.high_desc",
         }
     }
 }
-
 /// 提示音预设（`Custom` 使用 `custom_sound_path` 指向的用户音频文件）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SoundPreset {
@@ -68,14 +82,19 @@ impl SoundPreset {
         SoundPreset::Custom,
     ];
 
-    pub fn label(self) -> &'static str {
+    /// 文案在 locale 表里（`sound.*`），本枚举只给出 key。
+    ///
+    /// 见 `FlowSensitivity::key` 的说明：文案搬出领域层是为了让 `config.rs`
+    /// 保持纯数据、零测试污染（`label()` 内部读 `AtomicU8` 会让这里的 10 个
+    /// 测试变成顺序相关的）。
+    pub fn key(self) -> &'static str {
         match self {
-            SoundPreset::GentleChime => "风铃",
-            SoundPreset::SoftTap => "轻敲",
-            SoundPreset::WaterDrop => "水滴",
-            SoundPreset::DigitalDrop => "数字降调",
-            SoundPreset::TripleBeep => "三连短哔",
-            SoundPreset::Custom => "自定义音频…",
+            SoundPreset::GentleChime => "sound.gentle_chime",
+            SoundPreset::SoftTap => "sound.soft_tap",
+            SoundPreset::WaterDrop => "sound.water_drop",
+            SoundPreset::DigitalDrop => "sound.digital_drop",
+            SoundPreset::TripleBeep => "sound.triple_beep",
+            SoundPreset::Custom => "sound.custom",
         }
     }
 }
@@ -102,11 +121,12 @@ impl WallpaperFit {
         WallpaperFit::Stretch,
     ];
 
-    pub fn label(self) -> &'static str {
+    /// 文案在 locale 表里（`fit.*`），见 `SoundPreset::key` 的说明。
+    pub fn key(self) -> &'static str {
         match self {
-            WallpaperFit::Cover => "铺满裁剪",
-            WallpaperFit::Contain => "完整显示",
-            WallpaperFit::Stretch => "拉伸",
+            WallpaperFit::Cover => "fit.cover",
+            WallpaperFit::Contain => "fit.contain",
+            WallpaperFit::Stretch => "fit.stretch",
         }
     }
 }
@@ -205,6 +225,15 @@ pub struct Config {
     /// 严格模式蒙层用上深下浅的垂直渐变
     #[serde(default)]
     pub strict_overlay_gradient: bool,
+    /// 界面语言（`zh-CN` / `en-US`；`en` 前缀一律视为英文，见 `Lang::from_config`）
+    ///
+    /// v0.5.2 写出的 config.toml 没有这一行，走 `d_language()` 走 serde default，
+    /// **行为与今天完全一致**：不触发 `migrate_legacy`（那个判据是「没有
+    /// `short_break_min_secs`」），不触发解析失败备份重建。
+    /// 反向也安全：`Config` **没有** `deny_unknown_fields`，v0.5.2 读到这一行时
+    /// 静默忽略，所以降级不会炸。
+    #[serde(default = "d_language")]
+    pub language: String,
 }
 
 fn d_true() -> bool {
@@ -249,6 +278,9 @@ fn d_cue_duration() -> u64 {
 fn d_overlay_pct() -> u32 {
     55
 }
+fn d_language() -> String {
+    "zh-CN".into()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -282,6 +314,7 @@ impl Default for Config {
             esc_skip_enabled: true,
             strict_overlay_pct: d_overlay_pct(),
             strict_overlay_gradient: false,
+            language: d_language(),
         }
     }
 }
@@ -334,7 +367,7 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        write_atomic(&path, toml::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
 
@@ -347,7 +380,7 @@ impl Config {
             std::fs::create_dir_all(parent)?;
         }
         let cfg = Config::default();
-        std::fs::write(path, toml::to_string_pretty(&cfg)?)?;
+        write_atomic(path, toml::to_string_pretty(&cfg)?.as_bytes())?;
         Ok(cfg)
     }
 
@@ -366,6 +399,20 @@ impl Config {
         self.cue_volume_pct = self.cue_volume_pct.clamp(50, 200);
         self.cue_duration_secs = self.cue_duration_secs.clamp(1, 5);
         self.strict_overlay_pct = self.strict_overlay_pct.clamp(0, 85);
+        // `language` **不做规范化**。
+        //
+        // 其余字段是「越界就夹紧」，而语言越界不是数值问题：README 明确鼓励手改
+        // config，`sanitized()` 若把无法识别的原值悄悄换成别的值再落盘，就等于
+        // **替用户改了他自己的配置**——他拼错一个字母，界面语言静默变了，且因为
+        // 每次加载都会被改回同一个值，他无法从文件里看出发生过什么。
+        //
+        // 正确形态：能识别的值规范成 BCP-47 写法写回（`en_US` → `en-US`，
+        // 让文件自解释）；**无法识别的原值原样保留**，界面上退到中文，
+        // 而且这个错误在界面上是可见的、用户能改回。
+        let canonical = crate::tr::Lang::from_config(&self.language).code();
+        if self.language.trim().eq_ignore_ascii_case(canonical) {
+            self.language = canonical.to_string();
+        }
         self
     }
 
@@ -389,6 +436,31 @@ pub fn config_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("eyeflow")
+}
+
+/// 原子写：先写同目录下的临时文件，再 `rename` 覆盖目标。写法照抄 `stats.rs`。
+///
+/// `fs::write` 是「打开 → 截断 → 逐块写」，断电或进程被杀会留下半截 toml。
+/// 配置被截断的后果比统计更重：`Config::load` 会把它当损坏文件改名备份后
+/// **按默认值重建**，于是用户改过的节奏、严格模式壁纸、自定义音频全部回到出厂。
+/// `rename` 在同一卷上是原子的，读者要么看到旧文件、要么看到新文件。
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, bytes)?;
+    // rename 在 Windows 上不能覆盖已存在的目标，必须先删。
+    // 这留下一个「旧文件已删、新文件未就位」的极窄窗口，
+    // 窗口内崩溃最多丢一次配置——远好于配置被截断后静默重置。
+    if path.exists() {
+        let _ = std::fs::remove_file(path);
+    }
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            log::warn!("配置原子写失败（{}）: {e}", path.display());
+            Err(e)
+        }
+    }
 }
 
 /// v0.1 → v0.2 字段迁移。返回是否检测到旧格式。
@@ -616,5 +688,211 @@ global_mute_hotkey = "Ctrl+Shift+E"
         let c = c.sanitized();
         assert_eq!(c.cue_volume_pct, 200);
         assert_eq!(c.cue_duration_secs, 5);
+    }
+
+    // =======================================================================
+    // ADR-0008 i18n：T7b（运行时查表）/ T8（老配置兼容）/ T12b（human_duration）
+    //
+    // 为什么住在这儿：v0.6 的 i18n 实现应该落在 `src/tr.rs` + 生成的 `src/i18n.rs`，
+    // 但本轮**不写生产代码**，而 `main.rs` / `tray.rs` / `ui.rs` 正被另一个 agent
+    // 并行修改 —— `config.rs` 的测试模块是此刻唯一无人编辑的宿主。等 `src/tr.rs`
+    // 落地后，整个 `mod i18n_tests` 可以整体搬过去。
+    //
+    // 这些测试引用的符号（除 ADR-0008 已钉死的 `Config.language` 外）取自
+    // plan-v0.6 §2.3/§2.4 的 API 草案：`Lang::{ZhCn,EnUs}`、`Lang::from_config`、
+    // `set_language`、`tr(key)`、生成的 `KEYS` / `ZH_CN` / `EN_US`。
+    // **只钉行为，不钉模块名**：实现若把 tr 层放进 `i18n` 而不是 `tr`，改下面 2 行 import 即可。
+    // =======================================================================
+    mod i18n_tests {
+        use super::*;
+        use crate::i18n::{EN_US, KEYS, ZH_CN};
+        use crate::tr::{set_language, tr, trn, Lang};
+        use std::time::Duration;
+
+        /// 语言是进程级全局状态（`AtomicU8`）：所有会切语言的测试共用一把锁，
+        /// 结束时恢复成 zh-CN，避免污染同进程里其它测试的默认值。
+        static LANG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        fn zh_index(key: &str) -> usize {
+            KEYS.iter()
+                .position(|k| *k == key)
+                .unwrap_or_else(|| panic!("生成表里没有键 {key:?}"))
+        }
+
+        // --- T7b 运行时查表：每键在两种语言下都返回非「key 本身」的值 -------
+        #[test]
+        fn t7b_tr_never_returns_the_key_itself() {
+            let _guard = LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let orig = crate::tr::language();
+            for (lang, table, code) in [
+                (Lang::ZhCn, &ZH_CN[..], "zh-CN"),
+                (Lang::EnUs, &EN_US[..], "en-US"),
+            ] {
+                set_language(lang);
+                assert_eq!(crate::tr::language(), lang);
+                assert_eq!(
+                    table.len(),
+                    KEYS.len(),
+                    "{code} 表长度与 KEYS 不一致（build.rs 生成的数组长度必须等于 KEY_COUNT）"
+                );
+                for (i, key) in KEYS.iter().enumerate() {
+                    let v = tr(key);
+                    assert_ne!(
+                        v, *key,
+                        "{code} 下 tr({key:?}) 返回了 key 本身 —— key 拼错时会静默显示 \
+                         「{key}」，这是 i18n-embed 式实现最典型的漏译症状"
+                    );
+                    assert_eq!(v, table[i], "{code} 下 tr({key:?}) 与生成表第 {i} 项不一致");
+                }
+            }
+            let differs_somewhere = KEYS.iter().enumerate().any(|(i, _)| ZH_CN[i] != EN_US[i]);
+            assert!(
+                differs_somewhere,
+                "两个语言表内容完全相同 —— en-US 根本没翻（ADR-0008 数据流：\
+                 以 zh-CN 为唯一事实来源，但内容必须各自独立）"
+            );
+            set_language(orig);
+        }
+
+        // --- T8① 无 language 字段的老 config.toml 解析后为 zh-CN ----------
+        #[test]
+        fn t8a_config_without_language_field_defaults_to_zh_cn() {
+            let cfg: Config = toml::from_str("enabled = false").unwrap();
+            assert_eq!(
+                cfg.language, "zh-CN",
+                "v0.5.2 写出的 config.toml 没有 language 行，加字段后行为必须与今天完全一致"
+            );
+            assert_eq!(Config::default().language, "zh-CN");
+            // 加字段不得触发 v0.1 迁移（config.rs:400 的判据）
+            let table: toml::Table = "short_break_min_secs = 900".parse().unwrap();
+            let mut probe = Config::default();
+            assert!(!migrate_legacy(&table, &mut probe));
+        }
+
+        // --- T8②③ 非法值回落 zh-CN，且 sanitized() 不写回 ------------------
+        //
+        // ⚠️ `en-GB` 已从这份「非法值」名单里移走（2026-09-26）。本测试最初
+        // 写的是「严格白名单 en / en-US / en_US」，依据是 ADR-0008 的初版；
+        // **ADR-0008 的该条随后被修订**（见其 §「默认语言与配置兼容」的
+        // 修订记录）：`en` 前缀一律得英文。初版的问题是 `en-GB`——一个真实存在
+        // 的 locale——会拿到中文界面，而用户在界面里看不出原因。
+        // 现在 `en-GB` 的断言在下面的 T8c 里。
+        #[test]
+        fn t8b_invalid_language_falls_back_to_zh_cn_and_is_never_rewritten() {
+            let _guard = LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let orig = crate::tr::language();
+            for raw in [
+                "chinese", // 常见误写
+                "klingon", // 随手编的
+                "zh_CN",   // 分隔符写错（不过 `en` 前缀，落到中文）
+                "",        // 空值
+            ] {
+                assert_eq!(
+                    Lang::from_config(raw),
+                    Lang::ZhCn,
+                    "非法值 {raw:?} 必须回落 zh-CN —— README 鼓励手改 config，拼错一个字母\
+                     导致界面静默变英文且无法自动恢复，是违反「不动用户个人配置」硬约束的"
+                );
+                // ③ sanitized() 不得把非法值悄悄规范化后落盘
+                let mut c = Config::default();
+                c.language = raw.into();
+                assert_eq!(
+                    c.clone().sanitized().language,
+                    raw,
+                    "sanitized() 把非法 language {raw:?} 改写成了别的值 —— 非法值必须原样保留"
+                );
+                // 界面语言确实是中文
+                set_language(Lang::from_config(raw));
+                assert_eq!(
+                    tr("tray.open_settings"),
+                    ZH_CN[zh_index("tray.open_settings")],
+                    "language = {raw:?} 时托盘「打开设置」不是中文"
+                );
+            }
+            set_language(orig);
+        }
+
+        // --- T8④ 显式 en / en-US / en_US 必须得到英文 ----------------------
+        // `en-GB` 也在这里：ADR-0008 修订后认的是 `en` 前缀，不是白名单。
+        #[test]
+        fn t8c_explicit_english_spellings_resolve_to_english() {
+            let _guard = LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let orig = crate::tr::language();
+            for raw in ["en", "en-US", "en_US", "en-GB"] {
+                let cfg: Config = toml::from_str(&format!("language = \"{raw}\"")).unwrap();
+                assert_eq!(cfg.language, raw, "合法值被解析层改写了");
+                set_language(Lang::from_config(&cfg.language));
+                assert_eq!(
+                    tr("tray.open_settings"),
+                    EN_US[zh_index("tray.open_settings")]
+                );
+                assert_eq!(tr("tray.quit"), EN_US[zh_index("tray.quit")]);
+            }
+            set_language(orig);
+        }
+
+        // --- T12b human_duration 的英文形态：m == 0 不得输出 "2 h 0 min" ----
+        #[test]
+        fn t12b_english_human_duration_omits_the_zero_minute_part() {
+            let _guard = LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let orig = crate::tr::language();
+            set_language(Lang::EnUs);
+
+            let two_hours = crate::ui::human_duration(Duration::from_secs(7200));
+            assert!(
+                !two_hours.contains("0 min"),
+                "英文 2 小时输出成 {two_hours:?} —— 必须有一条 m > 0 的分支（ADR-0008 风险 3）"
+            );
+            let two_h_five = crate::ui::human_duration(Duration::from_secs(7500));
+            assert!(
+                two_h_five.contains("2") && two_h_five.contains("5"),
+                "英文 2 小时 5 分输出成 {two_h_five:?} —— 数字丢了"
+            );
+
+            set_language(Lang::ZhCn);
+            let zh = crate::ui::human_duration(Duration::from_secs(7200));
+            assert!(
+                zh.contains("小时"),
+                "中文模式输出成 {zh:?} —— 切语言后 human_duration 走的是英文分支"
+            );
+            set_language(orig);
+        }
+
+        // --- T14 状态条「连续坚持」：0 / 1 / 3 三种读法都要成立 --------------
+        // 原文案是英文复合名词 `{n}-day streak`，`0-day streak` 对母语读者生硬，
+        // 而同一个托盘 tooltip 里的 `stats.streak`（`{n} days in a row`）是对的。
+        // 复合名词用不了 `|` 的二元复数约定（ADR-0008 §能力边界），所以改用
+        // 「in a row」措辞绕开复合名词，`|` 就能用了。
+        #[test]
+        fn t14_status_streak_reads_naturally_at_zero_one_and_three() {
+            let _guard = LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let orig = crate::tr::language();
+
+            set_language(Lang::EnUs);
+            let zero = trn("stats.streak_label", 0u32);
+            let one = trn("stats.streak_label", 1u32);
+            let three = trn("stats.streak_label", 3u32);
+            assert_eq!(
+                (zero.as_str(), one.as_str(), three.as_str()),
+                ("· 0 days in a row", "· 1 day in a row", "· 3 days in a row"),
+                "英文状态条「连续坚持」在 0 / 1 / 3 下的读法不对（实测 {zero:?} / \
+                 {one:?} / {three:?}）"
+            );
+            assert!(
+                !one.contains("days"),
+                "1 天也拼成 {one:?} —— 单数形态没被 `|` 选中"
+            );
+            for s in [&zero, &one, &three] {
+                assert!(
+                    !s.contains("-day"),
+                    "状态条仍出现复合名词 {s:?} —— 这就是本条要修的 `0-day streak`"
+                );
+            }
+
+            set_language(Lang::ZhCn);
+            let zh = trn("stats.streak_label", 1u32);
+            assert_eq!(zh, "· 连续坚持 1 天", "中文状态条输出成 {zh:?}");
+            set_language(orig);
+        }
     }
 }

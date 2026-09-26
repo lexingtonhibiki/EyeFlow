@@ -17,3 +17,6 @@ Thumbs.db
 
 # 本机交接记录(不入库)
 /PROJECT_STATE.md
+
+# 截图与抓屏脚本(本机验收产物,不入库)
+/.shots/

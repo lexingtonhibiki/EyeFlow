@@ -18,7 +18,7 @@ pub enum Event {
 static UI_CTX: Mutex<Option<egui::Context>> = Mutex::new(None);
 
 /// UI 会话开始时登记、结束时清除；期间任何线程都可以用 `wake_ui()` 唤醒 egui 事件循环。
-/// 没有 UI 会话时（轻量循环）这是空操作——轻量循环自己以固定节拍轮询。
+/// 没有 UI 会话时（轻量循环）这里什么都不做——轻量循环自己以固定节拍轮询。
 pub fn set_ui_context(ctx: Option<egui::Context>) {
     if let Ok(mut slot) = UI_CTX.lock() {
         *slot = ctx;

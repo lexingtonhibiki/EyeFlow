@@ -48,7 +48,9 @@ impl Stats {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(s) = toml::to_string_pretty(self) {
-            let _ = std::fs::write(path, s);
+            if let Err(e) = write_atomic(&path, s.as_bytes()) {
+                log::warn!("统计落盘失败: {e}");
+            }
         }
         self.dirty = false;
     }
@@ -117,10 +119,32 @@ pub enum Completed {
     Natural,
 }
 
+/// 原子写：先写同目录下的临时文件，再 `rename` 覆盖目标。
+///
+/// `fs::write` 是「打开 → 截断 → 逐块写」，断电或进程被杀会留下半截 toml；
+/// 统计文件被截断后 `Stats::load` 会静默回落到全零，用户的坚持记录就没了。
+/// `rename` 在同一卷上是原子的，读者要么看到旧文件、要么看到新文件。
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, bytes)?;
+    // rename 在 Windows 上不能覆盖已存在的目标，必须先删。
+    // 这留下一个「旧文件已删、新文件未就位」的极窄窗口，
+    // 窗口内崩溃最多丢一次统计——远好于永久丢失。
+    if path.exists() {
+        let _ = std::fs::remove_file(path);
+    }
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
-
 fn yesterday() -> String {
     (chrono::Local::now() - chrono::Duration::days(1))
         .format("%Y-%m-%d")

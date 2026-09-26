@@ -15,6 +15,7 @@ use crate::config::WallpaperFit;
 use crate::core::{Core, Phase};
 use crate::runtime::Runtime;
 use crate::tips;
+use crate::tr::{tr, tr_fill, trn, Lang};
 use crate::ui::{self, SettingsView};
 use crate::wallpaper::{self, WallpaperCache};
 
@@ -36,6 +37,9 @@ enum PanelAction {
 
 pub struct UiSession<'a> {
     rt: &'a mut Runtime,
+    /// 上一次装字体时的语言。切语言 → `ctx.set_fonts()` + 重画。
+    /// egui 视口内容每帧现取 `tr()`，只有字体需要显式重装。
+    font_lang: Lang,
     panel_epoch: u64,
     panel_kind: PanelKind,
     panel_noactivate_applied: bool,
@@ -47,13 +51,14 @@ pub struct UiSession<'a> {
 
 impl<'a> UiSession<'a> {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: &'a mut Runtime) -> Self {
-        install_fonts(&cc.egui_ctx);
+        set_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_theme(egui::ThemePreference::System);
         cc.egui_ctx.style_mut_of(egui::Theme::Dark, tune_style);
         cc.egui_ctx.style_mut_of(egui::Theme::Light, tune_style);
         crate::event::set_ui_context(Some(cc.egui_ctx.clone()));
         Self {
             rt,
+            font_lang: crate::tr::language(),
             panel_epoch: 0,
             panel_kind: PanelKind::None,
             panel_noactivate_applied: false,
@@ -93,6 +98,8 @@ impl<'a> UiSession<'a> {
         }
 
         let id = ViewportId::from_hash_of(("eyeflow-panel", self.panel_epoch));
+        // ⚠️ 故意**不翻译**：这串标题是 `apply_noactivate` 的 `FindWindowW` 查找键，
+        // 一旦随语言变化，首帧的 `WS_EX_NOACTIVATE` 就会失效，浮窗开始抢焦点。
         let title = format!("EyeFlow Reminder {}", self.panel_epoch);
         let monitor = monitor_size(ctx);
         let base = ViewportBuilder::default()
@@ -175,7 +182,7 @@ impl<'a> UiSession<'a> {
             return;
         }
         let reminder_line = rt.reminder_line(now);
-        let state_label = rt.core.state.label();
+        let state_label = tr(rt.core.state.key());
         let audio_ok = rt.audio.available();
         let hotkey_active = rt.hotkey_active();
         let focus = std::mem::take(&mut rt.settings_focus);
@@ -188,7 +195,15 @@ impl<'a> UiSession<'a> {
         let ppp = ctx.pixels_per_point().max(0.5);
         let (w, h) = (700.0 / ppp, (780.0 / ppp).min(monitor.y - 60.0).max(480.0));
         let builder = ViewportBuilder::default()
-            .with_title("EyeFlow 设置")
+            // ⚠️ **未验证**：切语言后这个原生窗口标题
+            // 能否真的跟着变，取决于 egui 在「其他属性
+            // 没变、只有 title 变了」时是否仍然下发
+            // `ViewportCommand::Title`。ADR-0008 把这一项列为需人工验证，
+            // 本轮**没有**验证过。若切语言后标题停在旧语言，
+            // 症状只是标题栏文字不跟随，窗口内容与托盘
+            // 都不受影响——修法是显式发
+            // `ctx.send_viewport_cmd_to(id, ViewportCommand::Title(title))`。
+            .with_title(tr("app.window_title_settings"))
             .with_inner_size([w, h])
             .with_min_inner_size([420.0, 420.0])
             .with_position([(monitor.x - w) / 2.0, (monitor.y - h) / 2.0])
@@ -228,6 +243,12 @@ impl eframe::App for UiSession<'_> {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
         self.rt.step(now);
+
+        // 语言切换：托盘由 `Runtime::apply_language` 立即重写，egui 侧只需重装字体
+        if crate::tr::language() != self.font_lang {
+            self.font_lang = crate::tr::language();
+            set_fonts(ctx);
+        }
 
         if self.rt.quit {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
@@ -285,40 +306,46 @@ fn draw_heads_up(ui: &mut egui::Ui, core: &Core, now: Instant) -> Option<PanelAc
         )
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("👀").size(26.0));
+                // 👀 不进 locale：实测它在 msyh / segoeui / seguisym 里都没有 glyph，
+                // 靠的是 egui `default_fonts` 自带的 emoji 字体（T11c）。留在代码里
+                // 才能让 T11a 只查真正的界面文案。
+                ui.label(RichText::new("\u{1F440}").size(26.0));
                 ui.vertical(|ui| {
                     let title = if is_long {
-                        "连续用屏 2 小时了，该离开屏幕一会儿".to_string()
+                        tr("app.panel_long_title").to_string()
                     } else {
-                        format!("{} 秒后休息一下", remaining.as_secs() + 1)
+                        tr_fill("app.panel_short_title", "{n}", remaining.as_secs() + 1)
                     };
                     ui.label(RichText::new(title).size(17.0).strong());
                     ui.weak(if is_long {
-                        format!("{} 分钟长休息即将开始", core.cfg.long_break_secs / 60)
+                        tr_fill("app.panel_long_sub", "{n}", core.cfg.long_break_secs / 60)
                     } else {
-                        "看向 6 米外，多眨几次眼".to_string()
+                        tr("app.panel_short_sub").to_string()
                     });
                 });
             });
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.button(RichText::new("现在开始").strong()).clicked() {
+                if ui
+                    .button(RichText::new(tr("app.start_now")).strong())
+                    .clicked()
+                {
                     action = Some(PanelAction::StartNow);
                 }
-                let postpone_label = format!("延后 {} 分钟", core.cfg.postpone_secs / 60);
+                let postpone_label = tr_fill("app.postpone", "{n}", core.cfg.postpone_secs / 60);
                 if ui
                     .add_enabled(core.can_postpone(), egui::Button::new(postpone_label))
                     .on_hover_text(if is_long {
-                        "长休息也可延后一次；到点后仍是长休息"
+                        tr("app.hover_postpone_long")
                     } else {
-                        "每次提醒只能延后一次"
+                        tr("app.hover_postpone")
                     })
-                    .on_disabled_hover_text("每次提醒只能延后一次")
+                    .on_disabled_hover_text(tr("app.hover_postpone"))
                     .clicked()
                 {
                     action = Some(PanelAction::Postpone);
                 }
-                if ui.button("跳过").clicked() {
+                if ui.button(tr("app.skip")).clicked() {
                     action = Some(PanelAction::Skip);
                 }
             });
@@ -342,15 +369,16 @@ fn draw_flash(ui: &mut egui::Ui, core: &Core) -> Option<PanelAction> {
         )
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
+                // 👏 同上：留在代码里（T11a 不查 emoji，T11c 查它有系统字体兜底）
                 ui.label(
                     RichText::new(format!(
-                        "👏 做得好！今日第 {} 次休息",
-                        core.stats.completed_today()
+                        "\u{1F44F} {}",
+                        trn("app.flash_title", core.stats.completed_today())
                     ))
                     .size(17.0)
                     .strong(),
                 );
-                ui.weak("回来啦——眨眨眼，看看 6 米外。");
+                ui.weak(tr("app.flash_sub"));
             });
         });
     None
@@ -409,9 +437,9 @@ fn draw_break(
                 ui.set_max_width(if fullscreen { 560.0 } else { 440.0 });
                 ui.label(
                     RichText::new(if is_long {
-                        "长休息 · 离开屏幕一会儿"
+                        tr("app.break_title_long")
                     } else {
-                        "看向远处"
+                        tr("app.break_title_short")
                     })
                     .size(if fullscreen { 26.0 } else { 20.0 })
                     .strong()
@@ -441,12 +469,12 @@ fn draw_break(
                     .wrap(),
                 );
                 ui.add_space(18.0);
-                if ui.button("继续工作").clicked() {
+                if ui.button(tr("app.continue_work")).clicked() {
                     action = Some(PanelAction::Skip);
                 }
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("倒计时结束会自动完成并记入今日统计")
+                    RichText::new(tr("app.auto_complete"))
                         .size(12.0)
                         .color(fg.gamma_multiply(0.6)),
                 );
@@ -467,38 +495,156 @@ fn accent(ui: &egui::Ui) -> Color32 {
 fn tune_style(style: &mut egui::Style) {
     style.spacing.button_padding = egui::vec2(14.0, 7.0);
     style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    // v0.6.1：滑条默认只有 100.0（`egui-0.36.1/src/style.rs:1460`），而本项目
+    // `tune_style` 从未设过它 —— 设置窗每一行右侧因此留着约 244 px 的死区
+    // （一行两滑条：标签 + 两个 100 px 滑条，右边全空）。220.0 把那条死区
+    // 压到 30 px 以内，滑条本身仍然明显短于行宽，动起来仍然好按。
+    style.spacing.slider_width = 220.0;
     style.visuals.widgets.noninteractive.corner_radius = 6.0.into();
     style.visuals.widgets.inactive.corner_radius = 6.0.into();
     style.visuals.widgets.hovered.corner_radius = 6.0.into();
     style.visuals.widgets.active.corner_radius = 6.0.into();
 }
 
-/// 加载系统中文字体（微软雅黑），缺失时退回 egui 默认字体并记录告警。
-fn install_fonts(ctx: &egui::Context) {
-    let candidates = [
-        "C:\\Windows\\Fonts\\msyh.ttc",
-        "C:\\Windows\\Fonts\\msyhl.ttc",
-        "C:\\Windows\\Fonts\\simhei.ttf",
-    ];
-    for path in candidates {
-        if let Ok(bytes) = std::fs::read(path) {
-            let mut fonts = egui::FontDefinitions::default();
-            fonts.font_data.insert(
-                "cjk".to_owned(),
-                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-            );
-            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-                fonts
-                    .families
-                    .entry(family)
-                    .or_default()
-                    .insert(0, "cjk".to_owned());
+/// 一个待加载的字体文件：egui `FontDefinitions` 里的名字 + 磁盘路径。
+struct FontFile {
+    key: &'static str,
+    path: &'static str,
+}
+
+const fn font(key: &'static str, path: &'static str) -> FontFile {
+    FontFile { key, path }
+}
+
+/// 中文模式的字体链。
+///
+/// - `msyh.ttc` 实测 19,704,352 B = 18.79 MiB，是**会话内峰值**的最大单项。
+/// - `seguisym.ttf` 是**尾部回退**（v0.6 引入）：实测 `✓`(U+2713) 与 `▶`(U+25B6)
+///   在 `msyh.ttc` 里**没有 glyph**，而它们出现在「已保存 ✓」和「▶ 试听」两处界面上。
+///   也就是说 v0.5.2 的中文界面今天就在显示豆腐块。egui 没有系统级字体回退，
+///   缺字就是方块。**这一条现在比任何时候都硬**——v0.6 逐个字体查过 cmap，
+///   `msyhl` / `simhei` 都没能兜住这两个字符。
+///
+/// 顺序即优先级：egui 对每个字符从 family 列表头开始找第一个有 glyph 的字体，
+/// 所以 `msyh` 拿绝大多数字符，`seguisym` 只在前面都没有时兜底。
+///
+/// **v0.6.1 删掉了 `msyhl.ttc`（原 `cjk_light`）与 `simhei.ttf`（原 `cjk_alt`）**，
+/// 实测省 21,935,404 B = 20.92 MiB，链体积 **−49.68%**。三条依据都是 fontTools
+/// 直读系统字体 cmap 的实测（[ADR-0007](docs/adr/0007-v0.6-scope.md) §v0.6.1 追加裁决
+/// 的 Sources 逐条列了数字）：
+///
+/// 1. 本项目 `locales/*.toml` 全部去重字符里，「**需要 `msyhl` 或 `simhei` 才画得
+///    出来**」的字符数是 **0**；
+/// 2. `msyh` 对 CJK 统一表意文字区 U+4E00–U+9FFF 的覆盖是 **20992/20992 = 100%**，
+///    而 `simhei` 是 **20902/20992**——**比 `msyh` 还少 90 个码位，它从来不是超集**；
+/// 3. `(msyhl ∪ simhei) − (msyh ∪ seguisym)` 的 BMP 码位恰为 **29 个**（25 个私有区
+///    PUA U+E78D–U+E864，加 `ﬁ`(U+FB01) / `ﬂ`(U+FB02) / `﴾`(U+FD3E) / `﴿`(U+FD3F)），
+///    **非 BMP 的额外码位 0 个**。
+///
+/// 也就是说，**保留这两个字体的唯一理由是「glyph 覆盖兜底」，从来不是字重**
+/// （egui 0.36.1 没有字重概念，见 `EN_FONTS` 上方注释）——而那条理由已被实测证伪，
+/// 两个条目随之删除。将来若要引入 BMP 之外的 CJK 扩展区（Ext-B 起）字符，需要的是
+/// **新字体**，不是这两个。
+///
+/// ⚠️ 这条改动省的是**会话内峰值**与**每会话分配 churn**，**不是常驻内存**：
+/// 每份字体字节在 egui 内部存两份，峰值杠杆约 43.9 MB；每会话一次 44 MB 的
+/// `fs::read`（`build_font_defs`）+ 约 44 MB 的 `memcpy`，砍完各减半。
+/// 关闭设置窗之后那部分残渣里它们只占约 1.3 MB——**用户在任务管理器里看不出变化，
+/// 发布说明里也不许写「降低常驻内存」**。
+const ZH_FONTS: &[FontFile] = &[
+    font("cjk", "C:\\Windows\\Fonts\\msyh.ttc"),
+    font("sym", "C:\\Windows\\Fonts\\seguisym.ttf"),
+];
+
+/// 英文模式的字体链（ADR-0008 判决二）。
+///
+/// 跳过 18.8 MB 的 msyh，改用 Segoe UI：Vista 起每台 Windows 都有，
+/// 带 ClearType hinting，是系统自己用的字族，总计约 1.9 MB。
+///
+/// **epaint 0.36.1 不认识字重**（这是 v0.6 撤销 ADR-0008 一处裁决的原因，
+/// 务必读完再改字体链）：`FontId` 只有 `{ size, family }` 两个字段
+/// （`epaint-0.36.1/src/text/fonts.rs:27-34`，源码里留着
+/// `// TODO(emilk): weight (bold), italics, …`），全文件 `FontWeight` 出现 0 次。
+/// `FontFamily` 的列表被当作**逐字符的 glyph 回退链**，不是「常规体 + 粗体」这一对。
+/// 两个直接后果：
+///
+/// 1. **不要为了「要粗体」往链里加粗体字体文件**：加进去 `segoeuib.ttf` 只会在
+///    `segoeui.ttf` 缺某个 glyph 时被当作第二道回退，947 KB 换不到任何字重。
+/// 2. 层级只能靠**字号 / 颜色 / 间距**建立。
+///
+/// ⚠️ **「`strong()` 什么也不做」这句话是错的，v0.6.1 已更正（本注释此前写的正是
+/// 那句错话）**。
+/// 「字重那条」结论成立，但**「颜色那条」同样成立，而它一直在生效**——`strong()`
+/// 改的是**颜色**，不是字重：
+/// `egui-0.36.1/src/widget_text.rs:252` 置 `strong = true` → `:483-485`
+/// `if self.strong { Some(visuals.strong_text_color()) }` → `style.rs:1147`
+/// `strong_text_color()` = `widgets.active.text_color()` → `style.rs:1710`
+/// `active.fg_stroke = Color32::WHITE`，而 `style.rs:1686`
+/// `noninteractive.fg_stroke = from_gray(140)`。**标题是纯白 255、正文灰 140，
+/// 亮度差 82%——标题的颜色层级早就成立了。** 被浪费的是**字号**那条通道
+/// （`ui.rs` 的卡片标题曾是全项目唯一的 14.0，v0.6.1 归到 17.0）。
+///
+/// 真正的字重阶梯需要 epaint 上游支持 `FontWeight`，属 v0.7 议题。
+const EN_FONTS: &[FontFile] = &[
+    font("latin", "C:\\Windows\\Fonts\\segoeui.ttf"),
+    font("sym", "C:\\Windows\\Fonts\\seguisym.ttf"),
+];
+
+/// 按语言构建 `FontDefinitions`。
+///
+/// 从 egui 默认字体（`default_fonts`）起步而不是清空：`app.rs:288` 的 👀 与
+/// `app.rs:347` 的 👏 靠默认字体里的 emoji 字形渲染，**不能关掉 default_fonts**。
+/// 实测这两个 emoji 在 `msyh` / `segoeui` / `seguisym` 里**都没有**。
+fn build_font_defs(lang: Lang) -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    let chain = match lang {
+        Lang::ZhCn => ZH_FONTS,
+        Lang::EnUs => EN_FONTS,
+    };
+    let mut loaded = 0usize;
+    for f in chain {
+        match std::fs::read(f.path) {
+            Ok(bytes) => {
+                fonts.font_data.insert(
+                    f.key.to_owned(),
+                    std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+                );
+                loaded += 1;
             }
-            ctx.set_fonts(fonts);
-            return;
+            Err(e) => log::warn!("字体 {} 加载失败: {e}", f.path),
         }
     }
-    log::warn!("未找到中文字体，界面中文可能显示为方块");
+    if loaded == 0 {
+        log::warn!("未找到任何界面字体，退回 egui 内置字体（中文/符号会显示为方块）");
+        return fonts;
+    }
+    // 每个可用字体都插到 family 首位：egui 从头找第一个有该字符 glyph 的字体，
+    // 所以整条链都能兜底，而链首（msyh / segoeui）承担绝大多数字符。
+    let mut order: Vec<String> = chain
+        .iter()
+        .filter(|f| fonts.font_data.contains_key(f.key))
+        .map(|f| f.key.to_owned())
+        .collect();
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        let mut list = std::mem::take(&mut order);
+        let entry = fonts.families.entry(family).or_default();
+        list.append(entry);
+        *entry = list;
+    }
+    fonts
+}
+
+/// 把当前语言的字体装进 egui；缺字体时退回 egui 默认字体并记录告警。
+fn set_fonts(ctx: &egui::Context) {
+    let lang = crate::tr::language();
+    ctx.set_fonts(build_font_defs(lang));
+    // 字体换了必须重画一遍，否则当帧仍用旧字体的缓存纹理
+    ctx.request_repaint();
+    if lang == Lang::ZhCn {
+        log::debug!("界面字体：微软雅黑 + Segoe UI Symbol 回退");
+    } else {
+        log::debug!("界面字体：Segoe UI + Segoe UI Symbol 回退（跳过 18.8 MB 中文字体）");
+    }
 }
 
 /// 根视口所在显示器的逻辑尺寸；拿不到时退回主显示器物理尺寸 / 缩放。

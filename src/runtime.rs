@@ -17,6 +17,7 @@ use crate::autostart;
 use crate::config::{Config, SoundPreset};
 use crate::core::{Action, ContextState, Core, Phase};
 use crate::event::Event;
+use crate::tr::{tr, tr_fill, trn, Lang};
 use crate::tray::{Tray, TrayCommand};
 use crate::ui::{self, SettingsAction, SettingsState, UpdateStatus};
 use crate::update;
@@ -44,7 +45,24 @@ pub struct Runtime {
     registered_hotkey: Option<HotKey>,
     /// 休息期间临时注册的 Esc（面板不抢焦点收不到键盘，只能走全局热键）
     esc_registered: bool,
+    /// 上一次推给托盘的 tooltip 的「廉价指纹」+ 已推送文本。
+    /// `tooltip_text()` 每个 tick 要做一次 `chrono::Local::now()` 的时区查询
+    /// 加 3~4 次 `format!`（约 5 次堆分配），而托盘 tooltip 并不需要每 tick 刷新。
+    /// 指纹覆盖了 `tooltip_text()` 的全部输入（见 `tooltip_fingerprint`），
+    /// 指纹不变就整段跳过。
+    last_tooltip: Option<(TooltipFingerprint, String)>,
+    /// 同理，托盘菜单里的今日统计行：只由三个计数器决定。
+    last_stats_line: Option<(u32, u32, u32)>,
 }
+
+/// `tooltip_text()` 所有输入的廉价指纹。
+///
+/// 逐项对应关系（改动 `tooltip_text` 时必须同步改这里，否则会漏刷新）：
+/// - `state` / `enabled` / `paused` / `phase` → 第 1、2 行的文案；
+/// - `phase` 只取判别式：`HeadsUp` / `Break` 的文案是常量，带上的时间载荷不影响输出；
+/// - `minute` → `Idle` 分支里 `%H:%M` 的钟点，**只会在分钟边界变**；
+/// - `completed` / `postponed` / `streak` → 第 3 行的计数。
+type TooltipFingerprint = (ContextState, bool, bool, u8, i64, u32, u32, u32);
 
 impl Runtime {
     pub fn new(
@@ -68,6 +86,8 @@ impl Runtime {
             hotkeys,
             registered_hotkey: None,
             esc_registered: false,
+            last_tooltip: None,
+            last_stats_line: None,
         };
         if let Err(e) = rt.apply_hotkey_enabled(rt.core.cfg.hotkey_enabled) {
             log::warn!("全局热键注册失败: {e}");
@@ -133,7 +153,7 @@ impl Runtime {
         let hotkey = global_hotkey();
         if on {
             let Some(mgr) = &self.hotkeys else {
-                return Err("热键管理器不可用".to_string());
+                return Err(tr("runtime.hotkey_unavailable").to_string());
             };
             if self.registered_hotkey.is_some() {
                 return Ok(());
@@ -237,16 +257,55 @@ impl Runtime {
         if self.core.stats.dirty {
             self.core.stats.save();
         }
+        self.sync_tooltip(now);
+        self.tray.set_paused(self.core.is_paused(now));
+        self.sync_stats_line();
+    }
+
+    /// 托盘 tooltip：先比指纹、后构造文本。
+    ///
+    /// 顺序很重要——旧写法无条件先 `tooltip_text()` 再交给托盘内部的守卫，
+    /// 守卫只挡住了 Win32 调用，昂贵的那几次分配一次都没省下。
+    fn sync_tooltip(&mut self, now: Instant) {
+        let fp = self.tooltip_fingerprint(now);
+        if self
+            .last_tooltip
+            .as_ref()
+            .is_some_and(|(prev, _)| *prev == fp)
+        {
+            return;
+        }
         let tip = self.tooltip_text(now);
         self.tray.set_tooltip(&tip);
-        self.tray.set_paused(self.core.is_paused(now));
+        self.last_tooltip = Some((fp, tip));
+    }
+
+    /// 托盘统计行：先比三个计数器、后 `format!`。
+    fn sync_stats_line(&mut self) {
         let st = &self.core.stats;
-        self.tray.set_stats_line(&format!(
-            "今日休息 {} 次 · 跳过 {} · 延后 {}",
-            st.completed_today(),
-            st.skipped,
-            st.postponed
-        ));
+        let key = (st.completed_today(), st.skipped, st.postponed);
+        if self.last_stats_line == Some(key) {
+            return;
+        }
+        self.last_stats_line = Some(key);
+        let (completed, skipped, postponed) = key;
+        self.tray
+            .set_stats_line(&crate::tr::tray_stats_line(completed, skipped, postponed));
+    }
+
+    /// 见 `TooltipFingerprint`。
+    fn tooltip_fingerprint(&self, now: Instant) -> TooltipFingerprint {
+        (
+            self.core.state,
+            self.core.cfg.enabled,
+            self.core.is_paused(now),
+            phase_discriminant(&self.core.phase),
+            // 钟点只按分钟变；这是本函数唯一一次时区查询
+            chrono::Local::now().timestamp() / 60,
+            self.core.stats.completed_today(),
+            self.core.stats.postponed,
+            self.core.stats.streak_days,
+        )
     }
 
     /// 按当前配置播放提示音：自定义音频优先，失败或未设置时回退到合成预设。
@@ -325,6 +384,7 @@ impl Runtime {
     pub fn apply_settings_action(&mut self, action: SettingsAction, now: Instant) {
         match action {
             SettingsAction::Save(cfg) => {
+                let cfg = *cfg;
                 let check_now = cfg.update_check_enabled && !self.core.cfg.update_check_enabled;
                 self.core.apply_config(cfg.clone(), now);
                 if let Err(e) = cfg.save() {
@@ -403,14 +463,15 @@ impl Runtime {
                     .play_custom(std::path::Path::new(&path), volume_pct)
                 {
                     if let Some(s) = &mut self.settings {
-                        s.custom_sound_error = Some(format!("播放失败：{e}"));
+                        s.custom_sound_error =
+                            Some(tr_fill("runtime.custom_play_failed", "{err}", e));
                     }
                 }
             }
             SettingsAction::PickCustomSound => {
                 let picked = rfd::FileDialog::new()
-                    .set_title("选择提示音文件（≤ 5 分钟）")
-                    .add_filter("音频文件", audio::CUSTOM_EXTENSIONS)
+                    .set_title(tr("dialog.pick_sound"))
+                    .add_filter(tr("dialog.audio_filter"), audio::CUSTOM_EXTENSIONS)
                     .pick_file();
                 let Some(path) = picked else {
                     return;
@@ -424,8 +485,11 @@ impl Runtime {
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_default();
-                        s.custom_sound_info =
-                            Some(format!("{name}（{}）", ui::human_duration(len)));
+                        s.custom_sound_info = Some(
+                            tr("ui.sound_file_info")
+                                .replace("{name}", &name)
+                                .replace("{len}", &ui::human_duration(len)),
+                        );
                         s.custom_sound_error = None;
                         s.draft.custom_sound_path = Some(path.display().to_string());
                         s.draft.sound_preset = SoundPreset::Custom;
@@ -447,8 +511,11 @@ impl Runtime {
             }
             SettingsAction::PickWallpaper => {
                 let picked = rfd::FileDialog::new()
-                    .set_title("选择严格模式背景图片")
-                    .add_filter("图片", crate::wallpaper::WALLPAPER_EXTENSIONS)
+                    .set_title(tr("dialog.pick_wallpaper"))
+                    .add_filter(
+                        tr("dialog.image_filter"),
+                        crate::wallpaper::WALLPAPER_EXTENSIONS,
+                    )
                     .pick_file();
                 if let (Some(path), Some(s)) = (picked, &mut self.settings) {
                     s.draft.strict_wallpaper_path = Some(path.display().to_string());
@@ -461,11 +528,33 @@ impl Runtime {
                 }
             }
             SettingsAction::CheckUpdateNow => self.spawn_update_check(),
+            SettingsAction::SetLanguage(code) => self.apply_language(code),
             SettingsAction::OpenConfigDir => {
                 let dir = crate::config::config_dir();
                 let _ = std::fs::create_dir_all(&dir);
                 let _ = std::process::Command::new("explorer").arg(&dir).spawn();
             }
+        }
+    }
+
+    /// 切换界面语言：更新全局语言状态 → 托盘逐项重写 → 落盘。
+    ///
+    /// 视口内容与字体不需要这里管：egui 每帧从 `tr()` 现取，`app.rs` 的
+    /// `App::logic` 每帧比对 `tr::language()`，变了就 `ctx.set_fonts()`。
+    pub fn apply_language(&mut self, code: &str) {
+        let lang = Lang::from_config(code);
+        if lang == crate::tr::language() && self.core.cfg.language == lang.code() {
+            return;
+        }
+        self.core.cfg.language = lang.code().to_string();
+        self.tray.apply_language(lang);
+        // 统计行与 tooltip 的指纹不含语言，必须强制重推一次
+        self.last_stats_line = None;
+        self.last_tooltip = None;
+        self.persist_config();
+        if let Some(s) = &mut self.settings {
+            s.saved.language = self.core.cfg.language.clone();
+            s.draft.language = self.core.cfg.language.clone();
         }
     }
 
@@ -478,9 +567,9 @@ impl Runtime {
     /// 提醒状态一句话：托盘 tooltip 与设置窗共用。
     pub fn reminder_line(&self, now: Instant) -> String {
         if !self.core.cfg.enabled {
-            "提醒已关闭".to_string()
+            tr("runtime.reminder_disabled").to_string()
         } else if self.core.is_paused(now) {
-            "已暂停 1 小时".to_string()
+            tr("runtime.reminder_paused").to_string()
         } else {
             match self.core.phase {
                 // 具体钟点比“约 12 分钟后”更直观（快赢审计 #4）
@@ -488,28 +577,40 @@ impl Runtime {
                     let at = chrono::Local::now()
                         + chrono::Duration::from_std(self.core.next_break_in(now))
                             .unwrap_or_default();
-                    format!("下次休息 {}", at.format("%H:%M"))
+                    tr_fill("runtime.reminder_next", "{t}", at.format("%H:%M"))
                 }
-                Phase::HeadsUp { .. } => "即将休息".to_string(),
-                Phase::Break { .. } => "休息中".to_string(),
+                Phase::HeadsUp { .. } => tr("runtime.reminder_imminent").to_string(),
+                Phase::Break { .. } => tr("runtime.reminder_in_break").to_string(),
             }
         }
     }
 
     fn tooltip_text(&self, now: Instant) -> String {
         let st = &self.core.stats;
+        // 延后为 0 时整段留空（v0.5.2 的行为），不为 0 时用复数 key
         let postponed = if st.postponed > 0 {
-            format!(" · 延后 {} 次", st.postponed)
+            trn("stats.postponed_suffix", st.postponed)
         } else {
             String::new()
         };
         format!(
-            "EyeFlow — {}\n{}\n今日完成 {} 次{} · 连续 {} 天",
-            self.core.state.label(),
+            "{}\n{}\n{}{}{}{}",
+            tr_fill("runtime.tooltip_head", "{state}", tr(self.core.state.key())),
             self.reminder_line(now),
-            st.completed_today(),
+            trn("stats.completed", st.completed_today()),
             postponed,
-            st.streak_days
+            tr("stats.separator"),
+            trn("stats.streak", st.streak_days),
         )
+    }
+}
+
+/// `Phase` 的判别式（0/1/2）。见 `TooltipFingerprint`：HeadsUp / Break 的
+/// tooltip 文案是常量，载荷里的时间戳不影响输出，因此指纹只需要判别式。
+fn phase_discriminant(p: &Phase) -> u8 {
+    match p {
+        Phase::Idle => 0,
+        Phase::HeadsUp { .. } => 1,
+        Phase::Break { .. } => 2,
     }
 }

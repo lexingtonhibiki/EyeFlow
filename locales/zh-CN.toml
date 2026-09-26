@@ -1,0 +1,256 @@
+# EyeFlow 界面文案（简体中文）—— **唯一事实来源**
+#
+# 格式约定（ADR-0008）：
+#   · 扁平表，一行一个 `key = "value"`，无嵌套表、无转义（除 `\t` 与 `\\`）
+#   · key 全小写点分（`tray.open_settings`）
+#   · `{name}` 是占位符；调用点写 `tr(key).replace("{name}", …)`
+#   · `|` 分隔复数形态：第 1 段是 n == 1，第 2 段是 n != 1
+#   · 本文件的键集合是唯一基准：`build.rs` 以它为准，
+#     en-US 缺任一键或多出键都会让**构建失败**
+#   · 改文案只改这两个文件，代码调用点零改动
+#
+# 与代码的对应关系见 docs/adr/0008-i18n-self-built-tr-layer.md。
+
+# ── 托盘（tray.rs）───────────────────────────────────────────────────────
+"tray.open_settings" = "打开设置…"
+"tray.toggle_enabled" = "启用提醒"
+"tray.rest_now" = "立即休息"
+# \t 是 Windows 菜单的加速键分隔符，翻译时必须保留
+"tray.rest_now_hotkey" = "立即休息\tCtrl+Shift+E"
+"tray.toggle_pause" = "暂停 1 小时"
+"tray.resume" = "恢复提醒"
+"tray.toggle_sound" = "提示音"
+"tray.quit" = "退出"
+"tray.tooltip" = "EyeFlow 护眼提醒"
+
+# ── 今日统计（runtime.rs / ui.rs）───────────────────────────────────────
+"stats.separator" = " · "
+"stats.dot" = "●"
+"stats.count" = "{n} 次"
+"stats.completed_label" = "今日完成"
+"stats.natural_label" = "（其中自然休息 {n}）"
+"stats.skipped_label" = "跳过"
+"stats.postponed_label" = "延后"
+# 与英文表同形：两段形态内容相同，因为中文名词不随数词变形（「1 天」与「3 天」
+# 写法一致）。写出来是为了让 `|` 的形态边界在两个文件里位置一致——译者改英文
+# 形态时不必猜中文这一侧该在哪切。中文全部 key 都不带 `|`，本键是唯一例外。
+"stats.streak_label" = "· 连续坚持 {n} 天|· 连续坚持 {n} 天"
+"stats.done" = "今日休息 {n} 次"
+"stats.skipped" = "跳过 {n}"
+"stats.postponed" = "延后 {n}"
+"stats.completed" = "今日完成 {n} 次"
+"stats.postponed_suffix" = " · 延后 {n} 次"
+"stats.streak" = "连续 {n} 天"
+
+# ── 提醒状态行（runtime.rs）──────────────────────────────────────────────
+"runtime.reminder_disabled" = "提醒已关闭"
+"runtime.reminder_paused" = "已暂停 1 小时"
+"runtime.reminder_next" = "下次休息 {t}"
+"runtime.reminder_imminent" = "即将休息"
+"runtime.reminder_in_break" = "休息中"
+"runtime.hotkey_unavailable" = "热键管理器不可用"
+"runtime.custom_play_failed" = "播放失败：{err}"
+"runtime.tooltip_head" = "EyeFlow — {state}"
+
+# ── 上下文状态（core.rs）────────────────────────────────────────────────
+"core.state_desktop" = "桌面"
+"core.state_flow" = "心流"
+"core.state_gaming" = "游戏 / 全屏"
+"core.state_away" = "离开"
+
+# ── 设置窗：卡片标题（ui.rs）────────────────────────────────────────────
+"card.now" = "现在"
+"card.rhythm" = "提醒节奏"
+"card.delivery" = "提醒方式"
+"card.context" = "上下文感知"
+"card.system" = "系统"
+
+# ── 设置窗：状态条 ──────────────────────────────────────────────────────
+"ui.rest_now" = "立即休息"
+"ui.config_file" = "配置文件：{path}"
+
+# ── 设置窗：提醒节奏 ────────────────────────────────────────────────────
+"ui.enable_reminders" = "启用提醒"
+"ui.short_interval" = "短休息间隔"
+"ui.slider_shortest" = "最短"
+"ui.slider_longest" = "最长"
+"ui.weak_interval_random" = "实际间隔在区间内随机，峰值落在中点（默认 15~25 分钟，峰值 20 分钟 — AOA 20-20-20）。"
+"ui.short_duration" = "短休息时长"
+"ui.long_break_checkbox" = "长休息：连续用屏一段时间后建议离开屏幕"
+"ui.after_screen" = "连续用屏"
+"ui.then_break" = "后休息"
+"ui.weak_aoa" = "AOA：连续用屏 2 小时后休息 15 分钟。长休息同样可延后一次；跳过后 10 分钟再提示。"
+"ui.heads_up" = "预告提前"
+"ui.postpone_once" = "延后一次"
+
+# ── 设置窗：提醒方式 ────────────────────────────────────────────────────
+"ui.visual_checkbox" = "视觉提醒"
+"ui.strict_checkbox" = "严格模式"
+# v0.6.1：这两条解释原本与标题挤在同一个键里。英文侧 93 / 96 字符，直接冲出
+# 内容区右缘被截断（截图实测右缘 750.1 / 763.4 pt > 546.0 pt）；中文侧 30 / 26
+# 字虽然放得下，但和英文不是同一个问题，中英必须一起拆才不欠翻译。
+# 解释的**文字一个字未改**，只是从行内标签搬进了控件的 hover
+# （与本版已定的 `ui.weak_aoa` / `ui.weak_sound_advice` 等 4 条同款处理）。
+"ui.weak_visual" = "右下角预告浮窗 + 居中休息面板（不抢焦点）"
+"ui.weak_strict" = "休息面板改为全屏遮罩（可自选背景图片）"
+"ui.sound" = "提示音"
+"ui.no_audio_device" = "（未检测到音频输出设备）"
+"ui.start_cue_checkbox" = "点击『现在开始』/『立即休息』时播放提示音"
+"ui.cue_volume" = "提示音音量"
+"ui.cue_duration" = "提示音时长"
+"ui.weak_custom_length" = "（自定义音频按文件本身长度播放一次）"
+"ui.weak_sound_advice" = "听歌 / 看视频时短促的声音容易被背景声掩蔽：建议把时长调到 2~3 秒（重复呈现更易察觉），音量最高可放大到 200%。全屏游戏 / 视频中声音是唯一提醒通道，会自动至少响 2 秒。"
+
+# ── 设置窗：自定义提示音 ────────────────────────────────────────────────
+"ui.preview" = "▶ 试听"
+"ui.pick_sound" = "选择音频文件…"
+"ui.clear" = "清除"
+"ui.selected" = "已选择：{info}"
+"ui.current" = "当前：{name}"
+"ui.sound_file_info" = "{name}（{len}）"
+"ui.weak_sound_formats" = "支持 wav / mp3 / ogg / flac / m4a / aac，时长不超过 5 分钟。"
+
+# ── 设置窗：严格模式壁纸 ────────────────────────────────────────────────
+"ui.background_image" = "背景图片"
+"ui.pick_image" = "选择图片…"
+"ui.fit" = "自适应"
+"ui.weak_no_image" = "未选择图片时使用纯暗色遮罩。支持 png / jpg / webp / bmp / gif。"
+"ui.overlay_pct" = "蒙层浓度"
+"ui.gradient" = "渐变（上深下浅）"
+"ui.weak_preview" = "预览即为全屏遮罩的实际裁剪效果（16:9）；切换“自适应”与蒙层即时更新。"
+"ui.image_loading" = "图片加载中…"
+
+# ── 设置窗：上下文感知 ──────────────────────────────────────────────────
+"ui.flow_sensitivity" = "心流灵敏度"
+"ui.weak_flow" = "持续快速输入时判定为心流：到点的提醒会等键盘停歇 8 秒后再出现，不会被取消。"
+"ui.away" = "离开判定"
+"ui.unit_min_idle" = " 分钟无操作"
+"ui.weak_away" = "离开时计时暂停；进入离开状态即视为一次自然休息。全屏游戏 / 演示 / 独占应用中只响提示音，退出后补发预告。"
+"ui.quiet_hours" = "免打扰时段"
+"ui.quiet_until" = "到"
+"ui.weak_quiet_same" = "（起止相同 = 不启用）"
+"ui.esc_skip" = "休息中按 Esc 跳过（严格模式下不可用）"
+
+# ── 设置窗：系统卡片 ────────────────────────────────────────────────────
+"ui.autostart" = "开机自启（写入 HKCU\\...\\Run，可在任务管理器“启动应用”中管理）"
+"ui.hotkey" = "全局热键 Ctrl+Shift+E = 立即休息"
+"ui.hotkey_failed" = "注册失败：组合键可能已被其他程序占用"
+"ui.weak_hotkey" = "全局热键由操作系统全局独占，可能与其他软件冲突，可随时关闭；关闭后仍可用托盘菜单“立即休息”。"
+"ui.update_check" = "启动时检查更新"
+"ui.update_check_detail" = "每 24 小时至多一次，仅访问 GitHub Releases API，不下载任何文件。"
+"ui.update_check_absent" = "此构建未包含在线更新检查（体积优化，见 docs/adr/0007-v0.6-scope.md 判决五）。"
+"ui.current_version" = "当前版本 v{ver}"
+"ui.check_now" = "立即检查"
+"ui.checking" = "正在检查…"
+"ui.up_to_date" = "已是最新版本 ✓"
+"ui.new_version" = "有新版本 v{ver}"
+"ui.open_release" = "打开发布页"
+"ui.check_failed" = "检查失败：{err}"
+"ui.open_dir" = "打开目录"
+
+# ── 设置窗：页脚 ────────────────────────────────────────────────────────
+"ui.reset_defaults" = "恢复默认"
+"ui.weak_saved_hint" = "所有更改即时保存"
+"ui.saved" = "已保存 ✓"
+
+# ── 语言选择器 ─────────────────────────────────────────────────────────
+"ui.language" = "语言"
+"lang.zh_cn" = "简体中文"
+"lang.en_us" = "English"
+
+# ── 时间单位（`|` 之外的独立 key：单位不是复数）─────────────────────────
+"unit.minute" = " 分钟"
+"unit.second" = " 秒"
+"unit.hour" = " 小时"
+"unit.percent" = " %"
+"dur.seconds" = "{n} 秒"
+"dur.minutes" = "{n} 分"
+"dur.hours" = "{n} 小时"
+"dur.minutes_rounded" = "{n} 分钟"
+
+# ── 枚举标签：心流灵敏度（短名 + 悬停说明，ADR-0008 §b）─────────────────
+"flow.low" = "低"
+"flow.medium" = "中"
+"flow.high" = "高"
+"flow.low_desc" = "30 秒内持续输入 > 40 键判定为心流"
+"flow.medium_desc" = "30 秒内持续输入 > 70 键判定为心流"
+"flow.high_desc" = "30 秒内持续输入 > 100 键判定为心流"
+
+# ── 枚举标签：提示音预设 ────────────────────────────────────────────────
+"sound.gentle_chime" = "风铃"
+"sound.soft_tap" = "轻敲"
+"sound.water_drop" = "水滴"
+"sound.digital_drop" = "数字降调"
+"sound.triple_beep" = "三连短哔"
+"sound.custom" = "自定义音频…"
+
+# ── 枚举标签：壁纸自适应 ────────────────────────────────────────────────
+"fit.cover" = "铺满裁剪"
+"fit.contain" = "完整显示"
+"fit.stretch" = "拉伸"
+
+# ── 浮窗与休息面板（app.rs）────────────────────────────────────────────
+"app.window_title_settings" = "EyeFlow 设置"
+"app.panel_long_title" = "连续用屏 2 小时了，该离开屏幕一会儿"
+"app.panel_short_title" = "{n} 秒后休息一下"
+"app.panel_long_sub" = "{n} 分钟长休息即将开始"
+"app.panel_short_sub" = "看向 6 米外，多眨几次眼"
+"app.start_now" = "现在开始"
+"app.postpone" = "延后 {n} 分钟"
+"app.hover_postpone_long" = "长休息也可延后一次；到点后仍是长休息"
+"app.hover_postpone" = "每次提醒只能延后一次"
+"app.skip" = "跳过"
+"app.flash_title" = "做得好！今日第 {n} 次休息"
+"app.flash_sub" = "回来啦——眨眨眼，看看 6 米外。"
+"app.break_title_long" = "长休息 · 离开屏幕一会儿"
+"app.break_title_short" = "看向远处"
+"app.continue_work" = "继续工作"
+"app.auto_complete" = "倒计时结束会自动完成并记入今日统计"
+
+# ── 崩溃提示（main.rs）──────────────────────────────────────────────────
+"app.panic_title" = "EyeFlow 已停止运行"
+"app.panic_body" = "EyeFlow 遇到未处理的错误，已自动停止。"
+"app.panic_advice" = "窗口与托盘图标已消失，请重新启动 EyeFlow。"
+"app.panic_log" = "诊断日志：%APPDATA%\\eyeflow\\eyeflow.log"
+
+# ── 更新检查（update.rs）────────────────────────────────────────────────
+"update.not_released" = "GitHub 上还没有发布版本（Release）"
+"update.net_error" = "网络请求失败: {err}"
+"update.read_error" = "读取响应失败: {err}"
+"update.parse_error" = "解析响应失败: {err}"
+"update.api_error" = "GitHub API: {msg}"
+"update.no_tag" = "响应缺少 tag_name"
+"update.not_included" = "此构建未包含更新检查功能（未启用 update-check 编译选项）"
+
+# ── 音频（audio.rs）─────────────────────────────────────────────────────
+# 占位符用 {min} 而不是 {m}：T12a 禁止英文表出现 `{m}`（那是 human_duration
+# 的 0 分钟陷阱留下的约定），分钟在这里也出现，所以两边一起改名。
+"audio.too_long" = "时长 {min} 分 {sec} 秒,超过 {limit} 分钟上限"
+"audio.not_found" = "文件不存在"
+"audio.decode_error" = "无法解码:格式不支持或文件损坏"
+
+# ── 开机自启（autostart.rs）─────────────────────────────────────────────
+"autostart.open_key_failed" = "打开 Run 键失败: {err}"
+"autostart.exe_path_failed" = "获取程序路径失败: {err}"
+"autostart.write_failed" = "写入自启项失败: {err}"
+"autostart.delete_failed" = "删除自启项失败: {err}"
+
+# ── 壁纸（wallpaper.rs）─────────────────────────────────────────────────
+"wallpaper.read_error" = "无法读取图片: {err}"
+"wallpaper.gradient_suffix" = "（上深下浅）"
+"wallpaper.hover" = "原图 {w}×{h} px · 当前模式：{fit} · 蒙层 {pct}%{shape}"
+
+# ── 原生文件对话框（rfd）────────────────────────────────────────────────
+"dialog.pick_sound" = "选择提示音文件（≤ 5 分钟）"
+"dialog.audio_filter" = "音频文件"
+"dialog.pick_wallpaper" = "选择严格模式背景图片"
+"dialog.image_filter" = "图片"
+
+# ── 护眼贴士（tips.rs）──────────────────────────────────────────────────
+"tip.1" = "把视线移到 6 米（20 英尺）以外的地方，让眼睛的调节肌放松。"
+"tip.2" = "盯着屏幕时眨眼会从每分钟约 15 次降到 5~7 次——现在多眨几次，完整地闭合。"
+"tip.3" = "看向窗外最远的一个点，停留到倒计时结束。"
+"tip.4" = "顺便活动一下肩颈：屏幕顶端应略低于视线，距离约一臂。"
+"tip.5" = "眼睛干涩时可以轻轻闭眼几秒，让泪膜重新铺开。"
+"tip.6" = "屏幕亮度和周围环境接近时最不累眼，休息时看看环境光是否合适。"
+"tip.7" = "连续用屏 2 小时后，值得起身离开屏幕 15 分钟。"

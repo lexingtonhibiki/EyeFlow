@@ -34,11 +34,28 @@ rem dev 验证无误后合并回 main 并打 tag 发布
 
 ```bat
 cargo fmt
-cargo clippy
+cargo clippy --bins -- -D warnings
 cargo test
 ```
 
+- **推前请再跑一遍 GNU 工具链**。CI 只跑 `windows-latest`（MSVC），不加 GNU 矩阵是有意为之
+  （ADR-0007 判决七：`lessons.md` §3.3 那次事故的教训是「写显式断言」不是「矩阵翻倍」，
+  为一个已根因消除的 bug 类别付永久 CI 成本是错配）。本机默认工具链就是 GNU，成本近零：
+
+```bat
+cargo +stable-x86_64-pc-windows-gnu test
+```
+
 - `EYEFLOW_DEMO=1` 可启动演示模式（60 秒后触发一次完整提醒流程），便于验收界面改动。
+
+## Cargo features
+
+| feature | 默认 | 作用 |
+|---|---|---|
+| `update-check` | **关** | 编译在线更新检查所需的 TLS + JSON 栈（`ureq` / `rustls` / `ring` / `serde_json`）。关掉实测省 1,168,896 B（-11.4%），因为 `update_check_enabled` 本来就默认 `false` |
+
+需要在线更新检查时：`cargo build --release --features update-check`。
+发布构建用默认 features（不带这个开关）——见 [ADR-0007](docs/adr/0007-v0.6-scope.md) 判决五。
 
 ## 发布流程（维护者）
 

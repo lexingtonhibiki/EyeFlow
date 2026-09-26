@@ -1,0 +1,253 @@
+# EyeFlow UI strings (English). Key set must match `locales/zh-CN.toml` exactly —
+# `build.rs` treats zh-CN as the single source of truth and **fails the build**
+# on a missing or extra key.
+#
+# Conventions (see docs/adr/0008-i18n-self-built-tr-layer.md):
+#   · flat table, one `key = "value"` per line
+#   · `{name}` placeholders; the English set must be a SUBSET of the Chinese one
+#   · `|` splits plural forms: form 0 for n == 1, form 1 otherwise
+#   · avoid ✓ / ▶ / 👀 / 👏 here: Segoe UI has no glyphs for them (only
+#     seguisym.ttf does, and T11 checks the English table against Segoe UI alone)
+#   · avoid `{m}`: reserved for the human_duration zero-minute trap (T12)
+
+# ── Tray ────────────────────────────────────────────────────────────────
+"tray.open_settings" = "Open settings…"
+"tray.toggle_enabled" = "Enable reminders"
+"tray.rest_now" = "Rest now"
+# \t is the Windows menu accelerator separator; it must survive translation
+"tray.rest_now_hotkey" = "Rest now\tCtrl+Shift+E"
+"tray.toggle_pause" = "Pause for one hour"
+"tray.resume" = "Resume reminders"
+"tray.toggle_sound" = "Sound cue"
+"tray.quit" = "Quit"
+"tray.tooltip" = "EyeFlow eye-care reminder"
+
+# ── Today's stats ───────────────────────────────────────────────────────
+"stats.separator" = " · "
+"stats.dot" = "●"
+"stats.count" = "{n}"
+"stats.completed_label" = "Completed today"
+"stats.natural_label" = "({n} natural)"
+"stats.skipped_label" = "skipped"
+"stats.postponed_label" = "postponed"
+# `{n}-day streak` 是复合名词，`|` 的二元复数约定表达不了它（ADR-0008 §能力边界），
+# 0 / 1 两读都生硬。改用「in a row」措辞绕开复合名词，`|` 就能用了：
+#   0 → "· 0 days in a row" / 1 → "· 1 day in a row" / 3 → "· 3 days in a row"
+# 形态与托盘 tooltip 的 `stats.streak` 一致，状态条多带一个 `·` 分隔符。
+"stats.streak_label" = "· {n} day in a row|· {n} days in a row"
+"stats.done" = "1 break today|{n} breaks today"
+"stats.skipped" = "1 skipped|{n} skipped"
+"stats.postponed" = "1 postponed|{n} postponed"
+"stats.completed" = "1 completed today|{n} completed today"
+"stats.postponed_suffix" = " · 1 postponed| · {n} postponed"
+"stats.streak" = "{n} days in a row"
+
+# ── Reminder state line ─────────────────────────────────────────────────
+"runtime.reminder_disabled" = "Reminders are off"
+"runtime.reminder_paused" = "Paused for one hour"
+"runtime.reminder_next" = "Next break at {t}"
+"runtime.reminder_imminent" = "Break coming up"
+"runtime.reminder_in_break" = "Break in progress"
+"runtime.hotkey_unavailable" = "Hotkey manager unavailable"
+"runtime.custom_play_failed" = "Playback failed: {err}"
+"runtime.tooltip_head" = "EyeFlow — {state}"
+
+# ── Context state ───────────────────────────────────────────────────────
+"core.state_desktop" = "Desktop"
+"core.state_flow" = "Flow"
+"core.state_gaming" = "Gaming / full screen"
+"core.state_away" = "Away"
+
+# ── Settings window: card titles ────────────────────────────────────────
+"card.now" = "Now"
+"card.rhythm" = "Reminder rhythm"
+"card.delivery" = "How to remind"
+"card.context" = "Context awareness"
+"card.system" = "System"
+
+# ── Settings window: status card ────────────────────────────────────────
+"ui.rest_now" = "Rest now"
+"ui.config_file" = "Config file: {path}"
+
+# ── Settings window: rhythm ─────────────────────────────────────────────
+"ui.enable_reminders" = "Enable reminders"
+"ui.short_interval" = "Short break interval"
+"ui.slider_shortest" = "Shortest"
+"ui.slider_longest" = "Longest"
+"ui.weak_interval_random" = "The actual interval is random inside the range and peaks at its midpoint (default 15~25 min; AOA 20-20-20)."
+"ui.short_duration" = "Short break length"
+"ui.long_break_checkbox" = "Long break: suggest stepping away after a stretch of screen time"
+"ui.after_screen" = "After"
+"ui.then_break" = "of screen time, rest for"
+"ui.weak_aoa" = "AOA: rest your eyes for fifteen minutes after two hours of continuous screen time. Long breaks can be postponed once too; skipping one reminds you again after ten minutes."
+"ui.heads_up" = "Heads-up lead"
+"ui.postpone_once" = "Postpone once"
+
+# ── Settings window: delivery ───────────────────────────────────────────
+# v0.6.1：标题与解释原本是同一个键（93 / 96 字符），整行冲出内容区右缘被截断。
+# 拆成短标签 + hover 说明，解释文字未改（与 `ui.weak_aoa` 等 4 条同款处理）。
+"ui.visual_checkbox" = "Visual reminder"
+"ui.strict_checkbox" = "Strict mode"
+"ui.weak_visual" = "Heads-up window at the bottom right + centered break panel (never steals focus)"
+"ui.weak_strict" = "The break panel becomes a full-screen overlay (with your own background image)"
+"ui.sound" = "Sound cue"
+"ui.no_audio_device" = "(no audio output device detected)"
+"ui.start_cue_checkbox" = "Play a cue when you click Start now / Rest now"
+"ui.cue_volume" = "Cue volume"
+"ui.cue_duration" = "Cue length"
+"ui.weak_custom_length" = "(a custom audio file plays once, at its own length)"
+"ui.weak_sound_advice" = "Short sounds get masked by music or video: try 2~3 s (repetition is easier to notice) and up to 200% volume. In full-screen games and video, sound is the only channel left, so the cue is stretched to at least 2 s."
+
+# ── Settings window: custom sound ───────────────────────────────────────
+"ui.preview" = "Preview"
+"ui.pick_sound" = "Choose audio file…"
+"ui.clear" = "Clear"
+"ui.selected" = "Selected: {info}"
+"ui.current" = "Current: {name}"
+"ui.sound_file_info" = "{name} ({len})"
+"ui.weak_sound_formats" = "Supports wav / mp3 / ogg / flac / m4a / aac, up to 5 minutes."
+
+# ── Settings window: strict-mode wallpaper ──────────────────────────────
+"ui.background_image" = "Background image"
+"ui.pick_image" = "Choose image…"
+"ui.fit" = "Fit"
+"ui.weak_no_image" = "Without an image the overlay is plain dark. Supports png / jpg / webp / bmp / gif."
+"ui.overlay_pct" = "Overlay"
+"ui.gradient" = "Gradient (dark at top)"
+"ui.weak_preview" = "The preview shows the real 16:9 crop of the full-screen overlay; Fit and Overlay update it live."
+"ui.image_loading" = "Loading image…"
+
+# ── Settings window: context ────────────────────────────────────────────
+"ui.flow_sensitivity" = "Flow sensitivity"
+"ui.weak_flow" = "Sustained fast typing counts as flow: a due reminder waits for 8 s of keyboard silence instead of being dropped."
+"ui.away" = "Away detection"
+"ui.unit_min_idle" = " min idle"
+"ui.weak_away" = "The timer pauses while you are away; being away counts as one natural break. In full-screen games, presentations or exclusive apps only the cue plays, and a heads-up is sent once you return."
+"ui.quiet_hours" = "Do not disturb"
+"ui.quiet_until" = "to"
+"ui.weak_quiet_same" = "(same start and end = disabled)"
+"ui.esc_skip" = "Press Esc during a break to skip (unavailable in strict mode)"
+
+# ── Settings window: system card ────────────────────────────────────────
+"ui.autostart" = "Start with Windows (HKCU\\...\\Run; manageable in Task Manager > Startup)"
+"ui.hotkey" = "Global hotkey Ctrl+Shift+E = Rest now"
+"ui.hotkey_failed" = "Registration failed: the combination may be taken by another program"
+"ui.weak_hotkey" = "A global hotkey is exclusive to the whole system and may clash with other software; you can turn it off at any time — the tray menu keeps Rest now either way."
+"ui.update_check" = "Check for updates at startup"
+"ui.update_check_detail" = "At most once every 24 h, GitHub Releases API only, nothing is downloaded."
+"ui.update_check_absent" = "This build has no online update check (size optimization, see ADR-0007 decision five)."
+"ui.current_version" = "Version v{ver}"
+"ui.check_now" = "Check now"
+"ui.checking" = "Checking…"
+"ui.up_to_date" = "Already up to date"
+"ui.new_version" = "Version v{ver} is available"
+"ui.open_release" = "Open releases"
+"ui.check_failed" = "Check failed: {err}"
+"ui.open_dir" = "Open folder"
+
+# ── Settings window: footer ─────────────────────────────────────────────
+"ui.reset_defaults" = "Restore defaults"
+"ui.weak_saved_hint" = "Changes are saved as you make them"
+"ui.saved" = "Saved"
+
+# ── Language selector ───────────────────────────────────────────────────
+"ui.language" = "Language"
+# 语言名必须是 ASCII：T11a 会拿英文表的每一个非 ASCII 字符去查 Segoe UI 的
+# cmap，母语名「简体中文」在英文界面里画不出来。
+"lang.zh_cn" = "Chinese (Simplified)"
+"lang.en_us" = "English"
+
+# ── Units (their own keys: a unit is not a plural) ──────────────────────
+"unit.minute" = " min"
+"unit.second" = " s"
+"unit.hour" = " h"
+"unit.percent" = " %"
+"dur.seconds" = "{n} s"
+"dur.minutes" = "{n} min"
+"dur.hours" = "{n} h"
+"dur.minutes_rounded" = "{n} min"
+
+# ── Enum labels: flow sensitivity (short name + hover note, ADR-0008 §b) ─
+"flow.low" = "Low"
+"flow.medium" = "Medium"
+"flow.high" = "High"
+"flow.low_desc" = "More than 40 keys within 30 s of continuous typing counts as flow"
+"flow.medium_desc" = "More than 70 keys within 30 s of continuous typing counts as flow"
+"flow.high_desc" = "More than 100 keys within 30 s of continuous typing counts as flow"
+
+# ── Enum labels: sound presets ──────────────────────────────────────────
+"sound.gentle_chime" = "Gentle chime"
+"sound.soft_tap" = "Soft tap"
+"sound.water_drop" = "Water drop"
+"sound.digital_drop" = "Digital drop"
+"sound.triple_beep" = "Triple beep"
+"sound.custom" = "Custom audio…"
+
+# ── Enum labels: wallpaper fit ──────────────────────────────────────────
+"fit.cover" = "Cover (crop)"
+"fit.contain" = "Contain"
+"fit.stretch" = "Stretch"
+
+# ── Floating windows and break panel ────────────────────────────────────
+"app.window_title_settings" = "EyeFlow Settings"
+"app.panel_long_title" = "Two hours of screen time — time to step away"
+"app.panel_short_title" = "Break in {n} s"
+"app.panel_long_sub" = "A {n} min long break starts soon"
+"app.panel_short_sub" = "Look 6 m away, and blink a few times"
+"app.start_now" = "Start now"
+"app.postpone" = "Postpone {n} min"
+"app.hover_postpone_long" = "A long break can be postponed once too; it stays a long break"
+"app.hover_postpone" = "Each reminder can be postponed only once"
+"app.skip" = "Skip"
+"app.flash_title" = "Well done! Break {n} of the day"
+"app.flash_sub" = "Welcome back — blink, and look 6 m away."
+"app.break_title_long" = "Long break · step away"
+"app.break_title_short" = "Look into the distance"
+"app.continue_work" = "Back to work"
+"app.auto_complete" = "The break is completed and counted when the timer runs out"
+
+# ── Crash dialog ────────────────────────────────────────────────────────
+"app.panic_title" = "EyeFlow has stopped"
+"app.panic_body" = "EyeFlow hit an unrecoverable error and has stopped."
+"app.panic_advice" = "The window and the tray icon are gone; please start EyeFlow again."
+"app.panic_log" = "Diagnostic log: %APPDATA%\\eyeflow\\eyeflow.log"
+
+# ── Update check ────────────────────────────────────────────────────────
+"update.not_released" = "No release published on GitHub yet"
+"update.net_error" = "Network request failed: {err}"
+"update.read_error" = "Could not read the response: {err}"
+"update.parse_error" = "Could not parse the response: {err}"
+"update.api_error" = "GitHub API: {msg}"
+"update.no_tag" = "The response has no tag_name"
+"update.not_included" = "This build has no update check (the update-check compile option is off)"
+
+# ── Audio ───────────────────────────────────────────────────────────────
+"audio.too_long" = "Length {min} min {sec} s, over the {limit} min limit"
+"audio.not_found" = "File not found"
+"audio.decode_error" = "Cannot decode: unsupported format or the file is damaged"
+
+# ── Autostart ───────────────────────────────────────────────────────────
+"autostart.open_key_failed" = "Could not open the Run key: {err}"
+"autostart.exe_path_failed" = "Could not resolve the program path: {err}"
+"autostart.write_failed" = "Could not write the autostart entry: {err}"
+"autostart.delete_failed" = "Could not delete the autostart entry: {err}"
+
+# ── Wallpaper ───────────────────────────────────────────────────────────
+"wallpaper.read_error" = "Could not read the image: {err}"
+"wallpaper.gradient_suffix" = " (gradient)"
+"wallpaper.hover" = "Original {w}×{h} px · Mode: {fit} · Overlay {pct}%{shape}"
+
+# ── Native file dialogs ────────────────────────────────────────────────
+"dialog.pick_sound" = "Choose a cue file (up to 5 minutes)"
+"dialog.audio_filter" = "Audio files"
+"dialog.pick_wallpaper" = "Choose a strict-mode background image"
+"dialog.image_filter" = "Images"
+
+# ── Eye-care tips ───────────────────────────────────────────────────────
+"tip.1" = "Move your gaze to something more than 6 m (20 ft) away to relax the focusing muscle."
+"tip.2" = "Blinking drops from about 15 times a minute to 5~7 while you stare at a screen — blink fully, a few times now."
+"tip.3" = "Fix your gaze on the farthest point you can see out the window and hold it until the timer ends."
+"tip.4" = "Move your shoulders and neck while you are at it: the top of the screen should sit just below eye level, about an arm's length away."
+"tip.5" = "If your eyes feel dry, close them gently for a few seconds so the tear film can spread again."
+"tip.6" = "Eyes tire least when screen brightness matches the room — check the ambient light while you rest."
+"tip.7" = "After two hours of continuous screen time, it is worth standing up and leaving the screen for 15 minutes."

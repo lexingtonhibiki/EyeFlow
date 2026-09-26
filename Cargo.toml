@@ -1,6 +1,6 @@
 [package]
 name = "eyeflow"
-version = "0.5.2"
+version = "0.6.1"
 edition = "2021"
 rust-version = "1.95"
 description = "EyeFlow — context-aware eye-care break reminder for Windows / 上下文感知的极简护眼提醒工具"
@@ -27,13 +27,19 @@ rodio = { version = "0.22", default-features = false, features = ["playback", "w
 rfd = "0.17"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
 
-# Optional, opt-in update check against the GitHub Releases API
-ureq = "3"
-serde_json = "1"
+# 可选的更新检查（`update-check` feature，默认关）——对 GitHub Releases API 的只读查询。
+# 为什么默认关：ureq 的默认 features 会把 rustls + ring（大块汇编加密代码）无条件
+# 拖进二进制，而 `update_check_enabled` 默认就是 false。实测把这个 feature 关掉省下
+# 1,139,200 B（10,224,640 → 9,085,440，-11.14%）。见 docs/adr/0007-v0.6-scope.md 判决五。
+# 需要在线检查：cargo build --release --features update-check
+ureq = { version = "3", optional = true }
+serde_json = { version = "1", optional = true }
 
 # Windows API
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    # GetUserDefaultLocaleName：首次运行时决定界面语言的初值（ADR-0008）
+    "Win32_Globalization",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_LibraryLoader",
@@ -52,6 +58,11 @@ log = "0.4"
 env_logger = "0.11"
 chrono = "0.4"
 rand = "0.9"
+
+[features]
+default = []
+# 在线更新检查所需的 TLS + JSON 栈。默认关，见上方 ureq 注释。
+update-check = ["dep:ureq", "dep:serde_json"]
 
 [build-dependencies]
 winresource = "0.1"

@@ -1,7 +1,7 @@
 # EyeFlow — 规格文档
 
 > **v0.2 · 2026-09**
-> 领域用词以 [CONTEXT.md](CONTEXT.md) 为准;默认参数与关键决策的权威来源是 [docs/adr/0001~0006](adr/),实现计划见 [docs/plan-v0.2.md](plan-v0.2.md)。
+> 领域用词以 [CONTEXT.md](../CONTEXT.md) 为准;默认参数与关键决策的权威来源是 [docs/adr/0001~0006](adr/),实现计划见 [docs/plan-v0.2.md](plan-v0.2.md)。
 
 ## 相对 v0.1 的变化
 
@@ -82,15 +82,19 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| N1 | 内存占用 | **< 30 MB 常驻(未打开窗口时)**,实测约 16 MB 工作集 / 2.5 MB 私有。显示浮窗 / 设置期间因 GL 上下文短暂升至约 200 MB,关闭后回落到 60~90 MB(NVIDIA 驱动堆残留,ADR-0006);仍显著低于 Electron 竞品(100~200 MB 常驻) |
-| N2 | CPU 占用 | 空闲时 ≈ 0%(轻量循环 200 ms 轮询;UI 会话期间 1 Hz `request_repaint_after` 节拍,无连续重绘) |
+| N1 | 内存占用 | **< 30 MB 常驻(未打开窗口时)**,全新空闲实测 **16.20 MB 工作集 / 3.15 MB 私有**(从未打开过设置窗)。显示浮窗 / 设置期间因 GL 上下文升至 179~224 MB 私有;关闭后回落到 **55.14 MB 私有 / 81.07 MB 工作集**(NVIDIA 驱动堆残留,ADR-0006);用户长开实例(24.8 小时)实测 77.41 MB 私有。仍显著低于 Electron 竞品(100~200 MB 常驻)。逐项拆解见 [README 内存实测表](../README.md#内存实测) |
+| N2 | CPU 占用 | 空闲时 ≈ 0%(轻量循环 1 s 轮询,见 N2 注;UI 会话期间 1 Hz `request_repaint_after` 节拍,无连续重绘)。实测空闲 0.482% → 0.177% |
 | N3 | 启动速度 | 双击后 < 1 秒托盘出现 |
 | N4 | 音频 | 提示音频率设计在 1.5kHz~2.5kHz 谐波区,穿透游戏音效;无音频设备时静音降级,不崩溃 |
-| N5 | 打包体积 | 便携 exe 约 7 MB(strip + opt-level=z + LTO + panic=abort;含 egui/eframe 与默认字体) |
+| N5 | 打包体积 | 便携 exe **8.66 MiB(9,085,440 B,v0.6 默认配置实测)**(strip + opt-level=z + LTO + panic=abort;含 egui/eframe 与默认字体)。v0.5.2 基线为 9.75 MiB(10,224,640 B),**净减 1,139,200 B(-11.14%)**,来源是把更新检查的 TLS 栈收进默认关闭的 `update-check` cargo feature;带该 feature 构建时体积回升 |
+
+> N2 注:轻量循环的轮询周期原为 200 ms,v0.6 改为 1 s(托盘点击最坏响应延迟由 200 ms 变为 1 s,ADR-0007 判决四)。这是本轮**唯一**可感知的时延变化,列出以便日后核对用户反馈。
 
 ### 3.3 配置项清单
 
 配置文件 `%APPDATA%\eyeflow\config.toml`;解析失败时改名备份为 `config.toml.bak-corrupt-<时间戳>` 后以默认值重建;v0.1 旧格式自动迁移并备份为 `config.toml.bak-v0.1-<时间戳>`。
+
+`language` 字段由 v0.6 引入:`#[serde(default = "d_language")]` 使 **v0.5.2 写出的 config.toml 不带这一行也完全按今天的行为运行**(不触发 v0.1 迁移,不触发解析失败备份重建);`Config` 没有 `deny_unknown_fields`,所以 v0.5.2 读到这一行时静默忽略,**降级也安全**。
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
@@ -105,24 +109,64 @@
 | postpone_secs | 300 | 延后时长(5 分钟;每次提醒最多延后 1 次) |
 | sound_enabled | true | 提示音开关 |
 | sound_preset | "gentle_chime" | 提示音预设:gentle_chime / soft_tap / water_drop / digital_drop / triple_beep / custom |
-| custom_sound_path | (空) | 自定义提示音文件(wav / mp3 / ogg / flac / m4a / aac,≤ 5 分钟),`sound_preset = "custom"` 时使用 |
+| custom_sound_path | (无此行) | 自定义提示音文件(wav / mp3 / ogg / flac / m4a / aac,≤ 5 分钟),`sound_preset = "custom"` 时使用。类型 `Option<String>`,未设置时**整行不出现**(不是空串) |
 | cue_volume_pct | 100 | 提示音音量 50~200%(>100 为主动放大) |
 | cue_duration_secs | 1 | 提示音时长 1~5 秒;声音是唯一通道(游戏/全屏)时自动至少 2 秒 |
 | hotkey_enabled | true | 全局热键 Ctrl+Shift+E 是否注册(可关闭以避免与其他软件冲突) |
 | visual_enabled | true | 视觉提醒(预告浮窗 + 休息界面);关闭后仅声音 |
 | strict_mode | false | 严格模式:休息界面变为全屏遮罩 |
-| strict_wallpaper_path | (空) | 严格模式背景图片;留空为纯暗色遮罩 |
+| strict_wallpaper_path | (无此行) | 严格模式背景图片;未选择时**整行不出现**并回退为纯暗色遮罩。同为 `Option<String>` |
 | strict_wallpaper_fit | "cover" | 背景自适应:cover / contain / stretch |
+| strict_overlay_pct | 55 | 严格模式蒙层浓度 0~85% |
+| strict_overlay_gradient | false | 蒙层用上深下浅的垂直渐变 |
+| start_cue_enabled | true | 点击"现在开始 / 立即休息"时播放提示音 |
+| esc_skip_enabled | true | 休息中按 Esc 跳过(严格模式下不可用) |
 | update_check_enabled | false | 启动时检查更新(每 24 小时至多一次,仅访问 GitHub Releases API) |
 | update_last_checked | (空) | 上次检查更新的 Unix 时间戳(程序维护) |
 | quiet_start | "00:00" | 免打扰时段开始 |
 | quiet_end | "08:00" | 免打扰时段结束 |
 | flow_sensitivity | "Medium" | 心流判定灵敏度:Low / Medium / High |
 | away_secs | 180 | 无输入多久判定为离开(秒) |
+| language | "zh-CN" | 界面语言:`zh-CN` / `en-US`。凡以 `en` 开头(大小写不敏感)一律视为英文,其余一切回落中文。**无法识别的原值原样保留、不写回规范化结果**(README 鼓励手改配置,静默改写等于替用户改他自己的配置);能识别的值规范成 BCP-47 写法写回(`en_US` → `en-US`) |
 
 统计文件 `%APPDATA%\eyeflow\stats.toml`:今日完成(短/长/自然)、跳过、延后次数、连续坚持天数。
 
 ---
+
+## 3.4 界面语言（v0.6 引入）
+
+- **两种语言**:简体中文(默认)与 English。键集合的唯一事实来源是
+  `locales/zh-CN.toml`;`build.rs` 用 `str::lines()` 解析两个扁平 locale 文件,
+  **任一语言缺键或多键都直接 `panic!` 让构建失败**——这是本项目 i18n 唯一的
+  差异化能力,也是所有现成 crate 都给不了的(见
+  [ADR-0008](adr/0008-i18n-self-built-tr-layer.md))。
+- **运行时形态**:`tr(key: &str) -> &str` 查表(`KEYS` 按字典序生成 → 二分查找),
+  带参调用点用 `tr_fill` / `trn`。无参路径零分配;带参路径一次 `String` 分配
+  (`str::replace` 的固有代价)。
+- **复数约定**:`|` 分隔两段,`n == 1` 取前一段。**表达不了 per-placeholder 复数**,
+  所以托盘那行「今日休息 N 次 · 跳过 N · 延后 N」拆成三条独立的单数 key 后拼装。
+- **枚举文案在数据层**:`FlowSensitivity` / `SoundPreset` / `WallpaperFit` /
+  `ContextState` 只给出 locale 的 key,`config.rs` 与 `core.rs` 因此保持纯数据,
+  24 个单测与语言状态零耦合。
+- **字体按语言分叉**:中文模式 `msyh.ttc`(实测 19,704,352 B = 18.79 MiB)
+  → `msyhl.ttc` → `simhei.ttf`;英文模式 `segoeui.ttf`(实测 959,752 B);
+  **两条链都以 `seguisym.ttf`(实测 2,514,056 B)收尾**,英文链合计
+  3,473,808 B ≈ 3.31 MiB。因为实测 `✓`(U+2713) 与 `▶`(U+25B6) 在
+  msyh / msyhl / simhei / segoeui 里**全部没有 glyph**
+  (见 `tests/i18n_glyphs.rs` 的 `probe_coverage` 诊断)。emoji(👀 👏)由 egui
+  `default_fonts` 自带的 emoji 字体承担,不可关闭 `default_fonts`。
+- **英文链不含任何粗体字体文件**:`epaint 0.36.1` 整条栈都不认识字重
+  (见下一条),加粗体字体只会在常规体缺字时被当作第二道回退,
+  947 KB 换零收益,**已从 `EN_FONTS` 移除**。
+- **已知限制(实测)**:`epaint 0.36.1` 的 `FontId` 只有 `{ size, family }`,
+  **没有字重概念**,所以 `RichText::strong()` 在两种语言下都是空操作;
+  ADR-0008「加载 Bold 就恢复字重阶梯」的预期在本版本上不成立。字号阶梯属
+  v0.7 议题。
+- **首次运行**:读 `GetUserDefaultLocaleName()` 决定 `language` 的初值;
+  之后一律以 `config.toml` 为准。语言选择器在设置窗「系统」卡片**首行**。
+- **原生窗口标题**(`app.rs` 的设置窗标题)在切语言时随每帧 `tr()` 重取;
+  浮窗标题 `EyeFlow Reminder {n}` **故意不翻译**——它是 `apply_noactivate`
+  的 `FindWindowW` 查找键,变了会导致浮窗开始抢焦点。
 
 ## 4. 设计方案
 
@@ -267,3 +311,50 @@ eyeflow/
 - [x] MIT、CI、tag 触发 release(NSIS + portable zip + sha256)
 
 后续候选:多显示器遮罩覆盖、自定义热键、Toast 辅助通知、winget 包、浮窗 Win32 自绘以消除显卡驱动内存残留。
+
+**v0.6 引入的已知时延(ADR-0007 判决四):** 轻量循环 `LIGHT_LOOP_TICK` 由 200 ms 改为 1 s,托盘菜单点击的最坏响应延迟随之由 200 ms 变为 1 s。此前从未有用户投诉过 200 ms 这个指标(它是架构评审时自定的),但它是本轮引入的**唯一**用户可感知变化,列出以便日后把"菜单点不动了"这类反馈对上号。彻底解法是把 `sleep` 换成 `MsgWaitForMultipleObjectsEx`(托盘 HWND、`WM_HOTKEY` 全部走主线程消息队列,技术可行),推到 v0.7 单独做——i18n 已改遍每个调用点,再压一个未经实战的循环重写会让故障无法二分定位。收益上限是全部空闲 CPU(实测 0.482% → 0.177%)。
+
+### v0.6 记入 Roadmap 的待办（ADR-0007 / ADR-0008 留下的）
+
+- **托盘点击最坏响应延迟 1 s** → 彻底解法是把轻量循环的 `sleep` 换成
+  `MsgWaitForMultipleObjectsEx`。托盘 HWND（`tray-icon`）、`TrackPopupMenu`（`muda`）、
+  `WM_HOTKEY`（`global-hotkey`）全部走主线程消息队列，技术上可行；ADR-0007 判决四
+  把它推到 v0.7 单独做，届时唯一变量就是循环本身（i18n 已经改遍每个调用点，
+  再压一次未经实战的循环重写会让故障无法二分定位）。
+- ~~**会话结束后 52 MB 私有内存的「按会话累积」假说待测**~~ ✅ **已证伪（2026-09-26，
+  ADR-0007 §v0.6.1 追加裁决 · 推翻 4）**：开关设置窗 20 次，残渣 3.03 → 49.73（第 1 次）
+  → ~58（第 2~15 次）→ 69.19（第 20 次）MB，**71%（46.70 MB）一次性到位**，此后
+  ~0.66 MB/会话落在噪声带内（两次「移掉字体看残渣降多少」的消融比值相差 **22 倍**，
+  不存在一致的传递函数）。进程模块数 39（空闲）→ 85（会话中）→ **76，此后恒定 76**
+  ——NVIDIA GL 驱动栈一次性映射并永久驻留。剩余约 8 MB 中严格模式与壁纸**精确贡献 0**。
+  `SetProcessWorkingSetSize(-1,-1)` 把工作集压掉 92% 而**私有字节一动不动**，说明
+  工作集不是用户态能回收的东西。**本轮不追这 1 MB/会话**；仍未做的是 A 方那组
+  「3 组 × 20 次」的**排除实验**（判别规则见 ADR-0007），它不阻塞发布。
+  一次性驱动残渣的唯一解法仍是浮窗 Win32 自绘（ADR-0006 已列 Roadmap）。
+- **字重阶梯建不起来**：实测 `epaint 0.36.1` 的 `FontId` 只有 `{ size, family }`，
+  **没有字重概念**（`epaint-0.36.1/src/text/fonts.rs:27-34` 留着
+  `// TODO(emilk): weight (bold), italics, …`）。⚠️ **更正一处旧断言**：「所以
+  `RichText::strong()` 在中英两种语言下都是空操作」**是错的**——`strong()` 改的是
+  **颜色**（`egui-0.36.1/src/widget_text.rs:252` 置位 → `:483-485` 取
+  `strong_text_color()` → `style.rs:1147` = `widgets.active.text_color()` = 纯白
+  255，而正文是 `noninteractive` 的 `from_gray(140)`，亮度差 82%），**标题的颜色
+  层级一直成立**；不成立的只是**字号**那条通道（`ui.rs` 的卡片标题曾是全项目唯一的
+  14.0，v0.6.1 已归到 17.0，与 `app.rs:319/378` 一致）。ADR-0008「往字体链里加一个
+  粗体字体文件即恢复字重」的预期在本版本上不成立（该文件已从 `EN_FONTS` 移除，
+  `src/app.rs` 的 `EN_FONTS` 注释记录了理由）；真正的字重阶梯要等 epaint 上游支持
+  `FontWeight`。
+- **设置窗高度 780 → 860**（`src/app.rs` 的 `(780.0 / ppp)`，即默认 700×780 物理像素）：
+  **阻塞条件 = 必须先测出设置窗内容的总高度**。v0.6.1 实测
+  内容高约 2.0~2.3 屏，加 80 px 只减少约 5% 的滚动量，2.3 屏仍是 2.3 屏；而
+  `src/app.rs` 的小屏夹紧（`.min(monitor.y - 60.0)`）本轮**未验**，先改宽度会在
+  1366×768 一类的小屏上引入夹紧行为变化。定宽度之前先把总高度与夹紧一起量出来。
+- **`ui_zoom_pct`（界面缩放百分比）**：**阻塞条件 = 排在「文案长度预算」核对完之后**。
+  它是产品改动不是零风险微优化——80 / 100 / 150 三档 × 3 个界面需要自己的目视验收轮，
+  而 v0.6.1 的 UI 风险已经集中在文案长度预算上（4 条长说明改 hover、标签列改实测宽度），
+  两者的验收窗口叠在一起会互相干扰。
+- **设置窗顶部 Tabs（用户提示的「分页」）**：**阻塞条件 = 状态条的去向先定下来**。
+  v0.6.1 否决它的理由不是「英文标签挤」（实测 452 px < 536 px，该理由已被推翻），而是
+  三条更强的：① `ui.rs:123-125` 的状态条是**故意钉在滚动区外**的，切 Tabs 要么复制
+  4 份要么把它留在页签外；② 4 张卡**没有互斥关系**（调音量时可能同时想看严格模式），
+  Tabs 隐含的「一次只干一件事」是错的；③ 语言选择器会从「滚到底」变成「先点第 4 个
+  页签」。①②是设计问题、不是工程量问题，不会在 v0.7 自动消失。

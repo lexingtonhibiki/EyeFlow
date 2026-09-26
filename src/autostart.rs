@@ -46,16 +46,17 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
             None,
         )
         .ok()
-        .map_err(|e| format!("打开 Run 键失败: {e}"))?;
+        .map_err(|e| crate::tr::tr_fill("autostart.open_key_failed", "{err}", e))?;
 
         let result = if on {
-            let exe = std::env::current_exe().map_err(|e| format!("获取程序路径失败: {e}"))?;
+            let exe = std::env::current_exe()
+                .map_err(|e| crate::tr::tr_fill("autostart.exe_path_failed", "{err}", e))?;
             let value = format!("\"{}\"", exe.display());
             let wide: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
             let bytes = std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2);
             RegSetValueExW(hkey, VALUE_NAME, None, REG_SZ, Some(bytes))
                 .ok()
-                .map_err(|e| format!("写入自启项失败: {e}"))
+                .map_err(|e| crate::tr::tr_fill("autostart.write_failed", "{err}", e))
         } else {
             match RegDeleteValueW(hkey, VALUE_NAME).ok() {
                 Ok(()) => Ok(()),
@@ -66,7 +67,7 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
                 {
                     Ok(())
                 }
-                Err(e) => Err(format!("删除自启项失败: {e}")),
+                Err(e) => Err(crate::tr::tr_fill("autostart.delete_failed", "{err}", e)),
             }
         };
         let _ = RegCloseKey(hkey);

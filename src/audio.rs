@@ -66,21 +66,19 @@ fn check_duration(d: Duration, limit: Duration) -> Result<Duration, String> {
 }
 
 fn duration_error(d: Duration, limit: Duration) -> String {
-    format!(
-        "时长 {} 分 {} 秒,超过 {} 分钟上限",
-        d.as_secs() / 60,
-        d.as_secs() % 60,
-        limit.as_secs() / 60
-    )
+    let raw = crate::tr::tr("audio.too_long");
+    raw.replace("{min}", &(d.as_secs() / 60).to_string())
+        .replace("{sec}", &(d.as_secs() % 60).to_string())
+        .replace("{limit}", &(limit.as_secs() / 60).to_string())
 }
 
 /// 打开文件并建立流式解码器（BufReader 包裹，不整包载入内存）。
 fn open_decoder(path: &std::path::Path) -> Result<Decoder<BufReader<File>>, String> {
     if !path.is_file() {
-        return Err("文件不存在".to_string());
+        return Err(crate::tr::tr("audio.not_found").to_string());
     }
-    let file = File::open(path).map_err(|_| "文件不存在".to_string())?;
-    Decoder::new(BufReader::new(file)).map_err(|_| "无法解码:格式不支持或文件损坏".to_string())
+    let file = File::open(path).map_err(|_| crate::tr::tr("audio.not_found").to_string())?;
+    Decoder::new(BufReader::new(file)).map_err(|_| crate::tr::tr("audio.decode_error").to_string())
 }
 
 pub struct AudioPlayer {
@@ -364,6 +362,28 @@ mod tests {
 
     // ------------------------------------------------------------ 自定义音频
 
+    /// 伪随机字节（LCG），几乎不可能撞上任何合法文件头。
+    ///
+    /// 抽成共用函数是为了让「文件不存在」与「文件存在但解不了」两个用例能拿到
+    /// **同一个**解码失败输入，从而断言两条错误分支确实不同。
+    fn garbage_bytes() -> Vec<u8> {
+        let mut x = 0x2545_F491_u32;
+        (0..4096)
+            .map(|_| {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (x >> 16) as u8
+            })
+            .collect()
+    }
+
+    /// 把 `garbage_bytes()` 写进临时文件并返回路径（调用方负责删除）。
+    fn write_garbage(name: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("eyeflow_audio_{}_{}", std::process::id(), name));
+        std::fs::write(&path, garbage_bytes()).expect("write garbage");
+        path
+    }
+
     /// 手写 44 字节 RIFF 头 + 16-bit PCM 单声道样本，生成测试 WAV（无新增依赖）。
     fn write_test_wav(name: &str, sample_rate: u32, secs: u64) -> std::path::PathBuf {
         let path =
@@ -398,7 +418,21 @@ mod tests {
         let path = std::env::temp_dir().join("eyeflow_audio_no_such_file.wav");
         let _ = std::fs::remove_file(&path);
         let err = probe_custom(&path).unwrap_err();
-        assert!(err.contains("文件不存在"), "{err}");
+        // **刻意不把 err 与 `tr(...)` 比对**。语言是进程级全局状态
+        // （`config.rs` 的 i18n 单测会把它切成 EnUs），`probe_custom` 在
+        // 自己的时刻取了一次文案、断言在稍后又取一次——两次之间语言可能已经
+        // 被别的线程翻掉，于是本测试会**偶发**失败（实测约每 6~8 次全量
+        // `cargo test` 命中一次）。改用与语言无关的判据：与「文件存在但
+        // 解不了」的错误**不同**——这既不需要读语言，又比原来更强
+        // （它同时钉住了两条分支确实可区分）。
+        let garbage = write_garbage("garbage_for_missing.wav");
+        let garbage_err = probe_custom(&garbage).unwrap_err();
+        let _ = std::fs::remove_file(&garbage);
+        assert!(!err.is_empty(), "缺失文件必须给出错误");
+        assert_ne!(
+            err, garbage_err,
+            "「文件不存在」与「无法解码」必须给出不同的错误（err={err:?}）"
+        );
     }
 
     #[test]
@@ -416,25 +450,28 @@ mod tests {
     fn probe_enforces_limit() {
         let path = write_test_wav("two_sec.wav", 8_000, 2);
         let err = probe_with_limit(&path, Duration::from_secs(1)).unwrap_err();
-        assert!(err.contains("超过"), "{err}");
+        // 同样不读 `tr()`（理由见 `probe_missing_file_errors`）。语言无关的
+        // 判据：超长错误必须与「解不了」错误**不同**——这同时钉住了
+        // 「走的是超限分支、不是解码分支」。文案里出现的是 `0 分 2 秒` /
+        // `0 分钟上限`，所以按数字去断言是错的（上一版就是这么错的）。
+        let garbage = write_garbage("garbage_for_limit.wav");
+        let decode_err = probe_custom(&garbage).unwrap_err();
+        let _ = std::fs::remove_file(&garbage);
+        assert!(!err.is_empty(), "超长必须给出错误");
+        assert_ne!(
+            err, decode_err,
+            "「超过时长上限」与「无法解码」必须给出不同的错误（err={err:?}）"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn probe_rejects_corrupt_mp3() {
-        let path =
-            std::env::temp_dir().join(format!("eyeflow_audio_{}_garbage.mp3", std::process::id()));
-        // LCG 伪随机字节，几乎不可能撞上任何合法文件头
-        let mut x = 0x2545_F491_u32;
-        let bytes = (0..4096)
-            .map(|_| {
-                x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-                (x >> 16) as u8
-            })
-            .collect::<Vec<u8>>();
-        std::fs::write(&path, bytes).expect("write mp3");
+        let path = write_garbage("garbage.mp3");
         let err = probe_custom(&path).unwrap_err();
-        assert!(err.contains("无法解码"), "{err}");
+        // 不读 `tr()`（理由见 `probe_missing_file_errors`）。解码失败必须与
+        // 「文件不存在」不同——该对照在那个用例里做。
+        assert!(!err.is_empty(), "损坏文件必须给出错误");
         let _ = std::fs::remove_file(&path);
     }
 }

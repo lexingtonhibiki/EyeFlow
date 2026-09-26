@@ -19,12 +19,16 @@ pub enum ContextState {
 }
 
 impl ContextState {
-    pub fn label(self) -> &'static str {
+    /// 文案在 locale 表里（`core.state_*`），本枚举只给出 key。
+    ///
+    /// `label()` 原本直接返回中文字面量。改成 key 之后 `core.rs` 不再需要
+    /// 引用 i18n 层，14 个调度测试仍然是纯逻辑、与语言无关（ADR-0008）。
+    pub fn key(self) -> &'static str {
         match self {
-            ContextState::Desktop => "桌面",
-            ContextState::Flow => "心流",
-            ContextState::Gaming => "游戏 / 全屏",
-            ContextState::Away => "离开",
+            ContextState::Desktop => "core.state_desktop",
+            ContextState::Flow => "core.state_flow",
+            ContextState::Gaming => "core.state_gaming",
+            ContextState::Away => "core.state_away",
         }
     }
 }

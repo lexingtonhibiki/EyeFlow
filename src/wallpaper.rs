@@ -92,7 +92,8 @@ impl WallpaperCache {
 
 /// 解码图片并转 RGBA8，最长边超过 [`MAX_TEXTURE_SIDE`] 时等比缩小。
 fn decode_texture(path: &std::path::Path) -> Result<egui::ColorImage, String> {
-    let img = image::open(path).map_err(|err| format!("无法读取图片:{err}"))?;
+    let img = image::open(path)
+        .map_err(|err| crate::tr::tr_fill("wallpaper.read_error", "{err}", err))?;
     let mut rgba = img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     let long_side = w.max(h);
@@ -250,14 +251,18 @@ pub fn preview(
     let [w, h] = tex.size();
     let percent = (f32::from(to_alpha8(overlay.alpha)) / 2.55).round() as i32;
     let shape = if overlay.gradient {
-        "（上深下浅）"
+        crate::tr::tr("wallpaper.gradient_suffix")
     } else {
         ""
     };
-    response.on_hover_text(format!(
-        "原图 {w}×{h} px · 当前模式：{} · 蒙层 {percent}%{shape}",
-        fit.label()
-    ))
+    let raw = crate::tr::tr("wallpaper.hover");
+    response.on_hover_text(
+        raw.replace("{w}", &w.to_string())
+            .replace("{h}", &h.to_string())
+            .replace("{fit}", crate::tr::tr(fit.key()))
+            .replace("{pct}", &percent.to_string())
+            .replace("{shape}", shape),
+    )
 }
 
 #[cfg(test)]
