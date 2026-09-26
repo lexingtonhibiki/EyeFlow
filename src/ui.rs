@@ -472,6 +472,8 @@ fn delivery_card(
                 push_save(s, actions);
             }
             ui.add_enabled_ui(s.draft.sound_enabled, |ui| {
+                // 悬停提示不能省：`Custom` 排到第一位只在**展开下拉框之后**才看得见，
+                // 而收起时框里显示的还是当前选中项（默认「风铃」），用户根本不会去点开它。
                 egui::ComboBox::from_id_salt("sound_preset")
                     .selected_text(tr(s.draft.sound_preset.key()))
                     .show_ui(ui, |ui| {
@@ -484,7 +486,9 @@ fn delivery_card(
                                 push_save(s, actions);
                             }
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text(tr("ui.weak_sound_custom"));
                 let custom = s.draft.sound_preset == SoundPreset::Custom;
                 let can_preview = view.audio_ok && (!custom || s.draft.custom_sound_path.is_some());
                 if ui

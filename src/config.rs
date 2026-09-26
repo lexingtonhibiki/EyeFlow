@@ -73,13 +73,19 @@ pub enum SoundPreset {
 }
 
 impl SoundPreset {
+    /// 下拉框的**呈现顺序**，与上面的枚举声明顺序无关（`key()` 的 match 同理）。
+    ///
+    /// `Custom` 排第一：用户要挑自己的音频文件时，第一项就该是它，省一次滚动。
+    /// 默认值仍是 `GentleChime`（`#[default]` 在枚举体上），所以「排序」不改任何人的
+    /// 已保存配置——`Config` 全字段 `#[serde(default)]`，老配置里的 `sound_preset`
+    /// 原样读回。
     pub const ALL: [SoundPreset; 6] = [
+        SoundPreset::Custom,
         SoundPreset::GentleChime,
         SoundPreset::SoftTap,
         SoundPreset::WaterDrop,
         SoundPreset::DigitalDrop,
         SoundPreset::TripleBeep,
-        SoundPreset::Custom,
     ];
 
     /// 文案在 locale 表里（`sound.*`），本枚举只给出 key。

@@ -96,6 +96,7 @@
 "ui.cue_volume" = "Cue volume"
 "ui.cue_duration" = "Cue length"
 "ui.weak_custom_length" = "(a custom audio file plays once, at its own length)"
+"ui.weak_sound_custom" = "Custom audio… is the first entry in this list — pick it to use your own audio file as the cue."
 "ui.weak_sound_advice" = "Short sounds get masked by music or video: try 2~3 s (repetition is easier to notice) and up to 200% volume. In full-screen games and video, sound is the only channel left, so the cue is stretched to at least 2 s."
 
 # ── Settings window: custom sound ───────────────────────────────────────
