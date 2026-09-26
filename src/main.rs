@@ -30,15 +30,88 @@ use crate::runtime::Runtime;
 use crate::stats::Stats;
 use crate::tr::Lang;
 
-/// 轻量循环的轮询周期（托盘点击的最大响应延迟）。
+/// 轻量循环的**兜底超时**（消息队列空时等这么久再醒一次）。
 ///
-/// v0.6 由 200 ms 改为 1 s（ADR-0007 判决四）：收益上限就是全部空闲 CPU
-/// （实测 0.482% → 0.177%），代价是托盘菜单最坏响应延迟 200 ms → 1 s。
-/// 彻底解法是把下面的 `sleep` 换成 `MsgWaitForMultipleObjectsEx`
-/// （托盘 HWND 与 `WM_HOTKEY` 都走主线程消息队列，技术上可行），推到 v0.7 单独做。
+/// v0.6 把它当「轮询周期」用，值由 200 ms 抬到 1 s（ADR-0007 判决四），
+/// 代价是托盘点击最坏要等满 1 s 才被 `rt.step` 看见
+/// （本机实测 p50 593 ms / p90 872 ms / 最坏 937 ms，n=60）。
+/// 当时记的收益是「空闲 CPU 0.482% → 0.177%」——**⚠️ 这两个数今天在本机复现不出来**
+/// （`sleep` 对照组实测 0.534%），来源条件已无从考证，别再拿它们当依据。
+///
+/// 现在它不再是轮询周期：轻量循环改用 `MsgWaitForMultipleObjectsEx` 阻塞在**消息队列**上
+/// （托盘 HWND、`WM_HOTKEY`、`WM_COMMAND` 全在这条线程的队列里），有输入就立刻醒。
+/// 这个 1 s 只在队列一直是空的时候兜底轮转一次，**1 s 的值不动**——它决定的是
+/// 「无事发生时多久醒一次做一次维护」，不是「有事发生时多久响应」。
+///
+/// **⚠️ 这次替换不是零 CPU 代价**（同会话 4 轮交替 A/B，每轮空闲 3 min）：
+/// `MsgWaitForMultipleObjectsEx` 均值 **0.777%**，`sleep(1s)` 均值 **0.534%**，
+/// **差 +0.243 个百分点，四轮里每一轮都是 `MsgWait` 更高**。折合约合每天多耗 3.5 分钟
+/// CPU，换来点击响应 p50 593 ms → 十几毫秒——这笔交易划算，但它不是免费的。
+/// 早醒来源未查明（`tray-icon` 那个 15 ms `SetTimer` 只在鼠标悬停托盘时才设，不是它）。
 const LIGHT_LOOP_TICK: Duration = Duration::from_secs(1);
 /// UI 会话连续失败后的退避时间
 const UI_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
+
+/// 等消息队列上有输入，或等到兜底超时。返回后一律回到轻量循环顶部重新泵消息。
+///
+/// 为什么是 `MsgWaitForMultipleObjectsEx` 而不是 `GetMessageW`：前者能**只等输入**、
+/// 在超时后正常返回，让 `rt.step` 照常按兜底周期跑；`GetMessageW` 超时不了，
+/// 只能另开一个线程去 `PostThreadMessage` 自己叫醒自己。
+///
+/// `WAIT_FAILED` 的处理是这里唯一容易写错的地方：它表示**等待本身失败**，
+/// 此时消息队列里到底有没有东西是未知的。它既不能当成「有消息」盲进泵，
+/// 也不能原地重试（会立刻返回，退化成 100% CPU 空转），所以退回等价的 `sleep`。
+fn wait_for_input_or_fallback(timeout: Duration) {
+    use windows::Win32::Foundation::{WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MsgWaitForMultipleObjectsEx, MSG_WAIT_FOR_MULTIPLE_OBJECTS_EX_FLAGS, QS_ALLINPUT,
+        QUEUE_STATUS_FLAGS,
+    };
+
+    /// 唤醒掩码 = `QS_ALLINPUT`（`0x04FF` = 投递消息 / 发送消息 / WM_PAINT / WM_TIMER /
+    /// WM_HOTKEY / 键鼠输入全都要），语义就是「队列里有任何一条 `PeekMessage` 能取到的消息」。
+    ///
+    /// ⚠️ **不是任务书写的 `MWAIT_INPUT_AVAILABLE | MWAIT_ALL_COMPLETED`**。本机实测（n=20，
+    /// 同一条托盘菜单点击、同一台机器、只换掩码）：`0x0400|0x0001` 的 p50 仍是 609 ms、
+    /// p90 891 ms、最坏 958 ms——**和 `sleep(1s)` 一模一样，根本没被唤醒**；换成
+    /// `0x04FF` 后 p50 掉到 4.6 ms。原因见下。
+    ///
+    /// windows 0.62 **不导出 `MWAIT_*` 这组常量**（`windows-0.62.2/src` 全树 grep 不到
+    /// `MWAIT`），只生成了 `QS_*` 那一半命名，而 `dwwakemask` 的类型是
+    /// `QUEUE_STATUS_FLAGS`（两者是同一个 typedef）。`MWAIT_INPUT_AVAILABLE` 落在 `0x0400`
+    /// 这一位上，而该位在 `GetQueueStatus` 里**只在真有键鼠输入时**才置位；
+    /// 别的线程 `PostMessage` 来的托盘 / 热键 / `WM_COMMAND` 只置 `QS_POSTMESSAGE (0x0008)`，
+    /// 与 `0x0400` 与运算为 0，于是永远等不到。`MWAIT_ALL_COMPLETED (0x0001)` 讲的是
+    /// 「句柄列表全部已置位」，我们一个句柄都没传，它不参与唤醒。
+    const WAKE_MASK: QUEUE_STATUS_FLAGS = QS_ALLINPUT;
+    /// `dwFlags = 0`：不要 `MWAIT_WAIT_ALL`（要立刻返回），不要 `MWAIT_SOLELY_WAIT_FOR_INPUTS`
+    /// （那会把内核对象的信号也放进来，而我们一个句柄都没传）。
+    const FLAGS: MSG_WAIT_FOR_MULTIPLE_OBJECTS_EX_FLAGS = MSG_WAIT_FOR_MULTIPLE_OBJECTS_EX_FLAGS(0);
+
+    // `None` = 0 个内核对象句柄：我们等的是消息，不是内核对象。
+    let r = unsafe {
+        MsgWaitForMultipleObjectsEx(
+            None,
+            timeout.as_millis().min(u128::from(u32::MAX)) as u32,
+            WAKE_MASK,
+            FLAGS,
+        )
+    };
+    match r {
+        // 有输入被投递：回循环顶部泵消息、跑 `rt.step`。
+        WAIT_OBJECT_0 => {}
+        // 兜底超时：队列一直是空的，回循环顶部做一次常规维护。
+        WAIT_TIMEOUT => {}
+        // 等待失败：队列状态未知，**不**当成「有消息」；退回 sleep 避免空转。
+        other @ (WAIT_FAILED | WAIT_EVENT(_)) => {
+            log::warn!(
+                "MsgWaitForMultipleObjectsEx 失败（返回值 {}），退回 sleep 兜底",
+                other.0
+            );
+            std::thread::sleep(timeout);
+        }
+    }
+}
 
 fn main() {
     init_logging();
@@ -150,7 +223,7 @@ fn main() {
             }
             continue;
         }
-        std::thread::sleep(LIGHT_LOOP_TICK);
+        wait_for_input_or_fallback(LIGHT_LOOP_TICK);
     }
 
     detector::stop_keyboard_hook();
