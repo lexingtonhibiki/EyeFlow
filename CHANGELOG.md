@@ -8,7 +8,106 @@
 
 **常驻内存这一版一行代码都改不动,所以本版不拿它当卖点。** 上一轮「没有泄漏」的结论本轮拿到了最后一组证据:关窗后残渣的 **71%(46.70 MB)是 GL 上下文与 NVIDIA 驱动的一次性初始化**,用户态取不回来(工作集能压掉 92% 而私有字节一动不动)。本版做的是两件能看见的事——**设置窗在中英文下都更整齐**,以及一次**会话内峰值**与**每会话分配 churn** 的削减。范围、数据与被否决的方案见 [ADR-0007](docs/adr/0007-v0.6-scope.md) §v0.6.1 追加裁决。
 
+### Added
+
+- **安装器里选界面语言（默认中文简体，可选 English）**：安装选项页新增一个单选组
+  `界面语言 / UI Language:`。选中后安装器在**装程序体目录之前**先写出
+  `%APPDATA%\eyeflow\config.toml`，内容只有一行 `language = "zh-CN"` 或
+  `language = "en-US"`。应用侧 `main.rs` 的 `let first_run = !Config::path().exists();`
+  因此判为 false，语言 100% 由安装器决定，**一行 Rust 都没改**。单行 TOML 对应用是
+  完整可解析的（serde 缺字段走 `default`，`config.rs` 的 `defaults_survive_partial_toml`
+  已有测试背书；`migrate_legacy` 见不到 legacy 键直接 `return false`，不迁移也不覆写）。
+  - **两个单选项都必须落一行**：选中文时**不写**会让英文系统上「选中文」→ config 不存在
+    → `first_run = true` → `GetUserDefaultLocaleName()` 返回 `en-US` → 英文界面，
+    「默认中文」直接失效。
+  - **覆盖安装不覆写**：写入用 `${IfNot} ${FileExists} "${CONFIG_DIR}\config.toml"` 守卫，
+    升级时保留用户已有的全部设置。卸载会删掉整个 `${CONFIG_DIR}`，所以「卸载后重装」
+    = 全新安装，会重新问一次。
+  - **静默安装 `/S`** 不弹选项页，沿用 `.onInit` 的中文默认，不提供 `/DLANG` 之类的
+    命令行覆盖（与既有 `MessageBox ... /SD IDNO` 同一哲学）。
+  - 未走 MUI、未引入 `InstallOptions.dll`：**MUI_LANGUAGE** 没有用户选择页、跟随系统
+    locale，与「默认中文」矛盾，且被装程序的配置在那个机制里无处安放；`InstallOptions`
+    为两个固定选项引入额外插件，还会把极简的 3 页向导撑成 4 页。
+  - 顺带把 `PRODUCT_VERSION` 的本地兜底值 `0.5.2` 修正为 `0.6.1`（CI 仍用
+    `/DPRODUCT_VERSION` 覆盖，不受影响）。
+
 ### Changed
+
+- **托盘点击从「最坏 1 s」变成「点下去就应」**：轻量循环末尾的
+  `std::thread::sleep(LIGHT_LOOP_TICK)` 换成 `MsgWaitForMultipleObjectsEx`
+  （0 个句柄 + `QS_ALLINPUT` 唤醒掩码 + `dwFlags = 0`）。实现方自测 n=60：p50 593.12 → 4.34 ms、
+  p90 871.71 → 6.04 ms、最坏 936.57 → 13.29 ms。**独立验收复测（两轮共 n=120，间隔 5 s 低频投递，
+  手段是向托盘隐藏窗口 `PostMessage(WM_COMMAND, wParam = muda 菜单项内部 id)`）**：
+  **p50 0.009 ms、p90 0.013 ms、p95 0.014 ms**，120 个样本里 119 个 < 1 ms（唯一离群样本
+  104.9 ms，第二轮未复现）。`LIGHT_LOOP_TICK` 的 **1 s 值不动**——它不再是轮询周期，
+  只是队列长期为空时的兜底超时。
+  - ⚠️ **这次替换确实付出了空闲 CPU 代价——主 agent 的同会话 A/B 复测推翻了实现方自测的
+    「零代价」结论。** 同机器、同一会话内 **4 轮交替**对照（每轮空闲 3 min，A/B 交替以抵消
+    机器状态漂移）：
+
+    | | 轮 1 | 轮 2 | 轮 3 | 轮 4 | 均值 |
+    |---|---|---|---|---|---|
+    | `MsgWaitForMultipleObjectsEx` | 0.712% | 0.990% | 0.668% | 0.738% | **0.777%** |
+    | `std::thread::sleep(1s)` | 0.408% | 0.877% | 0.469% | 0.382% | **0.534%** |
+
+    **差 +0.243 个百分点，四轮里 `MsgWait` 每一轮都更高。** 折算约合每天多耗 3.5 分钟 CPU
+    （0.243% × 86400 s）。**仍然保留这次替换**——换来托盘点击 p50 从 593 ms 降到十几毫秒，
+    用每天 3.5 分钟 CPU 换 37 倍的点击响应对本产品划算，**但它不是免费的**，
+    不要按「零代价」对外描述。
+  - **主 agent 的延迟复测（外部测量，口径更保守）**：向托盘隐藏窗口投递
+    `WM_COMMAND(wParam = muda 菜单项 id 1005 = 退出)`，轮询进程消失，30 个样本。
+    **必须校验窗口句柄的 pid 属于本次启动的进程**——首轮 30 个样本里有 2 个超时，
+    原因是 `FindWindowW("tray_icon_app")` 抓到了上一个已死进程的残留句柄（纯测量假象）；
+    加校验后 **30/30 全部有效、零超时**：**p50 15.79 ms、p90 36.30 ms、max 46.65 ms，
+    超过 100 ms 的样本 0/30**。口径与上面那个 0.009 ms 不同：那是插桩测
+    「投递 → `tray.poll()` 看到」，这里是「投递 → 进程完全退出」（含进程销毁），
+    因此更大也更保守。**判据不是绝对值而是分布形状**：`sleep(1s)` 轮询的延迟会均匀铺满
+    [0, 1000] ms、30 个样本里应有约 30 个落在 100 ms 以上；实测 **0/30**，
+    说明确实是被消息唤醒的。
+  - ⚠️ **注释与旧记录里那组「0.482% → 0.177%」今天在本机复现不出来**：`sleep` 对照组实测
+    0.534%（不是 0.177%），绝对值整体偏高。历史数字的来源条件已无从考证，
+    **所有 CPU 结论一律以本条的同会话 A/B 为准**。
+  - **早醒来源未确证**：`tray-icon-0.24.0/src/platform_impl/windows/mod.rs:478` 有个
+    `SetTimer(..., 15, ...)`，但它只在**鼠标悬停托盘图标**时设置（`userdata.entered`
+    为真才设），空闲测试时鼠标不在托盘上，**不是它**。每次唤醒多耗约 2.4 ms 的来源未查明，
+    记为待查项，不臆测。
+  - **唤醒掩码不是 `MWAIT_INPUT_AVAILABLE | MWAIT_ALL_COMPLETED`**：本机实测（n=20，
+    同一次点击、只换掩码）`0x0400|0x0001` 的 p50 仍是 **609 ms**、p90 891 ms、最坏 958 ms，
+    **和 `sleep(1s)` 一模一样**——`MWAIT_INPUT_AVAILABLE` 的那一位只在真有键鼠输入时
+    才置位，托盘/热键/`WM_COMMAND` 这类别的线程 `PostMessage` 来的消息只置
+    `QS_POSTMESSAGE (0x0008)`，与 `0x0400` 与运算为 0，永远等不到。
+    改用 `QS_ALLINPUT (0x04FF)` 后 p50 掉到 4.6 ms。另外 `windows` 0.62 **不导出**
+    `MWAIT_*` 常量（全树 grep 不到），`dwwakemask` 的类型是 `QUEUE_STATUS_FLAGS`。
+  - `WAIT_FAILED` 不当成「有消息」盲进泵，也不原地重试（会立刻返回、退化成 100% CPU
+    空转），退回等价的 `sleep` 兜底。
+
+- **提示音下拉把「自定义音频…」提到第一位，并给它加了一条悬停提示**：
+  `SoundPreset::ALL` 的呈现顺序改为 `Custom` 在首位（枚举声明顺序与 `key()` 的 match
+  一字未动），鼠标停在这个下拉框上会提示「下拉框第一项是「自定义音频…」：选它就能指定
+  自己的音频文件当提示音。」/ `Custom audio… is the first entry in this list — pick it
+  to use your own audio file as the cue.`（locale 新键 `ui.weak_sound_custom`，中英各一条）。
+  **默认提示音仍然是「风铃」**（`#[default]` 一直在 `GentleChime` 上），且 `Config`
+  全字段 `#[serde(default)]`，老配置里已有的 `sound_preset` 行原样读回——排序不改任何人的配置。
+  - 悬停提示不是锦上添花：**收起时下拉框里显示的是当前选中项（默认「风铃」）、第一项
+    根本看不见**，只调顺序等于什么都没做。
+  - 没有动「选了自定义但还没选文件」这个空壳态：`ui.rs` 早已渲染 `ui.weak_sound_formats`
+    （支持的格式与时长上限）、`runtime.rs` 会回落到 `play_cue(GentleChime)` 并 `log::warn!`、
+    试听按钮被 `can_preview` 禁用——这个状态已有完整可见解释与优雅降级。
+  - **目视验收已过**：临时 `APPDATA` + `EYEFLOW_DEMO=1`，中英各两张——
+    下拉展开后**第一项确实是「自定义音频…」/ `Custom audio…`（第二项才是当前选中的
+    「风铃」/ `Gentle chime`）**；指针停在下拉框上时两条悬停提示都出现。
+    截图 `.shots/sound-preset-{zh,en}-{open,hover}.png`。
+
+- **安装器界面仅中文**（本次需求范围内）：只有「界面语言」组自己的标签是中英并列
+  `界面语言 / UI Language:`，选项页其余文案（安装选项 / 桌面快捷方式 / 自动创建说明）
+  保持中文不变。
+- **⚠️ 副作用：setup 装出来的用户第一次启动不再自动弹出设置窗引导**
+  （`main.rs` 的 `if demo || first_run { rt.open_settings(); }`）。语言已在安装器里问过，
+  引导窗当初的存在理由已被取代。**代价是托盘这个低发现度入口成为新用户唯一的界面**，
+  且静默安装不自动启动时用户甚至看不到托盘图标。本版**接受**该代价并记入
+  [Roadmap](docs/spec.md) —— 彻底解法（安装结束时默认启动 / 托盘首次启动气泡）属 v0.7。
+- 文档口径同步：`README.md`（中英双份的安装节与「界面语言」节）与 `docs/spec.md`
+  §3.4 改为「语言由安装器决定，`GetUserDefaultLocaleName()` 只在无 config.toml 时兜底」。
 
 - **打开设置窗就能看见的改善**:
   - **滑条变宽,行尾空白少 150 px**:`tune_style` 从未设过 `spacing.slider_width`,走的是 egui 0.36.1 的默认值 `100.0`。设为 `220.0`;同机同窗实测(700 px 宽窗口、中文、单滑条一行)行内内容的右缘从 x=349 移到 x=499。⚠️ **行尾仍有约 168 逻辑 px 空白**——220.0 是本轮裁决指定值,把它压到 ≤30 px 需要约 354,那是窗口宽度一起决策的事(见 `docs/spec.md` 的 Roadmap)
@@ -99,40 +198,6 @@
 
 - **文档事实修正**(全部已实测核对):测试用例数 27/53 → 49(本版起 77);便携 exe 7 MB → 9.75 MB(本版再降到 8.66 MB);空闲私有内存 2.5 MB → 3.15 MB;`docs/spec.md` 与 `README.md` 的配置表补齐 4 个字段;两个 `Option<String>` 字段的示例改为与代码一致的形态(未设置时整行不出现,而非空串)
 - `CHANGELOG` 的 0.5.0 / 0.5.2 从 `Unreleased` 改为已发布
-
-
-## [Unreleased]
-
-_(本版之后尚无变更)_
-
-
-### Changed
-
-- **范围裁决落地**：v0.6 明确为「双语 + 一次真正的体积削减 + 零风险微优化」，不做极限优化。原始设计与收益叙述见 [ADR-0007](docs/adr/0007-v0.6-scope.md)（**凡与 docs/plan-v0.6.md 冲突处以 ADR-0007 为准**，该计划文档的批次划分与收益叙述已被推翻）
-- **i18n 架构定稿**：自建 `tr(&str)` 层 + build.rs key 校验（`locales/zh-CN.toml` 为唯一事实来源，缺任一语言的 key 直接构建失败）。否决 Fluent / i18n-embed / rust-i18n。见 [ADR-0008](docs/adr/0008-i18n-self-built-tr-layer.md)
-- **文档事实修正**（全部已实测核对）：测试用例数 27/53 → 49；便携 exe 7 MB → 9.75 MB（10,224,640 B，本轮再降到 8.66 MB）；空闲私有内存 2.5 MB → 3.15 MB；`docs/spec.md` 的配置表补齐 `strict_overlay_pct` / `strict_overlay_gradient` / `start_cue_enabled` / `esc_skip_enabled`；`custom_sound_path` / `strict_wallpaper_path` 的示例改为与 `Option<String>` 一致的形态（未设置时整行不出现，而非空串）
-- **设置窗「当前状态」条钉在顶部**，不再随表单一起滚动——首次运行会自动打开设置窗做引导，用户第一眼看到的应该是「下次休息 14:32」而不是一张 30 控件的表单
-- **14 处手工全角空格（U+3000）缩进改为 `ui.indent()` / `add_space()`**：全角空格是真实字符（复制粘贴会带出不可见字符），在英文界面里照占一个字宽却什么都不显示——这是 i18n 英文模式能不能看的开关
-
-### Performance
-
-- **便携 exe 实测 10,224,640 B → 9,085,440 B（-1,139,200 B，-11.1%，9.75 MB → 8.66 MB）**：把在线更新检查的 TLS 栈收进 cargo feature `update-check`（**默认关**）。`ureq` 的默认 features 会把 `rustls` + `ring`（大块汇编加密代码）+ `webpki-roots` 无条件拖进二进制，而 `update_check_enabled` 本来就默认 `false`——一个默认关闭的功能让整个 TLS 栈进了一次发行版。需要在线检查：`cargo build --release --features update-check`。见 [ADR-0007](docs/adr/0007-v0.6-scope.md) 判决五
-- **热路径去无谓系统调用**：托盘 `set_paused` 与 tooltip / 统计行改为「先比较后写」，不再每 tick 调用 `SetMenuItemInfoW` / `NIM_MODIFY`；设置窗每帧的 `Config::path()`（含 `getenv` + 4 次堆分配）改为惰性缓存
-- **原子写**：`stats.toml` 改为「临时文件 + rename」，断电或崩溃不再留下半截 toml
-- **启动顺序**：最慢的 WASAPI 设备打开移到托盘创建之后，守住「< 1 秒托盘出现」（spec N3）
-- **panic 可见化**：`panic = "abort"` 保留（为了体积），但 panic hook 增加 `MessageBoxW`——托盘应用崩溃时用户原本什么都看不见
-
-### Fixed
-
-- 轻量循环 `LIGHT_LOOP_TICK` 由 200 ms 改为 1 s。⚠️ **这是本轮唯一用户可感知的时延变化**：托盘菜单点击的最坏响应延迟由 200 ms 变为 1 s。彻底解法（`MsgWaitForMultipleObjectsEx`）推到 v0.7
-
-### CI
-
-- `cargo fmt --check` 转阻塞（去掉 `continue-on-error`）
-- `cargo clippy --bins -- -D warnings` 转阻塞；`--all-targets` 保持 advisory（lint 集合随工具链变动，`-D warnings` 会催生 `#[allow]` 通胀）。⚠️ 用 `--bins` 而非 ADR-0007 判决七原文的 `--lib --bins`——本项目是纯 bin crate，后者会直接报 `no library targets found` 跑不起来
-- 新增 MSRV job 验证 `rust-version = "1.95"`（此前是装饰性声明，从未验证）
-- 新增「带 `update-check` feature 的 release 构建」job，保证默认关掉的那条路径不会悄悄烂掉
-- **不新增 GNU 工具链矩阵**：lessons.md §3.3 那次事故的教训是「写显式断言」不是「矩阵翻倍」；改为本地推前跑 GNU（已写进 CONTRIBUTING.md）
 
 ## [0.5.2] - 2026-09-22
 

@@ -3,7 +3,7 @@ status: accepted
 date: 2026-09-26
 process: A/B 独立审查 + C 终极判决
 parent: [0007-v0.6-scope.md](0007-v0.6-scope.md)
-revised: 2026-09-26 三次裁决（C 方按 v0.6.1 实测推翻两条断言：`strong()` 是颜色操作不是空操作；`msyhl`/`simhei` 的「glyph 覆盖兜底」理由不成立）
+revised: 2026-09-26 三次裁决（C 方按 v0.6.1 实测推翻两条断言：`strong()` 是颜色操作不是空操作；`msyhl`/`simhei` 的「glyph 覆盖兜底」理由不成立）；2026-09-26 四次裁决（追加「安装器在安装时选语言」：安装器播种 `config.toml` 取代 `first_run` 的系统 locale 探测；并**重申**构建期字体子集化的否决）
 ---
 
 # i18n 自研：build.rs 键完整性校验 + `tr(&str)` 函数 + Segoe UI 英文字体
@@ -103,7 +103,7 @@ locale 文件是项目自己维护的扁平格式（`key = "value"` 单行、无
 
 **约束**：中文模式是否也加载雅黑粗体（`msyhb.ttc`）——**无需再议**，加载它买不到字重（同上）。~~`ZH_FONTS` 里的 `msyhl.ttc` / `simhei.ttf` 保留，但它们的理由是**glyph 覆盖兜底**而非字重。~~ **⚠️ 这个理由同样已被实测证伪，见下方「推翻 3」——两者对现有文案贡献 0 个字符，v0.6.1 已把它们从字体链移除。**
 
-**否决**：构建期字体子集化（18.8 MB → 约 0.1 MB）。理由是**漏字在构建期嵌入后运行时无法补救**，而缺字恰是 i18n 最怕的 bug。也否决换 `msyhl.ttc`（省 7.2 MB）：Light 字重在无法加粗的前提下会毁掉标题层级。 **（三次裁决补注：这条否决的**结论**仍然成立——正因为无法加粗才不能只留 Light 字重。但它已经不再是「留着 `msyhl` 的理由」，因为真正有字重需求的那条路（`msyhb.ttc`）从未被采纳。）**
+**否决**：构建期字体子集化（18.8 MB → 约 0.1 MB）。理由是**漏字在构建期嵌入后运行时无法补救**，而缺字恰是 i18n 最怕的 bug。也否决换 `msyhl.ttc`（省 7.2 MB）：Light 字重在无法加粗的前提下会毁掉标题层级。 **（三次裁决补注：这条否决的**结论**仍然成立——正因为无法加粗才不能只留 Light 字重。但它已经不再是「留着 `msyhl` 的理由」，因为真正有字重需求的那条路（`msyhb.ttc`）从未被采纳。）** **（四次裁决补注：子集化被性能分析员**重提**一次，**维持否决**。收益实测 12~15 ms I/O，占「托盘点击 → 窗口出内容」总时延（1099~1723 ms）约 1%；而 v0.6.1 之后这条路的成本更高了——中文字体链砍到 22.2 MB、locale 键涨到 178，子集化会把 i18n 的核心契约「加一条文案 = 改 2 个 locale 文件」变成「再加一步用 fontTools 重新生成字体」，并给 CI 引入 Python 依赖。详见本文「追加裁决」小节。）**
 
 ### 推翻 2：「`RichText::strong()` 是空操作」 —— **源码证伪，它改的是颜色**
 
@@ -163,6 +163,35 @@ locale 文件是项目自己维护的扁平格式（`key = "value"` 单行、无
 - **首次运行读 `GetUserDefaultLocaleName()`（采纳 B 方案 9，A 方案 9 反对）**：`windows` crate 的 `Win32_Globalization` feature 已在依赖里，加约 5 行（`main.rs:61-77,214-222`）。**验收面没有新增**——首跑设置窗（`main.rs:118-119`）已经无条件自动打开，里面就有语言选择器，「读一个配置值当初值」这个动作的验收面 = 现有 first-run 的验收面。落盘后永久定型，不再分叉。
   - 现有用户（config.toml 已存在）**恒 `zh-CN`**，不受影响。
 - 语言选择器放在**设置窗「系统」卡片首行**，且首次运行时是该窗第一行第一项——英文母语用户装上第一眼看到中文（**托盘右键菜单也是 7 项中文，而托盘是这个应用唯一的高频入口**），必须一步可达。
+
+### 追加裁决（2026-09-26）：安装器在安装时选语言，**播种 `config.toml` 取代 `first_run` 的 locale 探测**
+
+**依据：源码（我逐行复核过）+ NSIS 本机实编（在临时目录验证，未改仓库脚本）。**
+
+用户诉求：「应该是安装里面就可以默认选择语言吧？默认中文，可以选英文。」
+
+**核心机制（一行 Rust 都不用改）**：`main.rs:53` 是 `let first_run = !Config::path().exists();`，**只有 `first_run` 才走 `main.rs:65-76` 的 `GetUserDefaultLocaleName()` 分支**。而 `Config::path()` = `config_dir()/config.toml`（`config.rs:374-376`）= `%APPDATA%\eyeflow\config.toml`（`config.rs:434-440`），与 `installer/installer.nsi:33` 的 `!define CONFIG_DIR "$APPDATA\eyeflow"` **逐字一致**；安装器是 `RequestExecutionLevel user`（`installer.nsi:42`），同源同权限。**所以安装器预先创建 `config.toml` ⇒ `first_run` 恒 false ⇒ 语言 100% 由安装器决定。**
+
+**只写一行是安全的（有测试背书）**：`Config` 全字段 `#[serde(default)]` / `#[serde(default = "…")]`，`config.rs:597-604` 的 `defaults_survive_partial_toml` 证明 `"enabled = false"` 这一行能解析出完整 `Config`；`migrate_legacy`（`config.rs:471-486`）的判据是「有没有 `short_break_min_secs`」与「有没有 7 个 legacy 键之一」，**两者都不存在时直接 `return false`**，不迁移、不备份、不覆写。`tr.rs:52-56` 的 `from_config` 按 `en` 前缀分派，`"zh-CN"` / `"en-US"` 各自命中。
+
+**裁决**：
+
+1. **扩展现有 nsDialogs 页**（`installer.nsi:65-83` 的 1018 页）加两个 `${NSD_CreateRadioButton}`，**不引入 MUI、不引入 `InstallOptions.dll`、不加页**。理由：MUI 的 `MUI_LANGUAGE "SimpChinese" / "English"` **选的是安装器自己的界面语言**，它**没有用户选择页**，而且多语言列表跟随系统 locale 自动选——**与「默认中文」直接矛盾，语言无处安放**；把一个 170 行的非 MUI 脚本整体重写成 MUI2 只是为了界面好看，收益为零。
+2. **中文和英文都要写文件，不是「只有选 English 才写」。** 写 `language = "zh-CN"` 不是 no-op：它**抑制 `first_run` 的系统 locale 探测**。若选中文时不写文件，一台英文系统上选「中文」会得到 `first_run = true` → `GetUserDefaultLocaleName()` = `en-US` → **英文界面**，直接违背「默认中文」。**两个选项都必须落一行。**
+3. **守卫判据用 `${IfNot} ${FileExists} "${CONFIG_DIR}\config.toml"`**，与 `main.rs:53` 的 `first_run` 定义**逐字对齐**。升级安装（老用户已有 config.toml）一律不碰——`installer.nsi:149-153` 的卸载器删整个 `${CONFIG_DIR}`，所以「卸载重装 = 全新安装 = 重新问一次」语义自洽。`FileWrite` **不自建父目录**，`CreateDirectory "${CONFIG_DIR}"` 必需。
+4. **`/S` 静默安装照常写 `zh-CN`**（`.onInit` 给 `$LangChoice` 兜底），与 `installer.nsi:127` 的 `/SD IDNO` 同一哲学：静默时无法询问，就取保守默认。**不提供 `/DLANG` 覆盖**——那是无人使用、无人测试的第二条默认来源。
+5. **setup 与 portable 的行为分叉：接受，写进文档。** setup 路径「安装器说了算」（用户明确选过），portable 路径「没有安装器，继续跟随系统 locale」。分叉点只有一个：**第一次 `config.toml` 由谁创建**。这与本 ADR「落盘后永久定型」的口径一致，不是缺陷。
+6. **安装器界面本身仍只有中文**（`installer.nsi:71/73/76` 三条硬编码文案）。**只把语言组自己的标签做成 `界面语言 / UI Language:` 一行中英并列**——让两个单选钮自解释是本裁决的最低要求；把整个安装器做成双语的收益抵不上它新增的一个没有测试、没有 owner 的 i18n 表面。已知代价：选 English 的用户会得到「英文 App + 中文安装器」。
+7. **已知且接受的副作用：setup 装出来的用户第一次启动不再自动弹出设置窗引导**（`main.rs:118-119` 的 `if demo || first_run`）。语言已经在安装器里问过了，引导窗当初的存在理由（语言选择器是首跑第一行第一项）已被取代。**代价是托盘这个低发现度入口成为新用户的唯一界面**，记入 Roadmap。**README 两处「首次运行会自动打开设置窗」（`:88` / `:377`）与两处「首次运行读系统显示语言」（`:142` / `:431`）、`docs/spec.md:165` 必须同步改口径**——否则就是文档说谎。
+
+**NSIS 实编记录（本机 NSIS 3.x + nsDialogs，已在临时目录编译验证）**——三个会直接让 `makensis` 失败的坑，都是纸上方案看不到的：
+
+- **本机 nsDialogs 的宏叫 `${NSD_CreateRadioButton}` / `${NSD_CreateAdditionalRadioButton}`，没有 `${NSD_CreateRadio}`**（由 `Include/nsDialogs.nsh:420-421` 的 `!insertmacro __NSD_DefineControl RadioButton` 展开而来）。
+- **`installer.nsi` 带 UTF-8 BOM，编辑时必须原样保留**。去掉 BOM 后 makensis 回退 ACP，第一行中文即报 `Bad text encoding`。
+- **`FileWrite` 里嵌引号必须写 `$\"`，不能用反引号**。写成 ``FileWrite $9 "language = \`"en-US\`""`` 会报 `FileWrite expects 2 parameters, got 3`。
+- 编译产物页数不变：`Install: 3 pages`（`installer.nsi:50-52` 的 `Page directory` / `Page custom` / `Page instfiles`）。
+
+**构建期字体子集化的否决：维持，并说明为什么这次否决更硬**。v0.6.1 的性能分析员重提了「构建期把 `msyh.ttc` 子集化成 508 字符」。**ADR-0008 原有的否决理由「漏字在构建期嵌入后运行时无法补救」不但仍然成立，在 v0.6.1 之后更成立**：中文字体链已砍到 22.2 MB、locale 键涨到 178，而 i18n 的核心契约是「加一条文案 = 改 2 个 locale 文件」——子集化会把它变成「再加一步用 fontTools 重新生成字体」，并给 CI（`release.yml` 现在只 `choco install nsis`）引入一个 Python 依赖。**收益是 12~15 ms I/O，占托盘点击到出窗总时延约 1%。按 ADR-0007 推翻 3 / 推翻 4 的同一条纪律：不追一个从未被测量证明是大头的量。**
 
 ## 运行时切换的刷新面
 

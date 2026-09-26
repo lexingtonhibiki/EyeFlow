@@ -84,8 +84,8 @@ Requirements: Windows 10 / 11, x64. Go to the [Releases](https://github.com/lexi
 
 ### Installer
 
-1. Download `EyeFlow-<version>-Setup.exe` and run it; the options page can create a desktop shortcut;
-2. At the end of the install you can choose "launch now"; the install enables autostart by default (you can turn it off in the settings); the first run opens the settings window automatically;
+1. Download `EyeFlow-<version>-Setup.exe` and run it; the options page can create a desktop shortcut and **pick the interface language — Simplified Chinese by default, English optional**;
+2. At the end of the install you can choose "launch now"; the install enables autostart by default (you can turn it off in the settings). ⚠️ **The settings window no longer opens by itself on the first run** — the language was already asked during install, so the tray icon is the only entry point (right-click it, "Settings…");
 3. Uninstall: Windows "Settings → Apps → Installed apps", or Uninstall EyeFlow from the Start menu (no leftovers: program, config, stats, log, shortcut and registry entries are all cleaned).
 
 > **About SmartScreen**: the installer and the exe are not code-signed yet, so Windows SmartScreen may say "Windows protected your PC" on first run. Click **More info → Run anyway**.
@@ -139,7 +139,7 @@ No reminders between 00:00 and 08:00 by default; if a reminder came due during t
 
 The interface speaks English and Simplified Chinese. Pick it in **Settings → System → Language**; the choice is saved to `config.toml` as `language = "en-US"` or `language = "zh-CN"` and takes effect immediately — the tray menu, the fonts and every open window switch with it.
 
-On the very first run EyeFlow reads your Windows display language and uses it as the initial value, so an English Windows installs straight into English. Anything that is not an `en` prefix falls back to Chinese, and an unrecognized value is left in your file untouched rather than being silently rewritten.
+Your interface language is decided **in the installer**: the options page asks once, defaulting to Simplified Chinese, and the answer is written into `config.toml` before EyeFlow ever starts. Your Windows display language is consulted only when there is no `config.toml` at all — the portable exe, or a `config.toml` you deleted. Anything that is not an `en` prefix falls back to Chinese, and an unrecognized value is left in your file untouched rather than being silently rewritten.
 
 English mode loads Segoe UI instead of the 18.8 MB Chinese font, so switching languages also drops the largest single chunk of the settings-window memory peak.
 
@@ -373,8 +373,8 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 
 ### 安装版
 
-1. 下载 `EyeFlow-<版本>-Setup.exe` 并运行;安装选项页可勾选是否创建桌面快捷方式;
-2. 安装完成时可选"立即启动";安装默认写入开机自启(可在设置界面关闭);首次运行会自动打开设置窗;
+1. 下载 `EyeFlow-<版本>-Setup.exe` 并运行;安装选项页可勾选是否创建桌面快捷方式,并**选择界面语言(默认中文简体,可选 English)**;
+2. 安装完成时可选"立即启动";安装默认写入开机自启(可在设置界面关闭)。⚠️ **首次运行不再自动打开设置窗**——语言已在安装器里问过,托盘图标成为唯一入口(右键托盘图标 →「打开设置…」);
 3. 卸载:系统"设置 → 应用 → 安装的应用",或开始菜单中的 Uninstall EyeFlow(无残留:程序、配置、统计、日志、快捷方式、注册表项全部清理)。
 
 > **关于 SmartScreen**:安装包与 exe 目前未做代码签名,首次运行时 Windows SmartScreen 可能提示"Windows 已保护你的电脑"。请点击 **更多信息 → 仍要运行**。
@@ -428,7 +428,7 @@ EyeFlow 是一款"会看情况的护眼提醒"工具:它知道你正打字进入
 
 界面支持简体中文与 English。在**设置 → 系统 → 语言**里切换,选择会写进 `config.toml` 的 `language = "zh-CN"` / `language = "en-US"`,并且**立即生效**——托盘菜单、字体、已打开的窗口一起换。
 
-首次运行会读 Windows 的显示语言作为初值,所以英文系统装上第一眼就是英文。任何不以 `en` 开头的值都回落中文;无法识别的值**原样保留在你的文件里**,不会被悄悄改写。
+界面语言**在安装器里定**:安装选项页问一次(默认中文简体,可选 English),装完就把答案写进 `config.toml`,应用启动时读的是这个值。只有**根本没有 config.toml** 时才去看 Windows 的显示语言 —— 也就是便携版,或你自己把 config.toml 删了的情况。任何不以 `en` 开头的值都回落中文;无法识别的值**原样保留在你的文件里**,不会被悄悄改写。
 
 切到英文会用 Segoe UI 换掉 18.8 MB 的中文字体,顺带把设置窗内存峰值里最大的一块也降下来。
 
