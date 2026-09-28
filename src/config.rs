@@ -222,6 +222,14 @@ pub struct Config {
     /// 点击『现在开始』/『立即休息』时播放提示音（结束音照常）
     #[serde(default = "d_true")]
     pub start_cue_enabled: bool,
+    /// 预告浮窗弹出时播放提示音。
+    ///
+    /// v0.7.0 新增。此前整条链路里只有「结束音」和「全屏时的唯一通道音」两处
+    /// 会响，预告浮窗是**静默弹出**的——用户不盯着屏幕右下角就不知道提醒来了。
+    /// 默认开启（这正是加这个开关的原因），不想要的人可以在「提醒方式」里关掉；
+    /// `sound_enabled` 为总开关，关闭时本项不生效。
+    #[serde(default = "d_true")]
+    pub heads_up_cue_enabled: bool,
     /// 休息进行中按 Esc 跳过（严格模式下不可用）
     #[serde(default = "d_true")]
     pub esc_skip_enabled: bool,
@@ -317,6 +325,7 @@ impl Default for Config {
             update_check_enabled: false,
             update_last_checked: None,
             start_cue_enabled: true,
+            heads_up_cue_enabled: true,
             esc_skip_enabled: true,
             strict_overlay_pct: d_overlay_pct(),
             strict_overlay_gradient: false,
@@ -584,9 +593,13 @@ mod tests {
 
     #[test]
     fn quiet_hours_crossing_midnight() {
-        let mut c = Config::default();
-        c.quiet_start = "23:00".into();
-        c.quiet_end = "07:00".into();
+        // clippy::field_reassign_with_default：首句就是 `Config::default()` 再逐字段改，
+        // 写成结构体更新语法更清楚，也免得以后加字段时漏看一处。
+        let c = Config {
+            quiet_start: "23:00".into(),
+            quiet_end: "07:00".into(),
+            ..Config::default()
+        };
         assert!(c.in_quiet_hours(chrono::NaiveTime::from_hms_opt(23, 30, 0).unwrap()));
         assert!(c.in_quiet_hours(chrono::NaiveTime::from_hms_opt(3, 0, 0).unwrap()));
         assert!(!c.in_quiet_hours(chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap()));
@@ -594,9 +607,11 @@ mod tests {
 
     #[test]
     fn quiet_hours_same_bounds_means_disabled() {
-        let mut c = Config::default();
-        c.quiet_start = "08:00".into();
-        c.quiet_end = "08:00".into();
+        let c = Config {
+            quiet_start: "08:00".into(),
+            quiet_end: "08:00".into(),
+            ..Config::default()
+        };
         assert!(!c.in_quiet_hours(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap()));
     }
 
@@ -611,10 +626,12 @@ mod tests {
 
     #[test]
     fn sanitize_fixes_inverted_interval() {
-        let mut c = Config::default();
-        c.short_break_min_secs = 1800;
-        c.short_break_max_secs = 600;
-        let c = c.sanitized();
+        let c = Config {
+            short_break_min_secs: 1800,
+            short_break_max_secs: 600,
+            ..Config::default()
+        }
+        .sanitized();
         assert!(c.short_break_min_secs <= c.short_break_max_secs);
     }
 
@@ -688,10 +705,12 @@ global_mute_hotkey = "Ctrl+Shift+E"
 
     #[test]
     fn sanitize_clamps_cue_volume_and_duration() {
-        let mut c = Config::default();
-        c.cue_volume_pct = 500;
-        c.cue_duration_secs = 30;
-        let c = c.sanitized();
+        let c = Config {
+            cue_volume_pct: 500,
+            cue_duration_secs: 30,
+            ..Config::default()
+        }
+        .sanitized();
         assert_eq!(c.cue_volume_pct, 200);
         assert_eq!(c.cue_duration_secs, 5);
     }
@@ -800,8 +819,10 @@ global_mute_hotkey = "Ctrl+Shift+E"
                      导致界面静默变英文且无法自动恢复，是违反「不动用户个人配置」硬约束的"
                 );
                 // ③ sanitized() 不得把非法值悄悄规范化后落盘
-                let mut c = Config::default();
-                c.language = raw.into();
+                let c = Config {
+                    language: raw.into(),
+                    ..Config::default()
+                };
                 assert_eq!(
                     c.clone().sanitized().language,
                     raw,

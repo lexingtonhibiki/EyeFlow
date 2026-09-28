@@ -64,6 +64,14 @@
 "card.delivery" = "How to remind"
 "card.context" = "Context awareness"
 "card.system" = "System"
+"card.about" = "About"
+
+# ── Settings window: tabs ───────────────────────────────────────────────
+"tab.now" = "Status"
+"tab.reminder" = "Reminders"
+"tab.awareness" = "Awareness"
+"tab.system" = "System"
+"tab.about" = "About"
 
 # ── Settings window: status card ────────────────────────────────────────
 "ui.rest_now" = "Rest now"
@@ -93,6 +101,8 @@
 "ui.sound" = "Sound cue"
 "ui.no_audio_device" = "(no audio output device detected)"
 "ui.start_cue_checkbox" = "Play a cue when you click Start now / Rest now"
+"ui.heads_up_cue_checkbox" = "Play a cue when the heads-up window appears"
+"ui.weak_heads_up_cue" = "The heads-up only says a break is coming; this cue means you do not have to watch the corner of the screen. It is separate from the end-of-break cue and from the full-screen sound-only cue."
 "ui.cue_volume" = "Cue volume"
 "ui.cue_duration" = "Cue length"
 "ui.weak_custom_length" = "(a custom audio file plays once, at its own length)"
@@ -142,9 +152,21 @@
 "ui.checking" = "Checking…"
 "ui.up_to_date" = "Already up to date"
 "ui.new_version" = "Version v{ver} is available"
-"ui.open_release" = "Open releases"
+"ui.open_release" = "Download"
 "ui.check_failed" = "Check failed: {err}"
 "ui.open_dir" = "Open folder"
+
+# ── Settings window: About tab (ui.rs) ──────────────────────────────────
+# The update check only *checks*: when a new version exists we show a link to
+# the Releases page. Whether to download is the user's call.
+"about.version" = "EyeFlow v{ver}"
+"about.tagline" = "Context-aware eye-care break reminder for Windows. One Rust process, free and open source (MIT)."
+"about.links" = "Links"
+"about.repo" = "GitHub repository"
+"about.author" = "Author: lexingtonhibiki"
+"about.releases" = "Releases"
+"about.license" = "MIT license"
+"about.star" = "If EyeFlow helps you, a star on GitHub is the best way to support an independent project."
 
 # ── Settings window: footer ─────────────────────────────────────────────
 "ui.reset_defaults" = "Restore defaults"

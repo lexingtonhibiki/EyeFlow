@@ -9,11 +9,60 @@ use crate::stats::Stats;
 use crate::tr::{tr, tr_fill, trn};
 use crate::wallpaper::{self, WallpaperCache};
 
+/// 设置窗的页签。
+///
+/// v0.7.0：原先六张卡片排在**一条**滚动流里（状态条钉在顶部，下面 5 张卡片），
+/// 找一项设置要在一屏里来回扫。改成页签后，同一个时刻屏幕上只有一类设置，
+/// 与「首屏第一眼看到下次休息时间」的引导目标也不再冲突（默认停在「状态」页）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsTab {
+    #[default]
+    Now,
+    Reminder,
+    Awareness,
+    System,
+    About,
+}
+
+impl SettingsTab {
+    pub const ALL: [SettingsTab; 5] = [
+        SettingsTab::Now,
+        SettingsTab::Reminder,
+        SettingsTab::Awareness,
+        SettingsTab::System,
+        SettingsTab::About,
+    ];
+
+    /// 文案在 locale 表里（`tab.*`），见 `SoundPreset::key` 的说明。
+    pub fn key(self) -> &'static str {
+        match self {
+            SettingsTab::Now => "tab.now",
+            SettingsTab::Reminder => "tab.reminder",
+            SettingsTab::Awareness => "tab.awareness",
+            SettingsTab::System => "tab.system",
+            SettingsTab::About => "tab.about",
+        }
+    }
+
+    /// 下一个页签（末尾回到开头）。
+    ///
+    /// 目前只有演示模式会用它：`EYEFLOW_DEMO_TABS=1` 时设置窗每 2 秒自动翻一页，
+    /// 用来录 README 的 GIF——录制机上有别的窗口盖住设置窗时点击送不进去
+    /// （见 `.shots/record_gif.py` 的说明），自动翻页让录制完全不依赖鼠标。
+    pub fn next(self) -> SettingsTab {
+        let all = Self::ALL;
+        let i = all.iter().position(|t| *t == self).unwrap_or(0);
+        all[(i + 1) % all.len()]
+    }
+}
+
 pub struct SettingsState {
     /// 正在编辑的副本
     pub draft: Config,
     /// 上次保存的版本，用于判断是否有未保存修改
     pub saved: Config,
+    /// 当前页签
+    pub tab: SettingsTab,
     pub autostart: bool,
     pub autostart_error: Option<String>,
     pub saved_at: Option<Instant>,
@@ -36,6 +85,7 @@ impl SettingsState {
         Self {
             draft: cfg.clone(),
             saved: cfg,
+            tab: SettingsTab::default(),
             autostart,
             autostart_error: None,
             saved_at: None,
@@ -122,27 +172,40 @@ pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Ve
     let mut actions = Vec::new();
     ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
 
-    // 「当前状态」条钉在滚动区之外、固定在顶部。
-    // 首次运行会自动打开设置窗做引导（main.rs 的 first_run），而这张表单有约 30 个
-    // 控件——用户第一眼看到的应该是「下次休息 14:32」，不是一张要往下滚的表单。
-    status_card(ui, view, &mut actions);
-    ui.add_space(8.0);
+    tab_bar(ui, s);
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            rhythm_card(ui, s, &mut actions);
-            ui.add_space(4.0);
-            delivery_card(ui, s, view, &mut actions);
-            ui.add_space(4.0);
-            context_card(ui, s, &mut actions);
-            ui.add_space(4.0);
-            system_card(ui, s, view, &mut actions);
+            match s.tab {
+                // 首屏（默认页签）就是「下次休息 14:32」——首次运行会自动打开这个
+                // 窗口做引导，第一眼不该是一张要往下滚的设置表单。
+                SettingsTab::Now => status_card(ui, view, &mut actions),
+                SettingsTab::Reminder => {
+                    rhythm_card(ui, s, &mut actions);
+                    ui.add_space(4.0);
+                    delivery_card(ui, s, view, &mut actions);
+                }
+                SettingsTab::Awareness => context_card(ui, s, &mut actions),
+                SettingsTab::System => system_card(ui, s, view, &mut actions),
+                SettingsTab::About => about_card(ui, s, view, &mut actions),
+            }
             ui.add_space(8.0);
             footer(ui, s, &mut actions);
         });
 
     actions
+}
+
+/// 页签栏。文案只有两三个字，五个页签中英文都远窄于内容区（宽度闸门会量）。
+fn tab_bar(ui: &mut egui::Ui, s: &mut SettingsState) {
+    ui.horizontal(|ui| {
+        for tab in SettingsTab::ALL {
+            if ui.selectable_label(s.tab == tab, tr(tab.key())).clicked() {
+                s.tab = tab;
+            }
+        }
+    });
 }
 
 fn card<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -521,6 +584,17 @@ fn delivery_card(
             if commit(&ui.checkbox(&mut s.draft.start_cue_enabled, tr("ui.start_cue_checkbox"))) {
                 push_save(s, actions);
             }
+            // v0.7.0：预告浮窗此前是**静默**弹出的（整条链路只有结束音会响），
+            // 不盯着屏幕右下角就不知道提醒来了。默认开，可在本页关掉。
+            let heads_up_cue = ui
+                .checkbox(
+                    &mut s.draft.heads_up_cue_enabled,
+                    tr("ui.heads_up_cue_checkbox"),
+                )
+                .on_hover_text(tr("ui.weak_heads_up_cue"));
+            if commit(&heads_up_cue) {
+                push_save(s, actions);
+            }
         });
         if s.draft.sound_preset == SoundPreset::Custom {
             ui.add_enabled_ui(s.draft.sound_enabled, |ui| custom_sound_row(ui, s, actions));
@@ -819,13 +893,71 @@ fn system_card(
         }
 
         ui.add_space(2.0);
-        // 更新检查的 TLS 栈随 `update-check` feature 编译（v0.6 起默认关，实测 -1.1 MB）。
+        // 更新检查 + 版本号已搬到「关于」页（v0.7.0）：那里还有作者 / 仓库 / 许可证
+        // 链接与求 Star 的一句，见 `about_card`。
+
+        // v0.6.1：配置路径是**全项目唯一无上界的运行期字符串**，而这一行是
+        // `ui.horizontal`（Extend，单行不换行）——路径一变长就横向越界。
+        // `Label::truncate`（`egui-0.36.1/src/widgets/label.rs:71`）把它压成
+        // 一行并省略；`show_tooltip_when_elided` 默认 true（`label.rs:42`），
+        // 于是完整路径在悬停时可见。
+        ui.horizontal(|ui| {
+            egui::Label::new(egui::RichText::from(&s.config_path_display).weak())
+                .truncate()
+                .ui(ui);
+            if ui.small_button(tr("ui.open_dir")).clicked() {
+                actions.push(SettingsAction::OpenConfigDir);
+            }
+        });
+    });
+}
+
+/// 项目与作者链接（「关于」页）。写成常量而不是散在调用点，方便一处改。
+const REPO_URL: &str = "https://github.com/lexingtonhibiki/EyeFlow";
+const AUTHOR_URL: &str = "https://github.com/lexingtonhibiki";
+const LICENSE_URL: &str = "https://github.com/lexingtonhibiki/EyeFlow/blob/main/LICENSE";
+
+/// 「关于」页：版本、更新检查、作者与仓库链接、求 Star。
+///
+/// v0.7.0 新增。此前「版本号 + 更新检查」挤在「系统」卡片末尾，既没有作者与
+/// 仓库入口，也没有任何「这是什么项目 / 去哪儿反馈」的信息——按高星开源项目的
+/// 惯例补齐：关于页是用户主动寻找「这东西是谁做的、去哪儿说话」时唯一会点开的地方。
+///
+/// **更新只做「检查」**：查到新版本时展示版本号 + 一个通往 GitHub Releases 的
+/// 链接，**不自动下载、不自动安装**——下载与否由用户自己决定（README 的隐私一节
+/// 也是这么写的）。
+fn about_card(
+    ui: &mut egui::Ui,
+    s: &mut SettingsState,
+    view: &SettingsView,
+    actions: &mut Vec<SettingsAction>,
+) {
+    card(ui, tr("card.about"), |ui| {
+        ui.label(
+            egui::RichText::new(tr_fill(
+                "about.version",
+                "{ver}",
+                crate::update::current_version(),
+            ))
+            .strong(),
+        );
+        ui.weak(tr("about.tagline"));
+        ui.add_space(6.0);
+        ui.weak(tr("about.links"));
+        // `horizontal_wrapped`：四条链接在 560 pt 里排不下时可以折行——
+        // 这一行没有「横向裁切」的风险，因此不在 layout_width 闸门的管辖内。
+        ui.horizontal_wrapped(|ui| {
+            ui.hyperlink_to(tr("about.repo"), REPO_URL);
+            ui.hyperlink_to(tr("about.author"), AUTHOR_URL);
+            ui.hyperlink_to(tr("about.releases"), crate::update::RELEASES_URL);
+            ui.hyperlink_to(tr("about.license"), LICENSE_URL);
+        });
+
+        ui.add_space(8.0);
+        // 更新检查的 TLS 栈随 `update-check` feature 编译（**v0.7.0 起默认开启**，
+        // 见 Cargo.toml；`--no-default-features` 可省下约 1.1 MB）。
         // 没编进来的时候**不显示那个永远勾不上的复选框**——给用户一个按了没反应
         // 的开关比不给更糟。
-        // v0.6.1：这一行的标签原先把「标题 + 一整句规格」写进同一个 key（英文 80
-        // 字符），实测右缘 617.8 pt > 546.0 pt。规格（每 24 h 至多一次 / 仅 GitHub
-        // Releases API / 不下载）搬进 `on_hover_text`，标签只留「Check for updates
-        // at startup」——与本版另外 6 条同款处理，文案一个字未改、键一个未删。
         #[cfg(feature = "update-check")]
         if commit(
             &ui.checkbox(&mut s.draft.update_check_enabled, tr("ui.update_check"))
@@ -856,6 +988,7 @@ fn system_card(
                 }
                 UpdateStatus::Available { latest, url } => {
                     ui.colored_label(COLOR_WARN, tr_fill("ui.new_version", "{ver}", latest));
+                    // 「前往下载」= 打开 Releases 页面，下哪个包、下不下，用户自己定
                     ui.hyperlink_to(tr("ui.open_release"), url);
                 }
                 UpdateStatus::Failed(e) => {
@@ -864,19 +997,8 @@ fn system_card(
             }
         });
 
-        // v0.6.1：配置路径是**全项目唯一无上界的运行期字符串**，而这一行是
-        // `ui.horizontal`（Extend，单行不换行）——路径一变长就横向越界。
-        // `Label::truncate`（`egui-0.36.1/src/widgets/label.rs:71`）把它压成
-        // 一行并省略；`show_tooltip_when_elided` 默认 true（`label.rs:42`），
-        // 于是完整路径在悬停时可见。
-        ui.horizontal(|ui| {
-            egui::Label::new(egui::RichText::from(&s.config_path_display).weak())
-                .truncate()
-                .ui(ui);
-            if ui.small_button(tr("ui.open_dir")).clicked() {
-                actions.push(SettingsAction::OpenConfigDir);
-            }
-        });
+        ui.add_space(8.0);
+        ui.weak(tr("about.star"));
     });
 }
 

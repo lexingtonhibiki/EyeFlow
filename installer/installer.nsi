@@ -1,4 +1,4 @@
-﻿; EyeFlow Installer — NSIS 3.09+
+; EyeFlow Installer — NSIS 3.09+
 ;
 ; 编译约定(重要,两套相对路径语义不同,已实测确认):
 ;   1) Icon / File / OutFile 的相对路径相对【本脚本所在目录】(installer\)解析,
@@ -26,9 +26,9 @@ SetCompressor /SOLID lzma
 !define PRODUCT_NAME "EyeFlow"
 ; CI 通过 /DPRODUCT_VERSION=x.y.z 注入真实版本(不带 v 前缀);本地直接编译时回退到默认值
 ; ⚠️ 这个兜底值只在「不经 CI 直接敲 makensis」时才生效,但它就是本地跑出来的
-;    安装包上的版本号 —— 下次发版记得同步改这里(当前 v0.6.1)。
+;    安装包上的版本号 —— 下次发版记得同步改这里(当前 v0.7.0)。
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.6.1"
+  !define PRODUCT_VERSION "0.7.0"
 !endif
 !define PRODUCT_PUBLISHER "lexingtonhibiki"
 !define PRODUCT_DIR "$LOCALAPPDATA\${PRODUCT_NAME}"

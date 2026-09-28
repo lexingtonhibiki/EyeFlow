@@ -438,13 +438,18 @@ fn normalize(s: &str) -> String {
         .collect()
 }
 
-/// `src/config.rs` / `src/core.rs` / `src/tr.rs` 里每个
+/// `src/config.rs` / `src/core.rs` / `src/tr.rs` / `src/ui.rs` 里每个
 /// `pub fn key(self) -> &'static str` 的 match 分支返回值，按枚举名归组。
 ///
 /// 这些就是 `tr(<枚举>.key())` 在运行期可能产出的**全部** locale key。
+///
+/// v0.7.0：`src/ui.rs` 也进这份名单——设置窗页签的 `SettingsTab::key()` 就住在
+/// `tab_bar` 旁边（`tr(tab.key())`），不收进来它会被判成「运行时 key 无法解析」
+/// 然后退回**全部枚举取值的并集**，于是页签那一行会认领一堆无关的 key、
+/// 真正属于它的 `tab.*` 反而被报成孤儿。
 fn enum_keys() -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for rel in [CONFIG_RS, CORE_RS, TR_RS] {
+    for rel in [CONFIG_RS, CORE_RS, TR_RS, UI_RS] {
         let raw = read_src(rel);
         let src = strip_comments_keep_len(&raw);
         let b = src.as_bytes();
@@ -473,9 +478,9 @@ fn enum_keys() -> BTreeMap<String, Vec<String>> {
         }
     }
     assert!(
-        out.len() >= 5,
-        "只从领域层解析到 {} 个 `fn key(self)`（预期 5：FlowSensitivity / SoundPreset / \
-         WallpaperFit / ContextState / Lang）。解析器退化了，T5 的运行期 key 展开会静默失效。",
+        out.len() >= 6,
+        "只从领域层解析到 {} 个 `fn key(self)`（预期 6：FlowSensitivity / SoundPreset / \
+         WallpaperFit / ContextState / Lang / SettingsTab）。解析器退化了，T5 的运行期 key 展开会静默失效。",
         out.len()
     );
     out
@@ -590,7 +595,16 @@ fn nearest_for_binding(b: &[u8], at: usize) -> Option<ForBinding> {
         pe += 1;
     }
     let full = src_slice(b, path, pe);
-    let enum_name = full.rsplit("::").next().unwrap_or(full).to_owned();
+    // `for x in Enum::ALL { … }` 的路径以 `::ALL` 结尾——枚举名是**倒数第二段**。
+    // v0.7.0 修正：原先无条件取最后一段，于是这里得到 "ALL"，`enums.get("ALL")`
+    // 永远落空、退回「全部枚举取值的并集」，页签那一行因此认领了一堆无关的 key。
+    let mut segs = full.rsplit("::");
+    let last = segs.next().unwrap_or(full);
+    let enum_name = if last == "ALL" {
+        segs.next().unwrap_or(last).to_owned()
+    } else {
+        last.to_owned()
+    };
     if enum_name.is_empty() {
         return None;
     }
@@ -611,6 +625,10 @@ enum Kind {
     Button,
     SmallButton,
     SelectableValue,
+    /// v0.7.0：设置窗页签栏用 `ui.selectable_label(selected, tr(tab.key()))`
+    ///（`src/ui.rs` 的 `tab_bar`）。`selectable_value` 要一个 `&mut T`，
+    /// 而页签是「读当前页签 + 点击后切换」，用 `selectable_label` 更直接。
+    SelectableLabel,
     HyperlinkTo,
 }
 
@@ -630,6 +648,7 @@ impl Kind {
             Kind::Button => "ui.button",
             Kind::SmallButton => "ui.small_button",
             Kind::SelectableValue => "ui.selectable_value",
+            Kind::SelectableLabel => "ui.selectable_label",
             Kind::HyperlinkTo => "ui.hyperlink_to",
         }
     }
@@ -637,7 +656,7 @@ impl Kind {
     fn bare(self) -> &'static str {
         &self.fn_name()["ui.".len()..]
     }
-    fn all() -> [Kind; 8] {
+    fn all() -> [Kind; 9] {
         [
             Kind::Checkbox,
             Kind::Label,
@@ -646,6 +665,7 @@ impl Kind {
             Kind::Button,
             Kind::SmallButton,
             Kind::SelectableValue,
+            Kind::SelectableLabel,
             Kind::HyperlinkTo,
         ]
     }
@@ -967,6 +987,12 @@ enum Item {
     Checkbox(String),
     Button(String),
     SmallButton(String),
+    /// `ui.selectable_label(.., tr(..))` 的一整排页签（v0.7.0 设置窗页签栏）。
+    ///
+    /// 存**全部**取值而不是一个：`tr(tab.key())` 在运行期会随 `tab` 变，
+    /// 五个页签是同一行里并列渲染的五个控件，行宽必须把它们**相加**
+    /// （只记一个 key 的话，这一行的右缘就量成了单个页签的宽度）。
+    Tabs(Vec<String>),
     Link(String),
     /// `ui.label(":")`
     Colon,
@@ -1008,6 +1034,7 @@ impl Item {
             | Item::Button(k)
             | Item::SmallButton(k)
             | Item::Link(k) => vec![k.as_str()],
+            Item::Tabs(keys) => keys.iter().map(String::as_str).collect(),
             Item::StatusLine { keys } => keys.iter().map(String::as_str).collect(),
             Item::Slider(s) => s
                 .unit
@@ -1036,6 +1063,7 @@ impl Item {
                 format!("{k:?}")
             }
             Item::Button(k) | Item::SmallButton(k) | Item::Link(k) => format!("{k:?}"),
+            Item::Tabs(keys) => format!("页签 {keys:?}"),
             Item::Colon => "\":\"".to_owned(),
             Item::StatusLine { .. } => "状态条那行".to_owned(),
             Item::ConfigPathTrunc => "配置路径（truncate）".to_owned(),
@@ -1339,6 +1367,25 @@ fn scan_items(
         keyed!("small_button", Item::SmallButton);
         keyed!("button", Item::Button);
         keyed!("hyperlink_to", Item::Link);
+        // 页签栏：`ui.selectable_label(s.tab == tab, tr(tab.key()))`。与上面那些
+        // 「一条文案一个控件」不同，这里的 key 是**运行期枚举的全部取值**，
+        // 同一行里并列渲染，所以要把它们全部收进来（见 `Item::Tabs`）。
+        if let Some(open) = widget_call(b, i, hi, "selectable_label") {
+            let (a, c) = (open + 1, match_paren(b, open));
+            let keys: Vec<String> = keys_in(b, (a, c), enums)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            assert!(
+                !keys.is_empty(),
+                "{UI_RS}:{line} 的 `ui.selectable_label` 实参里没有 tr* key（{:?}）——\
+                 行模型不认识这一行了。",
+                src_slice(b, a, c)
+            );
+            items.push((i, Item::Tabs(keys)));
+            i = eat_chain(b, c + 1, hi).max(c + 1);
+            continue;
+        }
         if hit_at(b, i, hi, b"ui.add_space(") {
             let (a, c) = arg("ui.add_space", i);
             let expr = src_slice(b, a, c);
@@ -1607,6 +1654,7 @@ const KNOWN_UI: &[&str] = &[
     "checkbox",
     "button",
     "small_button",
+    "selectable_label",
     "hyperlink_to",
     "add_space",
     "add",
@@ -1836,6 +1884,11 @@ fn lay_item(ui: &mut egui::Ui, item: &Item, table: &Table, widths: &mut Vec<f32>
         }
         Item::Button(k) => push(ui.button(need(k)).rect.width(), k),
         Item::SmallButton(k) => push(ui.small_button(need(k)).rect.width(), k),
+        Item::Tabs(keys) => {
+            for k in keys {
+                push(ui.selectable_label(false, need(k)).rect.width(), k);
+            }
+        }
         Item::Link(k) => push(
             ui.hyperlink_to(need(k), "https://example.invalid/")
                 .rect
@@ -2088,6 +2141,9 @@ fn inline_text_fits_card_content_width() {
                         Kind::Button => ui.button(text.clone()).rect.width(),
                         Kind::SmallButton => ui.small_button(text.clone()).rect.width(),
                         Kind::SelectableValue => {
+                            ui.selectable_label(false, text.clone()).rect.width()
+                        }
+                        Kind::SelectableLabel => {
                             ui.selectable_label(false, text.clone()).rect.width()
                         }
                         Kind::HyperlinkTo => ui

@@ -3,10 +3,12 @@
 //! 隐私约定：只读 `releases/latest` 一个端点、带固定 User-Agent、10 秒超时、
 //! 不下载任何文件、不上报任何本机信息。结果只显示在设置窗里。
 //!
-//! **网络栈随 cargo feature `update-check` 一起编译（v0.6 起默认关）**：
+//! **网络栈随 cargo feature `update-check` 一起编译（v0.7.0 起默认开启）**：
 //! `ureq` 的默认 features 会把 `rustls` + `ring`（大块汇编加密代码）无条件拖进
-//! 二进制，而本功能默认关闭。实测省下 1,168,896 B（10,224,640 → 9,055,744，-11.4%）。
-//! 需要在线检查的构建：`cargo build --release --features update-check`。
+//! 二进制，实测 +1,139,200 B（9,085,440 → 10,224,640）。v0.6 曾因此把它默认关掉，
+//! 但那样一来设置窗的「关于」页只剩一句「此构建未包含在线更新检查」——**开关在
+//! 用户的下载版里根本不存在**。v0.7.0 改回默认开启；极限体积的构建用
+//! `cargo build --release --no-default-features`。
 
 use std::time::Duration;
 
@@ -15,7 +17,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 
-pub const RELEASES_URL: &str = "https://github.com/lexingtonhibiki/eyeflow/releases";
+pub const RELEASES_URL: &str = "https://github.com/lexingtonhibiki/EyeFlow/releases";
 #[cfg(feature = "update-check")]
 const API_URL: &str = "https://api.github.com/repos/lexingtonhibiki/EyeFlow/releases/latest";
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 3600);

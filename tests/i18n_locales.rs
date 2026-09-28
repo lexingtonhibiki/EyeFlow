@@ -420,6 +420,12 @@ const ALLOWED_IDENTICAL: &[(&str, &str)] = &[
         "「GitHub API: {msg}」= 产品专有名词 + 占位符。GitHub 是品牌名，两种语言 \
          都不翻译，`{msg}` 是原文回显。",
     ),
+    (
+        "about.version",
+        "「EyeFlow v{ver}」= 品牌名 + 版本号，两种语言写法本来就该一样（「关于」页 \
+         第一行的标题）。整串没有可翻译的英文单词——EyeFlow 是产品名、`v` 是版本 \
+         前缀、`{ver}` 是数字。",
+    ),
 ];
 
 #[test]

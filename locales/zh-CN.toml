@@ -64,6 +64,14 @@
 "card.delivery" = "提醒方式"
 "card.context" = "上下文感知"
 "card.system" = "系统"
+"card.about" = "关于"
+
+# ── 设置窗：页签（ui.rs）───────────────────────────────────────────────
+"tab.now" = "状态"
+"tab.reminder" = "提醒"
+"tab.awareness" = "感知"
+"tab.system" = "系统"
+"tab.about" = "关于"
 
 # ── 设置窗：状态条 ──────────────────────────────────────────────────────
 "ui.rest_now" = "立即休息"
@@ -96,6 +104,8 @@
 "ui.sound" = "提示音"
 "ui.no_audio_device" = "（未检测到音频输出设备）"
 "ui.start_cue_checkbox" = "点击『现在开始』/『立即休息』时播放提示音"
+"ui.heads_up_cue_checkbox" = "预告浮窗弹出时播放提示音"
+"ui.weak_heads_up_cue" = "预告只是说『马上要休息了』；这一声让你不必盯着屏幕右下角。它与休息结束音、全屏时的唯一通道音是三回事，互不影响。"
 "ui.cue_volume" = "提示音音量"
 "ui.cue_duration" = "提示音时长"
 "ui.weak_custom_length" = "（自定义音频按文件本身长度播放一次）"
@@ -145,9 +155,20 @@
 "ui.checking" = "正在检查…"
 "ui.up_to_date" = "已是最新版本 ✓"
 "ui.new_version" = "有新版本 v{ver}"
-"ui.open_release" = "打开发布页"
+"ui.open_release" = "前往下载"
 "ui.check_failed" = "检查失败：{err}"
 "ui.open_dir" = "打开目录"
+
+# ── 设置窗：关于页（ui.rs）──────────────────────────────────────────────
+# 更新只做「检查」：查到新版本时给出 Releases 链接，下载与否由用户自己决定。
+"about.version" = "EyeFlow v{ver}"
+"about.tagline" = "会看情况的 Windows 护眼提醒 · Rust 单进程 · 免费开源（MIT）"
+"about.links" = "链接"
+"about.repo" = "GitHub 仓库"
+"about.author" = "作者 lexingtonhibiki"
+"about.releases" = "发布页"
+"about.license" = "MIT 许可证"
+"about.star" = "如果 EyeFlow 对你有帮助，欢迎在 GitHub 上点一个 Star —— 这是对独立开发者最好的支持。"
 
 # ── 设置窗：页脚 ────────────────────────────────────────────────────────
 "ui.reset_defaults" = "恢复默认"

@@ -398,6 +398,16 @@ impl Core {
             self.schedule_next(now);
             return;
         }
+        // 预告浮窗弹出时的提示音（`heads_up_cue_enabled`，默认开）。
+        // 这一声与「结束音」「全屏时的唯一通道音」是三回事，不共用
+        // `cue_played_this_round` 的**含义**，但要共用它的**状态**：
+        // 游戏 / 全屏里到点时那一声（声音是唯一通道）已经替这一回合
+        // 「响过了」，退出全屏后补发的预告不该再响第二声
+        // （`gaming_plays_cue_once_then_catches_up_visually_after_exit` 钉着这条）。
+        // `sound_enabled` 是总开关，由宿主的 `Action::PlayCue` 分支把关。
+        if self.cfg.heads_up_cue_enabled && !self.cue_played_this_round {
+            actions.push(Action::PlayCue);
+        }
         self.phase = Phase::HeadsUp {
             started: now,
             ends: now + self.heads_up_len(is_long),
@@ -473,13 +483,14 @@ mod tests {
     const S: fn(u64) -> Duration = Duration::from_secs;
 
     fn cfg(interval: u64) -> Config {
-        let mut c = Config::default();
-        c.short_break_min_secs = interval;
-        c.short_break_max_secs = interval; // 零宽区间 → 确定性排期
-        c.heads_up_secs = 15;
-        c.short_break_secs = 30;
-        c.long_break_enabled = false;
-        c
+        Config {
+            short_break_min_secs: interval,
+            short_break_max_secs: interval, // 零宽区间 → 确定性排期
+            heads_up_secs: 15,
+            short_break_secs: 30,
+            long_break_enabled: false,
+            ..Config::default()
+        }
     }
 
     fn core(interval: u64, t0: Instant) -> Core {
@@ -548,6 +559,9 @@ mod tests {
 
         c.set_sensors(Sensors::default());
         let a2 = c.tick(t0 + S(701), false);
+        // 补发预告**不再出声**：这一回合的那一声已经在全屏里响过（v0.7.0 的
+        // `heads_up_cue_enabled` 用 `cue_played_this_round` 兜住这条，别把这里
+        // 改成允许第二声——用户会听到同一个提醒响两遍）。
         assert!(a2.is_empty());
         assert!(
             matches!(c.phase, Phase::HeadsUp { .. }),
@@ -762,6 +776,34 @@ mod tests {
         assert!(matches!(c.phase, Phase::Break { is_long: false, .. }));
         c.tick(t0 + S(41), false);
         assert_eq!(c.stats.completed_short, 1);
+    }
+
+    #[test]
+    fn heads_up_cue_follows_its_switch() {
+        let t0 = Instant::now();
+        // 默认开：预告浮窗弹出的那一 tick 必须带一声提示音
+        let mut c = core(600, t0);
+        let a = c.tick(t0 + S(586), false);
+        assert!(matches!(c.phase, Phase::HeadsUp { .. }));
+        assert_eq!(
+            a,
+            vec![Action::PlayCue],
+            "预告浮窗弹出时应有一声提示音（heads_up_cue_enabled 默认开）"
+        );
+
+        // 关掉之后：同一 tick 不再出声，但预告阶段照常建立（视觉提醒不受影响）
+        let mut c2 = core(600, t0);
+        c2.cfg.heads_up_cue_enabled = false;
+        let a2 = c2.tick(t0 + S(586), false);
+        assert!(matches!(c2.phase, Phase::HeadsUp { .. }));
+        assert!(a2.is_empty(), "关闭开关后预告不得再出声");
+
+        // 仅声音模式（visual_enabled = false）不受这个开关影响：
+        // 那一声是本次投递的唯一通道，关掉它等于取消提醒
+        let mut c3 = core(600, t0);
+        c3.cfg.visual_enabled = false;
+        c3.cfg.heads_up_cue_enabled = false;
+        assert_eq!(c3.tick(t0 + S(586), false), vec![Action::PlayCue]);
     }
 }
 // 追加测试到 tests 模块（由集成脚本定位插入）

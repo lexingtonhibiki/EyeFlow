@@ -47,7 +47,17 @@ pub struct UiSession<'a> {
     idle_frames: u32,
     /// 严格模式背景图纹理（随会话生命周期）
     wallpaper: WallpaperCache,
+    /// 演示模式（`EYEFLOW_DEMO_TABS=1`）里上一次自动翻页签的时刻
+    demo_tab_at: Instant,
 }
+
+/// 演示模式：设置窗每 2 秒自动翻一页签。
+///
+/// 与 `EYEFLOW_DEMO` 同族——都是**只为录屏 / 验收存在**的运行期开关，不写配置、
+/// 不改默认值。存在的理由是一个具体的障碍：录制 GIF 的机器上有别的窗口盖住设置窗，
+/// 真实鼠标与 `PostMessage` 点击都送不进去（winit 只在窗口活动时处理指针消息），
+/// 于是「切页签」这个动作改由程序自己完成，录制只负责截图。
+const DEMO_TAB_INTERVAL: Duration = Duration::from_secs(2);
 
 impl<'a> UiSession<'a> {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: &'a mut Runtime) -> Self {
@@ -64,6 +74,7 @@ impl<'a> UiSession<'a> {
             panel_noactivate_applied: false,
             idle_frames: 0,
             wallpaper: WallpaperCache::new(),
+            demo_tab_at: Instant::now(),
         }
     }
 
@@ -189,6 +200,13 @@ impl<'a> UiSession<'a> {
         let Some(state) = rt.settings.as_mut() else {
             return;
         };
+        // 演示模式：自动翻页签（`EYEFLOW_DEMO_TABS=1`，只影响这一处界面状态）
+        if std::env::var_os("EYEFLOW_DEMO_TABS").is_some()
+            && now.saturating_duration_since(self.demo_tab_at) >= DEMO_TAB_INTERVAL
+        {
+            self.demo_tab_at = now;
+            state.tab = state.tab.next();
+        }
         let id = ViewportId::from_hash_of("eyeflow-settings");
         let monitor = monitor_size(ctx);
         // 用户要求默认约 700×780 物理像素：除以缩放得到逻辑尺寸，再按屏幕余量夹紧
