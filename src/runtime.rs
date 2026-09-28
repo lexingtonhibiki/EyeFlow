@@ -208,10 +208,16 @@ impl Runtime {
     }
 
     /// 是否需要一个 UI 会话（有窗口要显示）。
+    ///
+    /// 最后一个分支是**预热**（`Core::ui_warmup_in`）：浮窗出现前的几秒就把
+    /// 会话建好，等 `Phase::HeadsUp` 一到，窗口在同一帧出现。没有它时，会话
+    /// 是在「预告该出现」的那一刻才从零开始建的（GL 上下文 + 字体 + 着色器），
+    /// 于是用户先听到提示音、再看着窗口从白底上一点点画出来。
     pub fn needs_ui(&self, now: Instant) -> bool {
         self.settings.is_some()
             || (self.core.cfg.visual_enabled && !matches!(self.core.phase, Phase::Idle))
             || (self.core.cfg.visual_enabled && self.core.flash_active(now))
+            || self.core.ui_warmup_in(now).is_some()
     }
 
     /// 处理所有待处理输入并推进调度核心一步。两种模式都调用它。
@@ -249,6 +255,7 @@ impl Runtime {
                     if self.core.cfg.sound_enabled {
                         // 游戏 / 全屏 / 不可打扰时预告面板不可见，声音是唯一通道 → 自动增强
                         let sound_only = self.core.state == ContextState::Gaming;
+                        log::debug!("播放提示音（sound_only={sound_only}）");
                         self.play_cue(sound_only);
                     }
                 }

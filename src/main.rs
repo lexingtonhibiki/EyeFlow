@@ -322,6 +322,8 @@ fn init_logging() {
     let mut builder = env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info,eframe=warn,egui_glow=warn"),
     );
+    // 毫秒时间戳：排查「提示音先响、窗口后出现」这类时序问题时，秒级精度不够用
+    builder.format_timestamp_millis();
     if let Ok(file) = std::fs::File::create(dir.join("eyeflow.log")) {
         builder.target(env_logger::Target::Pipe(Box::new(file)));
     }

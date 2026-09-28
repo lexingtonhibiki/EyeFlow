@@ -59,6 +59,12 @@ pub struct UiSession<'a> {
 /// 于是「切页签」这个动作改由程序自己完成，录制只负责截图。
 const DEMO_TAB_INTERVAL: Duration = Duration::from_secs(2);
 
+/// 会话在跑、但没有窗口需要高频重绘时的维护节奏。
+///
+/// 预热窗口里这个值会被 `Core::ui_warmup_in` 压小到「浮窗出现的剩余时间」，
+/// 让 `Phase::HeadsUp` 的切换不被 500 ms 的常规节奏拖后半帧。
+const IDLE_REPAINT: Duration = Duration::from_millis(500);
+
 impl<'a> UiSession<'a> {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: &'a mut Runtime) -> Self {
         set_fonts(&cc.egui_ctx);
@@ -79,6 +85,14 @@ impl<'a> UiSession<'a> {
     }
 
     fn show_panel(&mut self, ctx: &egui::Context, now: Instant) {
+        // 严格模式壁纸**预载**：必须放在 `kind == PanelKind::None` 的提前
+        // return 之前——预热会话里 phase 还是 Idle，那几帧空转就是给它用的。
+        // 等到全屏面板出现那一帧再解码（4K 图解码 + 缩放是几百毫秒级），
+        // 用户看到的是「先深底、后壁纸」的两段式呈现。
+        if self.rt.core.cfg.strict_mode && self.rt.core.cfg.visual_enabled {
+            let path = self.rt.core.cfg.strict_wallpaper_path.clone();
+            let _ = self.wallpaper.get(ctx, path.as_deref());
+        }
         let core = &self.rt.core;
         // 休息完成的“欢迎回来”闪屏（独立于阶段机）
         let flash = core.cfg.visual_enabled && core.flash_active(now);
@@ -282,7 +296,15 @@ impl eframe::App for UiSession<'_> {
                 return;
             }
         }
-        ctx.request_repaint_after(Duration::from_millis(500));
+        // 预热窗口里把唤醒点贴到「浮窗出现」的那一刻：常规的 500 ms 节奏
+        // 会把 HeadsUp 的切换最多拖后半帧；预热之后浮窗已能在一帧内画出来，
+        // 再让切换晚半帧就白预热了。
+        let wait = self
+            .rt
+            .core
+            .ui_warmup_in(now)
+            .map_or(IDLE_REPAINT, |d| d.min(IDLE_REPAINT));
+        ctx.request_repaint_after(wait);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

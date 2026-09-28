@@ -675,30 +675,50 @@ fn custom_sound_row(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<
     }
 }
 
+/// 按钮的自然高度 = 文本行高 + 上下 `button_padding`（egui 0.36.1 的按钮就是这么
+/// 算的）。现场量而不是写死：中英文两套字体链（`ZH_FONTS` / `EN_FONTS`）的行高不同。
+/// 用途见 `wallpaper_section` 里对行高的注释。
+fn button_height(ui: &egui::Ui) -> f32 {
+    let font_id = egui::TextStyle::Button.resolve(ui.style());
+    let color = ui.visuals().text_color();
+    ui.fonts_mut(|f| f.layout_no_wrap("Ag".to_owned(), font_id, color).size().y)
+        + 2.0 * ui.spacing().button_padding.y
+}
+
 fn wallpaper_section(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<SettingsAction>) {
-    ui.horizontal(|ui| {
-        ui.add_space(INDENT);
-        ui.label(tr("ui.background_image"));
-        if ui.button(tr("ui.pick_image")).clicked() {
-            actions.push(SettingsAction::PickWallpaper);
-        }
-        if s.draft.strict_wallpaper_path.is_some() && ui.small_button(tr("ui.clear")).clicked() {
-            actions.push(SettingsAction::ClearWallpaper);
-        }
-        ui.label(tr("ui.fit"));
-        egui::ComboBox::from_id_salt("wallpaper_fit")
-            .selected_text(tr(s.draft.strict_wallpaper_fit.key()))
-            .show_ui(ui, |ui| {
-                for f in WallpaperFit::ALL {
-                    if commit(&ui.selectable_value(
-                        &mut s.draft.strict_wallpaper_fit,
-                        f,
-                        tr(f.key()),
-                    )) {
-                        push_save(s, actions);
+    // ⚠️ 这一行混排了 label / 按钮 / 下拉框，必须**先**把行高抬到按钮高度再开
+    // `ui.horizontal`。不这么做的话（v0.7.1 之前）：「背景图片」「自适应」两个
+    // label 按行的**初始**高度（`spacing.interact_size.y`，默认 18 pt）居中，
+    // 比按钮中心高 6.4 pt；而 ComboBox 的可用区域从被按钮撑高后的 cursor 起算，
+    // 又比按钮中心低 6.4 pt——同一行里三层错位，「铺满裁剪」看起来就是偏下。
+    let row_h = button_height(ui);
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = row_h;
+        ui.horizontal(|ui| {
+            ui.add_space(INDENT);
+            ui.label(tr("ui.background_image"));
+            if ui.button(tr("ui.pick_image")).clicked() {
+                actions.push(SettingsAction::PickWallpaper);
+            }
+            if s.draft.strict_wallpaper_path.is_some() && ui.small_button(tr("ui.clear")).clicked()
+            {
+                actions.push(SettingsAction::ClearWallpaper);
+            }
+            ui.label(tr("ui.fit"));
+            egui::ComboBox::from_id_salt("wallpaper_fit")
+                .selected_text(tr(s.draft.strict_wallpaper_fit.key()))
+                .show_ui(ui, |ui| {
+                    for f in WallpaperFit::ALL {
+                        if commit(&ui.selectable_value(
+                            &mut s.draft.strict_wallpaper_fit,
+                            f,
+                            tr(f.key()),
+                        )) {
+                            push_save(s, actions);
+                        }
                     }
-                }
-            });
+                });
+        });
     });
     let Some(path) = s.draft.strict_wallpaper_path.clone() else {
         indented(ui, |ui| {

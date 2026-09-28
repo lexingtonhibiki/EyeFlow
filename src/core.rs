@@ -94,6 +94,9 @@ const RESUME_GRACE: Duration = Duration::from_secs(60);
 const SLEEP_GAP: Duration = Duration::from_secs(600);
 /// 休息完成后的“欢迎回来”闪屏时长
 const COMPLETED_FLASH: Duration = Duration::from_secs(3);
+/// 预告浮窗出现前多久开始预热 UI 会话：宿主提前把 GL 上下文 / 字体 / 着色器
+/// 建好，让「到点响一声」与「浮窗可见」落在同一帧（v0.7.1 观感修复）。
+const UI_WARMUP: Duration = Duration::from_secs(5);
 
 pub struct Core {
     pub cfg: Config,
@@ -112,6 +115,9 @@ pub struct Core {
 
     due: Instant,
     last_tick: Instant,
+    /// 最近一次 `tick` 传入的免打扰状态（`ui_warmup_in` 要用：免打扰里
+    /// 到点会被顺延，此时预热出的会话 5 秒后就得退出，纯属白开）。
+    last_quiet: bool,
     keys: VecDeque<Instant>,
     last_key: Option<Instant>,
     postponed_this_round: bool,
@@ -134,6 +140,7 @@ impl Core {
             completed_flash_until: None,
             due: now,
             last_tick: now,
+            last_quiet: false,
             keys: VecDeque::with_capacity(256),
             last_key: None,
             postponed_this_round: false,
@@ -242,6 +249,40 @@ impl Core {
         self.due.saturating_duration_since(now)
     }
 
+    /// 下一次预告浮窗应该出现的时刻（`due` 提前一个预告时长）。
+    fn next_heads_up_at(&self) -> Instant {
+        let is_long = self.long_break_due();
+        self.due
+            .checked_sub(self.heads_up_len(is_long))
+            .unwrap_or(self.due)
+    }
+
+    /// 是否该为即将出现的预告浮窗**预热** UI 会话；窗口内返回「还有多久出现」。
+    ///
+    /// 宿主（轻量循环）据此提前进入 eframe 会话：GL 上下文、字体、着色器都在
+    /// 这里建好，`Phase::HeadsUp` 一到就能在**同一帧**把浮窗画出来，而不是
+    /// 「先响一声、随后窗口才从白底上一点点构建出来」。
+    ///
+    /// 窗口故意开得很窄（[`UI_WARMUP`]，5 秒），并且只在真的会按点投递时打开：
+    /// 一旦错过（心流 / 全屏 / 暂停里暂不投递），浮窗时刻已经到了身后，这里
+    /// 立刻回到 `None`，会话随之退出、GL 上下文释放——**不能为了预热让
+    /// 上下文常驻**。手动触发（热键 / 托盘）没有提前量，仍然走冷启动路径。
+    pub fn ui_warmup_in(&self, now: Instant) -> Option<Duration> {
+        if !self.cfg.enabled || !self.cfg.visual_enabled || self.is_paused(now) {
+            return None;
+        }
+        // 免打扰里到点会被顺延（见 tick 第 3 步），此刻预热出的会话很快就要退出
+        if self.last_quiet {
+            return None;
+        }
+        if !matches!(self.phase, Phase::Idle) {
+            return None;
+        }
+        self.next_heads_up_at()
+            .checked_duration_since(now)
+            .filter(|d| *d <= UI_WARMUP)
+    }
+
     pub fn long_break_due(&self) -> bool {
         self.cfg.long_break_enabled
             && self.screen_accum >= Duration::from_secs(self.cfg.long_break_after_secs)
@@ -263,6 +304,7 @@ impl Core {
         let mut actions = Vec::new();
         let dt = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
+        self.last_quiet = quiet;
         self.prune_keys(now);
 
         // 0. 睡眠 / 挂起会把整段时长算进 dt（Windows 计时含睡眠时间）。
@@ -804,6 +846,74 @@ mod tests {
         c3.cfg.visual_enabled = false;
         c3.cfg.heads_up_cue_enabled = false;
         assert_eq!(c3.tick(t0 + S(586), false), vec![Action::PlayCue]);
+    }
+
+    #[test]
+    fn ui_warmup_opens_a_narrow_window_before_heads_up() {
+        let t0 = Instant::now();
+        // heads_up_secs = 15：把到点排在 100 秒后 → 浮窗应在 t0+85s 出现
+        let mut c = core(600, t0);
+        c.set_due_in(t0, S(100));
+
+        assert!(c.ui_warmup_in(t0).is_none(), "离浮窗还有 85 秒，不该预热");
+        assert!(
+            c.ui_warmup_in(t0 + S(79)).is_none(),
+            "差 6 秒仍差一点：预热窗口只有 5 秒"
+        );
+        assert!(
+            c.ui_warmup_in(t0 + S(80)).is_some(),
+            "差 5 秒：预热窗口打开"
+        );
+        assert!(c.ui_warmup_in(t0 + S(85)).is_some(), "正点仍应是 Some(0)");
+        assert!(
+            c.ui_warmup_in(t0 + S(86)).is_none(),
+            "已错过浮窗时刻（心流 / 全屏里暂不投递）应立即回到 None，释放会话"
+        );
+
+        // 到点且会投递：phase 转为 HeadsUp，此后由 needs_ui 的阶段分支接管
+        c.tick(t0 + S(85), false);
+        assert!(matches!(c.phase, Phase::HeadsUp { .. }));
+        assert!(
+            c.ui_warmup_in(t0 + S(85)).is_none(),
+            "已在预告阶段，预热判定必须让位给阶段分支"
+        );
+    }
+
+    #[test]
+    fn ui_warmup_stays_off_when_no_panel_can_appear() {
+        let t0 = Instant::now();
+        let in_window = t0 + S(80);
+
+        let mut c = core(600, t0);
+        c.set_due_in(t0, S(100));
+        c.cfg.visual_enabled = false;
+        assert!(
+            c.ui_warmup_in(in_window).is_none(),
+            "仅声音模式没有浮窗可预热"
+        );
+
+        let mut c = core(600, t0);
+        c.set_due_in(t0, S(100));
+        c.cfg.enabled = false;
+        assert!(c.ui_warmup_in(in_window).is_none(), "提醒关掉后不必预热");
+
+        let mut c = core(600, t0);
+        c.set_due_in(t0, S(100));
+        c.pause_for(t0, S(3600));
+        assert!(c.ui_warmup_in(in_window).is_none(), "暂停期间不预热");
+
+        // 免打扰：连预热都不该开——会话建好 5 秒后到点会被顺延，等于白开
+        let mut c = core(600, t0);
+        c.set_due_in(t0, S(100));
+        assert!(
+            c.ui_warmup_in(t0 + S(80)).is_some(),
+            "先确认这个时刻本来就在预热窗口里"
+        );
+        c.tick(t0 + S(80), true);
+        assert!(
+            c.ui_warmup_in(t0 + S(80)).is_none(),
+            "免打扰时段里不得预热：到点会被顺延，预热出的会话随即退出"
+        );
     }
 }
 // 追加测试到 tests 模块（由集成脚本定位插入）
