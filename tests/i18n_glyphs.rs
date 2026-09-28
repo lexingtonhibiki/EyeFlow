@@ -18,6 +18,7 @@
 //! - zh-CN：`msyh.ttc`（对 CJK 统一表意文字区 U+4E00–U+9FFF 覆盖 20992/20992）
 //!   + 链尾 `seguisym.ttf` 符号回退
 //! - en-US：Segoe UI Regular + 链尾 `seguisym.ttf`
+//!
 //! 被删掉的 `msyhl.ttc` / `simhei.ttf` 相对这条链**一个文案字符都没多覆盖**。
 
 use std::collections::BTreeSet;

@@ -232,7 +232,7 @@ mod tests {
         // ICONDIR: reserved=0, type=1 (icon), count=3, all little-endian.
         assert_eq!(&ico[0..6], &[0, 0, 1, 0, 3, 0]);
 
-        let mut offset = (6 + 16 * sizes.len()) as usize;
+        let mut offset = 6 + 16 * sizes.len();
         for (i, &s) in sizes.iter().enumerate() {
             let e = 6 + 16 * i;
             let dim = if s >= 256 { 0u8 } else { s as u8 };
