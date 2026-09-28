@@ -47,15 +47,19 @@ cargo +stable-x86_64-pc-windows-gnu test
 ```
 
 - `EYEFLOW_DEMO=1` 可启动演示模式（60 秒后触发一次完整提醒流程），便于验收界面改动。
+- `EYEFLOW_DEMO_TABS=1`（配合 `EYEFLOW_DEMO=1`）让设置窗每 2 秒自动翻一页签，
+  用于录制 README 的 GIF：录制机上盖着别的窗口时点击送不进设置窗
+  （真鼠标注入被上层窗口吃掉，`PostMessage` 的指针消息 winit 也不处理），
+  自动翻页让录屏完全不依赖鼠标。`.shots/record_gif.py` 就是用它录的。
 
 ## Cargo features
 
 | feature | 默认 | 作用 |
 |---|---|---|
-| `update-check` | **关** | 编译在线更新检查所需的 TLS + JSON 栈（`ureq` / `rustls` / `ring` / `serde_json`）。关掉实测省 1,168,896 B（-11.4%），因为 `update_check_enabled` 本来就默认 `false` |
+| `update-check` | **开**（v0.7.0 起） | 编译在线更新检查所需的 TLS + JSON 栈（`ureq` / `rustls` / `ring` / `serde_json`），实测 +1,139,200 B。v0.6 默认关掉它是为了体积，但那样下载版里「关于」页的更新开关根本不存在——把一个用户用得上的功能砍成"体积优化"是算错账，v0.7.0 改回默认开启 |
 
-需要在线更新检查时：`cargo build --release --features update-check`。
-发布构建用默认 features（不带这个开关）——见 [ADR-0007](docs/adr/0007-v0.6-scope.md) 判决五。
+极限体积构建：`cargo build --release --no-default-features`（约 8.66 MiB）。
+体积取舍的完整推导见 [ADR-0007](docs/adr/0007-v0.6-scope.md) 判决五与 [CHANGELOG](CHANGELOG.md) 的 v0.7.0。
 
 ## 发布流程（维护者）
 
@@ -63,3 +67,15 @@ cargo +stable-x86_64-pc-windows-gnu test
 2. 合并 `dev` → `main`；
 3. `Cargo.toml` 版本号与 tag 一致后：`git tag vx.y.z && git push origin main vx.y.z`；
 4. CI 自动构建 `EyeFlow-x.y.z-Setup.exe`（NSIS）+ 便携 zip + SHA256 并发布到 GitHub Releases。
+
+### 发布附带的两件手工活
+
+- **社交预览图**：GitHub **没有**设置它的 API，只能在仓库 *Settings → Social preview*
+  手动上传 `assets/social-preview.png`（1280×640）。这张图由**本机的**
+  `.shots/make_social_preview.py` 从真实录屏帧合成（`.shots/` 按 `.gitignore`
+  约定是"本机验收产物、不入库"，所以脚本不在仓库里——要复现的话，它做的就是
+  "Pillow 铺一个渐变底 + 贴图标 + 贴两个面板帧"）。
+- **README 里的 GIF**：`assets/gifs/*.gif` 由**本机的** `.shots/record_gif.py` 录制，
+  中英各一遍（设置窗那支靠 `EYEFLOW_DEMO_TABS=1` 自动翻页签，完整流程那支靠
+  `EYEFLOW_DEMO=1` 的 60 秒演示周期 + 一次真实点击「现在开始」）。
+  界面明显改动后应当重录——**README 里挂着旧 UI 的 GIF 比没有 GIF 更糟**。
