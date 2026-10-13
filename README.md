@@ -1,6 +1,6 @@
 # EyeFlow
 
-**English** ｜ [简体中文](#eyeflow-中文文档) ｜ [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) ｜ [Changelog](CHANGELOG.md)
+**English** ｜ [简体中文](#eyeflow-chinese) ｜ [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) ｜ [Changelog](CHANGELOG.md)
 
 **A context-aware eye-care break reminder for Windows.** It knows whether you are deep in a typing flow, stuck in a full-screen game, or away from the desk — so a due reminder is **postponed to a better moment in a lighter form, and never silently dropped**.
 
@@ -249,11 +249,11 @@ The default rhythm follows the [American Optometric Association](https://www.aoa
 
 [MIT](LICENSE) © 2026 lexingtonhibiki
 
-[↑ Back to top](#eyeflow) ｜ [切换到中文 →](#eyeflow-中文文档)
+[↑ Back to top](#eyeflow) ｜ [切换到中文 →](#eyeflow-chinese)
 
 ---
 
-# EyeFlow 中文文档
+# EyeFlow (Chinese)
 
 [English](#eyeflow) ｜ **简体中文** ｜ [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) ｜ [更新日志](CHANGELOG.md)
 
@@ -265,7 +265,7 @@ Rust 单进程，没有 Electron、没有 WebView、没有账号、没有遥测�
 [![Release](https://img.shields.io/github/v/release/lexingtonhibiki/EyeFlow?include_prereleases)](https://github.com/lexingtonhibiki/EyeFlow/releases)
 [![Stars](https://img.shields.io/github/stars/lexingtonhibiki/EyeFlow?style=flat)](https://github.com/lexingtonhibiki/EyeFlow/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64-0078d6)](#下载安装)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64-0078d6)](#eyeflow-chinese)
 
 > **如果这个小工具帮你少熬了几次眼睛，一个 Star 就是最好的支持** —— 它也是让更多人找到 EyeFlow 最有效的方式。
 > **If EyeFlow saves your eyes a little, a star helps more people find it.**
@@ -351,7 +351,7 @@ EyeFlow 要填的正是免费市场里空着的那一格：**Windows + 免费 + 
 
 ### winget（计划中）
 
-计划向 winget-pkgs 提交清单，届时可以直接 `winget install eyeflow`（见 [Roadmap](#roadmap)）。
+计划向 winget-pkgs 提交清单，届时可以直接 `winget install eyeflow`（见 [Roadmap](#roadmap-chinese)）。
 
 ## 使用说明
 
@@ -474,7 +474,7 @@ set EYEFLOW_DEMO=1 && target\release\eyeflow.exe
 
 **便携版**：结束进程后删除 exe 即可，`%APPDATA%\eyeflow\` 可以一并删除。开机自启也可在设置界面或任务管理器「启动应用」中随时关闭。
 
-## Roadmap
+## Roadmap (Chinese)
 
 - [x] 中英双语界面（运行时可切）
 - [x] 预告浮窗提示音，带独立开关
@@ -504,7 +504,7 @@ EyeFlow 由 **[lexingtonhibiki](https://github.com/lexingtonhibiki)** 设计与�
 
 **如果 EyeFlow 对你有用，请给它一个 Star**；发现 bug 或有想要的功能，欢迎[提 issue](https://github.com/lexingtonhibiki/EyeFlow/issues)。这两件事的帮助都比你以为的大。
 
-## License
+## License (Chinese)
 
 [MIT](LICENSE) © 2026 lexingtonhibiki
 

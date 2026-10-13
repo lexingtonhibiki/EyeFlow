@@ -36,7 +36,12 @@ fn is_identifier(k: &str) -> bool {
 
 /// 把文档切成 English 段与中文段。
 ///
-/// 分界点是中文段第一行 `# ` 级标题里出现「中文」二字的那一条。
+/// 分界点是：第一条含语言标记 `(Chinese)` 的 `# ` 级标题（即中文段 H1）。
+/// 用纯 ASCII 标记而不是「中文」二字，是因为 GitHub 的标题锚点只能可靠地
+/// 工作于纯 ASCII slug：标题一旦含中文，生成的 id 是
+/// `user-content-eyeflow-中文文档`，而链接里的中文会被百分号编码，前端 JS
+/// 匹配不上，点击不跳转（详见 `in_page_anchors_resolve_to_a_heading`）。
+/// 把语言标记固定成 ASCII，既让锚点可靠，也让这条分界规则不随标题措辞漂移。
 fn split_bilingual(md: &str) -> (&str, &str) {
     let mut zh_start = None;
     let mut offset = 0usize;
@@ -45,7 +50,7 @@ fn split_bilingual(md: &str) -> (&str, &str) {
     // 某一行的中间——切出来的「中文段」会从表格中间开始。
     for chunk in md.split_inclusive('\n') {
         let line = chunk.trim_end_matches(['\n', '\r']);
-        if line.starts_with("# ") && (line.contains("中文") || line.contains("EyeFlow —")) {
+        if line.starts_with("# ") && line.contains("(Chinese)") {
             zh_start = Some(offset);
             break;
         }
@@ -53,7 +58,7 @@ fn split_bilingual(md: &str) -> (&str, &str) {
     }
     let zh_start = zh_start.unwrap_or_else(|| {
         panic!(
-            "README 里找不到中文段的开头（一条含「中文」的 `# ` 级标题）—— \
+            "README 里找不到中文段的开头（一条含 `(Chinese)` 的 `# ` 级标题）—— \
              单文件中英双段的约定变了，请同步修改本测试的分界规则"
         )
     });
@@ -292,12 +297,22 @@ fn documented_config_keys_match_the_config_struct() {
 /// GitHub 的标题 slug 规则（github-slugger 的等价实现，够用即可）：
 /// 小写 → 去掉除 `-`、空格、下划线、字母数字与 CJK 之外的字符 → 空格转 `-` → 重复的补 `-1`、`-2`。
 ///
-/// 这条测试针对的是一个**真实发生过的**故障：README 曾用
-/// `[简体中文](#chinese)` 配 `<a id="chinese"></a>`，而 GitHub 渲染 README 时
-/// 的 html-pipeline 会**消毒掉裸 HTML 的 `id` 属性**，锚点根本不存在，
-/// 点击毫无反应。改用标题自动生成的 slug（`#eyeflow-中文文档`）才可靠。
-/// 上一版测试只校验相对链接**文件是否存在**（`l.split('#').next()`），
-/// 把 fragment 整个丢掉了，所以没能拦住这个 bug——这里补上。
+/// 这条测试针对的是**两次真实发生过**的故障，两次都逃过了当时的测试：
+///
+/// ① README 曾用 `[简体中文](#chinese)` 配 `<a id="chinese"></a>`，而 GitHub
+///    渲染 README 时的 html-pipeline 会**消毒掉裸 HTML 的 `id` 属性**，锚点
+///    根本不存在，点击毫无反应。
+/// ② 换成了标题自动生成的 slug 之后仍然不跳——`#eyeflow-中文文档` 在 DOM 里
+///    对应的 id 是 `user-content-eyeflow-中文文档`，链接里的中文会被前端
+///    百分号编码成 `#eyeflow-%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3`，
+///    GitHub 的 JS 只对纯 ASCII 的 `#slug` 做 `user-content-` 前缀映射，
+///    含非 ASCII 的锚点匹配不上，点了同样没反应。
+///
+/// 所以这里同时断言两条：
+///   a. fragment 能匹配上某条标题生成的 slug（结构没写错）；
+///   b. fragment **是纯 ASCII**（这是它在 GitHub 上真能跳的必要条件）。
+///
+/// 只用一条 (a) 是不够的——② 就是被 (a) 放过的那次。
 fn github_slug(title: &str) -> String {
     let lowered = title.trim().to_lowercase();
     let mut kept = String::new();
@@ -371,6 +386,19 @@ fn in_page_anchors_resolve_to_a_heading() {
              这类锚点必须改成指向标题自动生成的 slug（见 `github_slug`）。\n\
              本文件可用锚点: {slugs:?}",
             dead.len()
+        );
+
+        // (b) 纯 ASCII 断言。能匹配上 slug 不等于在 GitHub 上跳得动：
+        // 含非 ASCII 的锚点在 DOM 里虽然存在（`user-content-中文…`），
+        // 但前端只对纯 ASCII 的 fragment 做前缀映射，点击不会跳转。
+        // 这一条正是 #eyeflow-中文文档 那次逃逸的守卫。
+        let non_ascii: Vec<&String> = anchors.iter().filter(|a| !a.is_ascii()).collect();
+        assert!(
+            non_ascii.is_empty(),
+            "{rel} 里有 {} 个含非 ASCII 字符的内部锚点: {non_ascii:?}\n\
+             GitHub 只对纯 ASCII 的 fragment 做 `user-content-` 前缀映射，\
+             含中文（或任何非 ASCII）的锚点点不动——请把跳转目标标题改成纯 ASCII。",
+            non_ascii.len()
         );
     }
 }

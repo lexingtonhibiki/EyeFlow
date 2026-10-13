@@ -4,6 +4,38 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.7.3] - 2026-10-13
+
+**修掉 README 里仍然点不动的「简体中文」。** v0.7.2 把锚点从裸 HTML `<a id>` 改成了标题 slug，方向对了，但选的目标是 `#eyeflow-中文文档`——**含中文的锚点本身在 GitHub 上也点不动**，所以问题只解决了一半。这一版把所有跳转目标统一成纯 ASCII slug，并给回归测试补上「锚点必须是 ASCII」这条断言，把这类故障彻底钉死。
+
+### Fixed
+
+- **README 语言切换仍不跳转（v0.7.2 未真正修好）**：v0.7.2 改用的
+  `#eyeflow-中文文档` 虽然能对上标题 slug，但 GitHub 的锚点跳转依赖前端 JS
+  给纯 ASCII 的 fragment 加 `user-content-` 前缀再匹配 DOM id。fragment 里
+  一旦含中文，markdown 链接目标会被**百分号编码**成
+  `#eyeflow-%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3`，而 DOM 里的 id 是
+  `user-content-eyeflow-中文文档`，编码后的串匹配不上——点了同样没反应。
+  修法：把中文段 H1 改成 `# EyeFlow (Chinese)`（slug `#eyeflow-chinese`），
+  所有语言切换链接、页脚「回到顶部 / 切换语言」、中文段内的跨标题跳转
+  全部改用**纯 ASCII** 的 `#eyeflow` / `#eyeflow-chinese` /
+  `#roadmap-chinese`。README 现已无任何非 ASCII 内部锚点。
+- **中文段内 `见 [Roadmap]` 跳到了英文段的 `## Roadmap`**：中文段的两处
+  标题重名（English 段已有 `## Roadmap` / `## License`），GitHub 给重复标题
+  补 `-1` 后缀，中文段的 slug 其实是 `#roadmap-1`。现改为 `## Roadmap (Chinese)`
+  / `## License (Chinese)`，slug 稳定成 `#roadmap-chinese` / `#license-chinese`，
+  中文段内引用同步修正，跨语言误跳一并消除。
+
+### Changed
+
+- `tests/readme_bilingual.rs` 增补两条守卫：
+  - `in_page_anchors_resolve_to_a_heading` 增加断言「每个内部锚点必须是纯 ASCII」，
+    这是它在 GitHub 上能真正跳转的**必要条件**（只校验「对得上 slug」拦不住本次故障）；
+  - `split_bilingual` 的分界判据从「H1 含『中文』二字」改成「H1 含 ASCII 标记
+    `(Chinese)`」——分界规则不再随文案措辞漂移，也顺带把「中文段 H1 必须带 ASCII 标记」
+    这一约定变成硬约束。
+- 版本号 0.7.2 → 0.7.3；安装器 `PRODUCT_VERSION` 的本地兜底值同步。
+
 ## [0.7.2] - 2026-10-13
 
 **修掉安装界面乱码，以及 README 里点不动的「简体中文」。** 两处都是「上次改对了、这次悄悄改坏了」的回归：安装器脚本第一行的 UTF-8 BOM 在 v0.7 那次编辑器保存时被静默剥掉，于是 `makensis` 回退到系统 ANSI 代码页解码中文——中文 Windows 上直接编译失败，而英文 CI 上**不报错**却把每条中文按 CP1252 逐字节编成了 `å®‰è£…é€‰é¡¹` 这样的乱码，随 v0.7.0 / v0.7.1 一起发了出去。README 的语言切换链接则指向一个名 `chinese` 的裸 HTML 锚点——GitHub 的 HTML 消毒器会剥掉 `id` 属性，所以点了没反应。
