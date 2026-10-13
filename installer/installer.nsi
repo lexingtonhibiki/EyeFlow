@@ -1,4 +1,13 @@
-; EyeFlow Installer — NSIS 3.09+
+﻿; EyeFlow Installer — NSIS 3.09+
+;
+; ⚠️⚠️ 本文件第 1 行【必须】保留 UTF-8 BOM(EF BB BF),任何编辑器/脚本都不许删。
+;    NSIS 读 .nsi 的编码规则:makensis 先看有无 BOM —— 有 BOM 才按 UTF-8 解码,
+;    没有 BOM 则回退到系统 ANSI 代码页(ACP)。本脚本通篇是中文文案,一旦丢了 BOM:
+;      · 中文 Windows(ACP=936/GBK):第一行中文直接报 `Bad text encoding` 编译失败;
+;      · 英文 CI(ACP=1252/CP1252):编译"成功",但所有中文被当成 CP1252 逐字节解码,
+;        于是安装界面显示成 `å®‰è£…é€‰é¡¹` 这样的乱码 —— 这正是 v0.7.0/v0.7.1
+;        安装包乱码的根因(BOM 在 7af2c69c 被编辑器静默剥掉,CI 编不出错,发版即中招)。
+;    CI 的 release.yml 与 ci.yml 各有一条字节级守卫会拦住 BOM 丢失,见 "Check installer BOM"。
 ;
 ; 编译约定(重要,两套相对路径语义不同,已实测确认):
 ;   1) Icon / File / OutFile 的相对路径相对【本脚本所在目录】(installer\)解析,
@@ -26,9 +35,9 @@ SetCompressor /SOLID lzma
 !define PRODUCT_NAME "EyeFlow"
 ; CI 通过 /DPRODUCT_VERSION=x.y.z 注入真实版本(不带 v 前缀);本地直接编译时回退到默认值
 ; ⚠️ 这个兜底值只在「不经 CI 直接敲 makensis」时才生效,但它就是本地跑出来的
-;    安装包上的版本号 —— 下次发版记得同步改这里(当前 v0.7.1)。
+;    安装包上的版本号 —— 下次发版记得同步改这里(当前 v0.7.2)。
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.7.1"
+  !define PRODUCT_VERSION "0.7.2"
 !endif
 !define PRODUCT_PUBLISHER "lexingtonhibiki"
 !define PRODUCT_DIR "$LOCALAPPDATA\${PRODUCT_NAME}"

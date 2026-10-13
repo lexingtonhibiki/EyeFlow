@@ -32,6 +32,18 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      # 守卫:installer.nsi 必须带 UTF-8 BOM。无 BOM 时 makensis 回退系统 ACP,
+      # 本机中文 Windows 直接 `Bad text encoding` 编译失败,英文 CI 则静默产出
+      # 乱码安装包(v0.7.0/v0.7.1 的实际故障)。字节级断言,便宜且不会误报。
+      - name: Check installer BOM (UTF-8)
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("installer/installer.nsi")
+          if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+            throw "installer/installer.nsi 缺少 UTF-8 BOM —— 安装界面会乱码。请在文件开头写回 EF BB BF。"
+          }
+          "installer.nsi UTF-8 BOM OK"
+
       # 生产代码（--bins）阻塞：今天已经是零警告，守住它不花钱。
       # 注意用 `--bins` 而不是 ADR-0007 判决七原文的 `--lib --bins`——
       # 本项目是纯 bin crate，没有 lib target，`cargo clippy --lib --bins`

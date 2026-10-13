@@ -286,6 +286,95 @@ fn documented_config_keys_match_the_config_struct() {
 // ---------------------------------------------------------------------------
 // ③ 文档里每个相对链接真实存在
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ③b 文档内部锚点（`]( #fragment )`）必须能跳到真实标题
+// ---------------------------------------------------------------------------
+/// GitHub 的标题 slug 规则（github-slugger 的等价实现，够用即可）：
+/// 小写 → 去掉除 `-`、空格、下划线、字母数字与 CJK 之外的字符 → 空格转 `-` → 重复的补 `-1`、`-2`。
+///
+/// 这条测试针对的是一个**真实发生过的**故障：README 曾用
+/// `[简体中文](#chinese)` 配 `<a id="chinese"></a>`，而 GitHub 渲染 README 时
+/// 的 html-pipeline 会**消毒掉裸 HTML 的 `id` 属性**，锚点根本不存在，
+/// 点击毫无反应。改用标题自动生成的 slug（`#eyeflow-中文文档`）才可靠。
+/// 上一版测试只校验相对链接**文件是否存在**（`l.split('#').next()`），
+/// 把 fragment 整个丢掉了，所以没能拦住这个 bug——这里补上。
+fn github_slug(title: &str) -> String {
+    let lowered = title.trim().to_lowercase();
+    let mut kept = String::new();
+    for c in lowered.chars() {
+        if c == ' ' || c == '-' || c == '_' || c.is_alphanumeric() {
+            kept.push(c);
+        }
+    }
+    kept.replace(' ', "-")
+}
+
+/// 文档里所有 `](#fragment)` 形式的内部锚点。
+fn in_page_anchors(md: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = md;
+    while let Some(i) = rest.find("](#") {
+        rest = &rest[i + 3..];
+        if let Some(j) = rest.find(')') {
+            let frag = rest[..j].trim().to_string();
+            if !frag.is_empty() {
+                out.push(frag);
+            }
+            rest = &rest[j..];
+        }
+    }
+    out
+}
+
+#[test]
+fn in_page_anchors_resolve_to_a_heading() {
+    for rel in [
+        "README.md",
+        "docs/spec.md",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+    ] {
+        let md = read(rel);
+        let anchors = in_page_anchors(&md);
+        if anchors.is_empty() {
+            continue;
+        }
+        // 收集本文档所有标题生成的 slug（按顺序，重复的补 -1、-2）。
+        let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut slugs = std::collections::BTreeSet::new();
+        for line in md.lines() {
+            let line = line.trim_end_matches('\r');
+            let hashes = line.chars().take_while(|c| *c == '#').count();
+            if !(1..=6).contains(&hashes) || hashes > line.len() {
+                continue;
+            }
+            let title = line[hashes..].trim();
+            if title.is_empty() {
+                continue;
+            }
+            let base = github_slug(title);
+            let n = seen.entry(base.clone()).or_insert(0);
+            let slug = if *n == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{n}")
+            };
+            *n += 1;
+            slugs.insert(slug);
+        }
+
+        let dead: Vec<&String> = anchors.iter().filter(|a| !slugs.contains(*a)).collect();
+        assert!(
+            dead.is_empty(),
+            "{rel} 里有 {} 个跳不到任何标题的内部锚点: {dead:?}\n\
+             提示：GitHub 会剥掉裸 HTML `<a id=\"...\">` 的 id 属性，\
+             这类锚点必须改成指向标题自动生成的 slug（见 `github_slug`）。\n\
+             本文件可用锚点: {slugs:?}",
+            dead.len()
+        );
+    }
+}
+
 #[test]
 fn relative_links_in_docs_resolve() {
     for rel in [

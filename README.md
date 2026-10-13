@@ -1,6 +1,6 @@
 # EyeFlow
 
-**English** ｜ [简体中文](#chinese) ｜ [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) ｜ [Changelog](CHANGELOG.md)
+**English** ｜ [简体中文](#eyeflow-中文文档) ｜ [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) ｜ [Changelog](CHANGELOG.md)
 
 **A context-aware eye-care break reminder for Windows.** It knows whether you are deep in a typing flow, stuck in a full-screen game, or away from the desk — so a due reminder is **postponed to a better moment in a lighter form, and never silently dropped**.
 
@@ -16,8 +16,6 @@ One Rust process, no Electron, no WebView, no account, no telemetry.
 > **如果这个小工具帮你少熬了几次眼睛，一个 Star 就是最好的支持。**
 
 ![One reminder, end to end](assets/gifs/reminder-flow-en.gif)
-
-<a id="english"></a>
 
 ## Why another eye-care reminder
 
@@ -251,15 +249,13 @@ The default rhythm follows the [American Optometric Association](https://www.aoa
 
 [MIT](LICENSE) © 2026 lexingtonhibiki
 
-[↑ Back to top](#eyeflow) ｜ [切换到中文 →](#chinese)
+[↑ Back to top](#eyeflow) ｜ [切换到中文 →](#eyeflow-中文文档)
 
 ---
 
-<a id="chinese"></a>
-
 # EyeFlow 中文文档
 
-[English](#english) ｜ **简体中文** ｜ [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) ｜ [更新日志](CHANGELOG.md)
+[English](#eyeflow) ｜ **简体中文** ｜ [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) ｜ [更新日志](CHANGELOG.md)
 
 **会看情况的 Windows 护眼提醒。** 它知道你正打字进入心流、在全屏游戏、还是已经离开座位——到点的提醒只会**顺延**到更合适的时机、换一种更轻的形态，而**不会悄悄消失**。
 
@@ -512,4 +508,4 @@ EyeFlow 由 **[lexingtonhibiki](https://github.com/lexingtonhibiki)** 设计与�
 
 [MIT](LICENSE) © 2026 lexingtonhibiki
 
-[↑ 回到顶部](#eyeflow) ｜ [Switch to English →](#english)
+[↑ 回到顶部](#eyeflow) ｜ [Switch to English →](#eyeflow)

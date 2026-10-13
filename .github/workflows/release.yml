@@ -37,6 +37,18 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
+      # 守卫:installer.nsi 必须带 UTF-8 BOM。丢了 BOM 时 makensis 在英文 CI
+      # 上(ACP=1252)不会报错,而是把中文按 CP1252 逐字节解成乱码写进安装包——
+      # v0.7.0/v0.7.1 的乱码安装包就是这么发出去的。这里按字节断言,失败即拦住发版。
+      - name: Check installer BOM (UTF-8)
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("installer/installer.nsi")
+          if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+            throw "installer/installer.nsi 缺少 UTF-8 BOM —— 安装界面会乱码。请在文件开头写回 EF BB BF。"
+          }
+          "installer.nsi UTF-8 BOM OK"
+
       - name: Install NSIS
         run: choco install nsis -y --no-progress
 
