@@ -3,12 +3,16 @@
 
 Requires Python 3.11+, the project's Rust toolchain, and ALSA development/link
 libraries. Run `cargo fetch --locked` first to populate dependency caches.
-No audio device or graphical display is needed. This supplements,
+The layout gate requires the real Windows fonts named in src/app.rs. On Linux,
+set EYEFLOW_WINDOWS_FONT_DIR to a directory containing those legally available
+font files; missing fonts fail the gate, never silently skip it or substitute
+metrics. No audio device or graphical display is needed. This supplements,
 never replaces, `cargo test --locked` and hardware acceptance on Windows.
 """
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import re
 import shutil
 import subprocess
 import tempfile
@@ -58,8 +62,26 @@ def main():
         # temporary root-package entry; it never edits the product lockfile.
         shutil.copyfile(ROOT / "Cargo.lock", work / "Cargo.lock")
         (work / "tests").mkdir()
-        for name in ["i18n_locales.rs", "i18n_tray_ids.rs", "readme_bilingual.rs"]:
+        for name in ["i18n_locales.rs", "i18n_tray_ids.rs", "layout_width.rs", "readme_bilingual.rs"]:
             (work / "tests" / name).symlink_to(ROOT / "tests" / name)
+        # Preserve the integration test unchanged: on Unix, its Windows paths
+        # are literal filenames relative to the temporary package directory.
+        font_dir = os.environ.get("EYEFLOW_WINDOWS_FONT_DIR")
+        if not font_dir and os.name != "nt":
+            raise SystemExit(
+                "layout_width requires the real Windows fonts named in src/app.rs "
+                "(msyh.ttc, segoeui.ttf, seguisym.ttf). Set EYEFLOW_WINDOWS_FONT_DIR "
+                "to their directory. Layout validation was NOT skipped or passed."
+            )
+        if font_dir and os.name != "nt":
+            app_source = (ROOT / "src" / "app.rs").read_text()
+            literals = re.findall(r'font\("[^"]+", ("(?:[^"\\]|\\.)*")\)', app_source)
+            for literal in set(literals):
+                windows_path = json.loads(literal)
+                font = Path(font_dir).expanduser().resolve() / PureWindowsPath(windows_path).name
+                if not font.is_file():
+                    raise FileNotFoundError(f"Required real Windows font is missing: {font}")
+                (work / windows_path).symlink_to(font)
         env = os.environ.copy()
         env["APPDATA"] = str(work / "appdata")
         env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target" / "headless"))
