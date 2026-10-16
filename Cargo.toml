@@ -66,6 +66,8 @@ chrono = "0.4"
 rand = "0.9"
 
 [features]
+# Portable adapter persistence only; the Windows application does not use it.
+portable-state = []
 # 在线更新检查所需的 TLS + JSON 栈，**v0.7.0 起默认开启**（理由见上方 ureq 注释）。
 # 想要最小体积：cargo build --release --no-default-features
 default = ["update-check"]
