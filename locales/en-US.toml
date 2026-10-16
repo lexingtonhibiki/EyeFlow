@@ -99,7 +99,7 @@
 "ui.weak_visual" = "Heads-up window at the bottom right + centered break panel (never steals focus)"
 "ui.weak_strict" = "The break panel becomes a full-screen overlay (with your own background image)"
 "ui.sound" = "Sound cue"
-"ui.no_audio_device" = "(no audio output device detected)"
+"ui.no_audio_device" = "(audio output unavailable; Preview will retry)"
 "ui.start_cue_checkbox" = "Play a cue when you click Start now / Rest now"
 "ui.heads_up_cue_checkbox" = "Play a cue when the heads-up window appears"
 "ui.weak_heads_up_cue" = "The heads-up only says a break is coming; this cue means you do not have to watch the corner of the screen. It is separate from the end-of-break cue and from the full-screen sound-only cue."
@@ -248,6 +248,7 @@
 "audio.too_long" = "Length {min} min {sec} s, over the {limit} min limit"
 "audio.not_found" = "File not found"
 "audio.decode_error" = "Cannot decode: unsupported format or the file is damaged"
+"audio.output_unavailable" = "Audio output unavailable. Reconnect your output device and try again."
 
 # ── Autostart ───────────────────────────────────────────────────────────
 "autostart.open_key_failed" = "Could not open the Run key: {err}"
