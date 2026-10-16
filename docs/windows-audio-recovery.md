@@ -86,19 +86,29 @@ Remaining limits (the cross-build passed; Windows runtime did not run):
 
 ## Reproducing the supplementary headless suite
 
-On Linux with Python 3.11+, Rust 1.95+, and the ALSA development/link libraries:
+On Linux with Python 3.11+, Rust 1.95+, ALSA development/link libraries, and the
+actual Windows font files named in src/app.rs (Segoe UI, Segoe UI Symbol and
+Microsoft YaHei):
 
 ```sh
 cargo fetch --locked
-python3 scripts/test-headless.py
+EYEFLOW_WINDOWS_FONT_DIR=/path/to/real/windows/fonts python3 scripts/test-headless.py
 ```
 
 The script creates a temporary Cargo package referencing the real source files,
 retains dependency selections from the product lockfile, isolates APPDATA in the
 temporary directory, and leaves the product Cargo.toml/Cargo.lock unchanged. It
-runs offline after the initial fetch. Native Windows/font/GL/output tests are not
-part of this supplementary suite. Do not label its 80 passes as the full Windows
-application suite. No actual audio stream is opened by the tests.
+runs offline after the initial fetch. The unchanged tests/layout_width.rs is now
+included by default; missing real Windows fonts fail the gate instead of hiding
+missing coverage. Native Windows/GL/output tests still require Windows. No actual
+audio stream is opened by these tests.
+
+The earlier 80-test passes above predated this layout-gate addition. Windows CI
+subsequently found an English row overflow (570.2 pt versus the unchanged 546 pt
+limit). The status label was shortened to preserve the Preview-retry instruction.
+On this Linux executor the newly included gate was run and blocked by missing
+Windows fonts; its width assertions must pass on Windows CI before claiming this
+revision fully verified. Font files are not bundled or downloaded by the script.
 
 ## Review notes and bounded risks
 
