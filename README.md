@@ -509,3 +509,7 @@ EyeFlow 由 **[lexingtonhibiki](https://github.com/lexingtonhibiki)** 设计与�
 [MIT](LICENSE) © 2026 lexingtonhibiki
 
 [↑ 回到顶部](#eyeflow) ｜ [Switch to English →](#eyeflow)
+
+## Cross-platform development preview / 跨平台开发预览
+
+Native Android/iOS clients and a reusable Rust scheduler are under development in `mobile/` and `crates/eyeflow-core/`. The existing Windows app is retained. Read [scope, platform limitations and verification](docs/cross-platform.md) before building: Android selected-app monitoring requires explicit Usage Access; Android uses explicit continuous-session states and verified lock intervals rather than treating unselected apps as rest. iOS cross-app continuous monitoring is unavailable in this preview: the earlier daily-cumulative monitor and automatic shield are disabled, not offered as a substitute. Its voluntary foreground tool sends no lock-screen reminders. See [continuous-use rules](docs/mobile-continuous-use.md). Source support is not a signed or device-verified release.
