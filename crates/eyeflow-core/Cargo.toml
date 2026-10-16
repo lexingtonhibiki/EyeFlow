@@ -11,6 +11,11 @@ publish = false
 name = "eyeflow_core"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
+[features]
+# Required by this crate's persistence C ABI, but not by the Windows application.
+default = ["portable-state"]
+portable-state = []
+
 [dependencies]
 rand = "0.9"
 chrono = "0.4"
