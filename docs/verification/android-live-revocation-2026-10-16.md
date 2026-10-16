@@ -35,3 +35,17 @@
 - 未产出新 APK；原调试签名密钥不在此环境，没有生成替代密钥。旧 APK 不包含这次修复。
 
 详细日志、源文件摘要、依赖差异、工具来源与当时环境的复跑脚本保存在单独交付的 `EyeFlow-live-guards-verification-evidence.zip`，不作为源码依赖。完整依赖正常可用时，应先运行项目原有 `mobile/android/tests/run-host-tests.sh`，再执行 APK 构建/lint 与真机验收，不应将补充 lockfile 替换项目 lockfile。
+
+## Windows 默认构建边界回归
+
+交付前补查发现：0.3.0 将仅供 portable adapter 使用的 `CoreSnapshot`、`snapshot`、`restore` 直接添加到桌面私有 `core` 模块，导致原 Windows 严格 Clippy 的 `dead_code` 失败。现为快照类型和 impl 加入明确 `portable-state` feature 边界：两个 manifest 均声明，桌面默认关闭，共享 crate 默认开启；共享持久化 ABI 必须启用该 feature，误禁用时明确报错。没有放宽 lint，也没有改变 Core 字段或调度逻辑。
+
+使用 Rust 1.95 和项目原始桌面 Cargo.lock，以下 Windows GNU 交叉目标检查均通过：
+
+```sh
+cargo clippy --locked --target x86_64-pc-windows-gnu --bins -- -D warnings
+cargo check --locked --target x86_64-pc-windows-gnu --tests
+cargo fmt --check
+```
+
+这证明桌面默认 feature 的严格静态检查与测试代码编译，不等于在 Windows/MSVC 上执行测试。共享 crate 默认 feature 的 53 项测试和严格 Clippy 再次通过，但仍使用上述独立缓存 patch 依赖副本，不能冒充原共享 Cargo.lock 验证。Android APK 未重建。
