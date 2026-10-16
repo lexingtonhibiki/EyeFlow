@@ -1,0 +1,36 @@
+name: Cross-platform core and desktop preview
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'desktop/**'
+      - 'mobile/**'
+      - 'src/core.rs'
+      - '.github/workflows/cross-platform.yml'
+jobs:
+  core:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo test --locked --manifest-path crates/eyeflow-core/Cargo.toml
+      - run: cargo clippy --locked --manifest-path crates/eyeflow-core/Cargo.toml --all-targets -- -D warnings
+      - run: cargo check --locked --manifest-path desktop/portable/Cargo.toml
+  mobile-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,aarch64-apple-ios
+      - run: cargo check --locked --manifest-path crates/eyeflow-core/Cargo.toml --target aarch64-linux-android
+      - run: cargo check --locked --manifest-path crates/eyeflow-core/Cargo.toml --target aarch64-apple-ios
+      - run: python3 mobile/ios/tests/check-source.py
+# Native mobile packages require Android SDK licensing or macOS/Xcode signing
+# configuration. Rust target checks above are explicitly not APK/IPA validation.

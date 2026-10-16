@@ -1,0 +1,27 @@
+[package]
+name = "eyeflow-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+description = "Portable EyeFlow scheduler and C ABI for native hosts"
+publish = false
+
+[lib]
+name = "eyeflow_core"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[features]
+# Required by this crate's persistence C ABI, but not by the Windows application.
+default = ["portable-state"]
+portable-state = []
+
+[dependencies]
+rand = "0.9"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1

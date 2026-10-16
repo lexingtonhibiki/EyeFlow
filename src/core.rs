@@ -917,3 +917,146 @@ mod tests {
     }
 }
 // 追加测试到 tests 模块（由集成脚本定位插入）
+
+/// Portable process-restoration state. All times are relative to the snapshot,
+/// so a locked/suspended host need not count wall-clock time as screen use.
+#[cfg(feature = "portable-state")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CoreSnapshot {
+    due_ms: i64,
+    phase: u8,
+    phase_started_ago_ms: u64,
+    phase_remaining_ms: u64,
+    is_long: bool,
+    paused_remaining_ms: Option<u64>,
+    screen_accum_ms: u64,
+    tip_index: usize,
+    flash_remaining_ms: Option<u64>,
+    last_quiet: bool,
+    key_ages_ms: Vec<u64>,
+    last_key_age_ms: Option<u64>,
+    postponed_this_round: bool,
+    cue_played_this_round: bool,
+    away_age_ms: Option<u64>,
+    natural_counted: bool,
+}
+
+#[cfg(feature = "portable-state")]
+impl Core {
+    pub fn snapshot(&self, now: Instant) -> CoreSnapshot {
+        fn ms(d: Duration) -> u64 {
+            d.as_millis().min(u64::MAX as u128) as u64
+        }
+        let (phase, started, ends, is_long) = match self.phase {
+            Phase::Idle => (0, now, now, false),
+            Phase::HeadsUp {
+                started,
+                ends,
+                is_long,
+            } => (1, started, ends, is_long),
+            Phase::Break {
+                started,
+                ends,
+                is_long,
+            } => (2, started, ends, is_long),
+        };
+        let due_ms = if self.due >= now {
+            ms(self.due.duration_since(now)).min(i64::MAX as u64) as i64
+        } else {
+            -(ms(now.duration_since(self.due)).min(i64::MAX as u64) as i64)
+        };
+        CoreSnapshot {
+            due_ms,
+            phase,
+            phase_started_ago_ms: ms(now.saturating_duration_since(started)),
+            phase_remaining_ms: ms(ends.saturating_duration_since(now)),
+            is_long,
+            paused_remaining_ms: self
+                .paused_until
+                .map(|t| ms(t.saturating_duration_since(now))),
+            screen_accum_ms: ms(self.screen_accum),
+            tip_index: self.tip_index,
+            flash_remaining_ms: self
+                .completed_flash_until
+                .map(|t| ms(t.saturating_duration_since(now))),
+            last_quiet: self.last_quiet,
+            key_ages_ms: self
+                .keys
+                .iter()
+                .map(|t| ms(now.saturating_duration_since(*t)))
+                .collect(),
+            last_key_age_ms: self.last_key.map(|t| ms(now.saturating_duration_since(t))),
+            postponed_this_round: self.postponed_this_round,
+            cue_played_this_round: self.cue_played_this_round,
+            away_age_ms: self
+                .away_since
+                .map(|t| ms(now.saturating_duration_since(t))),
+            natural_counted: self.natural_counted,
+        }
+    }
+
+    /// Reject malformed/unbounded state before constructing any host timestamps.
+    pub fn restore(
+        cfg: Config,
+        stats: Stats,
+        snapshot: CoreSnapshot,
+        now: Instant,
+    ) -> Option<Self> {
+        const MAX_MS: u64 = 366 * 24 * 60 * 60 * 1000;
+        let s = snapshot;
+        if s.phase > 2
+            || s.due_ms.unsigned_abs() > MAX_MS
+            || s.phase_started_ago_ms > MAX_MS
+            || s.phase_remaining_ms > MAX_MS
+            || s.screen_accum_ms > MAX_MS
+            || s.key_ages_ms.len() > 100_000
+            || s.key_ages_ms.iter().any(|v| *v > MAX_MS)
+            || [
+                s.paused_remaining_ms,
+                s.flash_remaining_ms,
+                s.last_key_age_ms,
+                s.away_age_ms,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|v| v > MAX_MS)
+        {
+            return None;
+        }
+        let mut core = Self::new(cfg, stats, now);
+        let before = |ms| now.checked_sub(Duration::from_millis(ms)).unwrap_or(now);
+        let after = |ms| now.checked_add(Duration::from_millis(ms));
+        core.due = if s.due_ms >= 0 {
+            after(s.due_ms as u64)?
+        } else {
+            before(s.due_ms.unsigned_abs())
+        };
+        let started = before(s.phase_started_ago_ms);
+        let ends = after(s.phase_remaining_ms)?;
+        core.phase = match s.phase {
+            1 => Phase::HeadsUp {
+                started,
+                ends,
+                is_long: s.is_long,
+            },
+            2 => Phase::Break {
+                started,
+                ends,
+                is_long: s.is_long,
+            },
+            _ => Phase::Idle,
+        };
+        core.paused_until = s.paused_remaining_ms.and_then(after);
+        core.screen_accum = Duration::from_millis(s.screen_accum_ms);
+        core.tip_index = s.tip_index;
+        core.completed_flash_until = s.flash_remaining_ms.and_then(after);
+        core.last_quiet = s.last_quiet;
+        core.keys = s.key_ages_ms.into_iter().map(before).collect();
+        core.last_key = s.last_key_age_ms.map(before);
+        core.postponed_this_round = s.postponed_this_round;
+        core.cue_played_this_round = s.cue_played_this_round;
+        core.away_since = s.away_age_ms.map(before);
+        core.natural_counted = s.natural_counted;
+        Some(core)
+    }
+}
