@@ -736,7 +736,7 @@ global_mute_hotkey = "Ctrl+Shift+E"
 
         /// 语言是进程级全局状态（`AtomicU8`）：所有会切语言的测试共用一把锁，
         /// 结束时恢复成 zh-CN，避免污染同进程里其它测试的默认值。
-        static LANG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        use crate::tr::TEST_LANGUAGE_LOCK as LANG_LOCK;
 
         fn zh_index(key: &str) -> usize {
             KEYS.iter()

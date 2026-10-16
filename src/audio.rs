@@ -3,12 +3,16 @@
 //! 默认“风铃”按 spec N4 设计在 1.5~2.5 kHz 上行扫频区（高于多数游戏音效的主能量区）。
 //! `Mixer::add` 会把音源统一重采样到设备采样率，这里固定按 48 kHz 合成即可。
 
+use std::cell::RefCell;
 use std::f64::consts::PI;
 use std::fs::File;
 use std::io::BufReader;
 use std::num::NonZero;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
+use rodio::cpal::traits::HostTrait;
 use rodio::source::Source;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
@@ -81,49 +85,150 @@ fn open_decoder(path: &std::path::Path) -> Result<Decoder<BufReader<File>>, Stri
     Decoder::new(BufReader::new(file)).map_err(|_| crate::tr::tr("audio.decode_error").to_string())
 }
 
+/// A stream is tied to the endpoint selected when it is opened. Reacquire the
+/// default device for every cue, including previews: a headphone unplug/replug
+/// can leave a previously opened WASAPI stream unusable, even with a live mixer.
+/// The newest request replaces any still-playing cue; old audio is never replayed.
 pub struct AudioPlayer {
-    sink: Option<MixerDeviceSink>,
+    output: RefCell<Option<AudioOutput>>,
 }
 
-impl AudioPlayer {
-    /// 流式播放用户音频文件一次（不整包载入内存），按音量百分比设置播放器音量。
-    ///
-    /// `Player` 被 drop 时会停止所有声音，这里用 `detach()` 放手让它在后台播完；
-    /// `take_duration(CUSTOM_MAX_SECS)` 兜底把超长文件截断到 5 分钟。
-    pub fn play_custom(&self, path: &std::path::Path, volume_pct: u32) -> Result<(), String> {
-        let Some(sink) = &self.sink else {
-            return Ok(()); // 无音频设备：静默降级，与 play_cue 一致
-        };
-        let source = open_decoder(path)?;
-        let source = source.take_duration(Duration::from_secs(CUSTOM_MAX_SECS));
-        let player = Player::connect_new(sink.mixer());
-        player.set_volume(volume_pct.clamp(50, 200) as f32 / 100.0);
-        player.append(source);
-        player.detach(); // Player 被 drop 会停止播放；detach 后让声音在后台自然播完
-        Ok(())
+struct AudioOutput {
+    sink: MixerDeviceSink,
+    health: StreamHealth,
+}
+
+/// Each opened stream gets its own flag. A late callback from a dropped stream
+/// must never mark its replacement unhealthy.
+#[derive(Clone, Default)]
+struct StreamHealth {
+    failed: Arc<AtomicBool>,
+}
+
+impl StreamHealth {
+    fn mark_failed(&self) {
+        self.failed.store(true, Ordering::Release);
     }
-    pub fn new() -> Self {
-        match DeviceSinkBuilder::open_default_sink() {
-            Ok(mut sink) => {
-                sink.log_on_drop(false);
-                Self { sink: Some(sink) }
-            }
-            Err(e) => {
-                log::warn!("音频输出不可用（{e}），提示音将静默");
-                Self { sink: None }
+
+    fn available(&self) -> bool {
+        !self.failed.load(Ordering::Acquire)
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if self.available() {
+            Ok(())
+        } else {
+            Err(crate::tr::tr("audio.output_unavailable").to_string())
+        }
+    }
+}
+
+/// Release the previous stream before opening another, including on failure.
+/// Kept independent of the hardware so retry and drop ordering are testable.
+fn replace_output<T, E>(
+    slot: &mut Option<T>,
+    open: impl FnOnce() -> Result<T, E>,
+) -> Result<(), E> {
+    drop(slot.take());
+    *slot = Some(open()?);
+    Ok(())
+}
+
+impl AudioOutput {
+    fn open() -> Result<Self, String> {
+        // Never try a different endpoint: that could expose a cue on speakers
+        // when the user selected headphones. Configuration fallbacks are fine.
+        let device = rodio::cpal::default_host()
+            .default_output_device()
+            .ok_or_else(|| Self::open_error("no default output device"))?;
+        let first = DeviceSinkBuilder::from_device(device.clone())
+            .map_err(Self::open_error)
+            .and_then(Self::open_builder);
+        match first {
+            Ok(output) => Ok(output),
+            Err(original_error) => {
+                if let Ok(configs) = rodio::stream::supported_output_configs(&device) {
+                    for config in configs {
+                        let builder = DeviceSinkBuilder::default()
+                            .with_device(device.clone())
+                            .with_supported_config(&config);
+                        if let Ok(output) = Self::open_builder(builder) {
+                            return Ok(output);
+                        }
+                    }
+                }
+                Err(original_error)
             }
         }
     }
 
-    pub fn available(&self) -> bool {
-        self.sink.is_some()
+    fn open_error(error: impl std::fmt::Display) -> String {
+        log::warn!("Audio output unavailable: {error}; the next cue will retry");
+        crate::tr::tr("audio.output_unavailable").to_string()
     }
 
-    /// 播放提示音：按音量百分比(50~200)放大，并把短图案循环铺满设定时长。
+    fn open_builder(builder: DeviceSinkBuilder) -> Result<Self, String> {
+        // Do not use rodio's open_sink_or_fallback here: it clones one callback
+        // across attempts. A failed attempt must not poison a later config.
+        let health = StreamHealth::default();
+        let callback_health = health.clone();
+        let mut sink = builder
+            .with_error_callback(move |err| {
+                callback_health.mark_failed();
+                log::warn!("Audio output stream failed: {err}; the next cue will reopen it");
+            })
+            .open_stream()
+            .map_err(Self::open_error)?;
+        sink.log_on_drop(false);
+        // Some drivers report failure during opening. Do not return a known-dead
+        // stream as a successful custom preview. Later asynchronous failure is
+        // still possible: accepting a source is not proof of audible output.
+        health.check()?;
+        log::info!("Opened current default audio output");
+        Ok(Self { sink, health })
+    }
+}
+
+impl AudioPlayer {
+    /// Stream a custom file, capped at five minutes, with the requested volume.
+    /// Decode first, so an invalid file does not interrupt an existing cue.
+    pub fn play_custom(&self, path: &std::path::Path, volume_pct: u32) -> Result<(), String> {
+        let source = open_decoder(path)?;
+        let source = source.take_duration(Duration::from_secs(CUSTOM_MAX_SECS));
+        let mut output = self.output.borrow_mut();
+        replace_output(&mut output, AudioOutput::open)?;
+        if let Some(output) = output.as_ref() {
+            let player = Player::connect_new(output.sink.mixer());
+            player.set_volume(volume_pct.clamp(50, 200) as f32 / 100.0);
+            player.append(source);
+            player.detach();
+            output.health.check()?;
+        }
+        Ok(())
+    }
+
+    pub fn new() -> Self {
+        Self {
+            output: RefCell::new(AudioOutput::open().ok()),
+        }
+    }
+
+    /// Last known stream status, not a guarantee of audible output. Playback
+    /// always retries, even if startup or the preceding request had no device.
+    pub fn available(&self) -> bool {
+        self.output
+            .borrow()
+            .as_ref()
+            .is_some_and(|output| output.health.available())
+    }
+
     pub fn play_cue(&self, preset: SoundPreset, volume_pct: u32, duration_secs: u64) {
-        if let Some(sink) = &self.sink {
-            sink.mixer()
-                .add(VecSource::new(render(preset, volume_pct, duration_secs)));
+        let source = VecSource::new(render(preset, volume_pct, duration_secs));
+        let mut output = self.output.borrow_mut();
+        if replace_output(&mut output, AudioOutput::open).is_ok() {
+            if let Some(output) = output.as_ref() {
+                output.sink.mixer().add(source);
+            }
         }
     }
 }
@@ -307,6 +412,76 @@ fn triple_beep() -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_failure_during_open_is_not_success() {
+        let health = StreamHealth::default();
+        assert!(health.check().is_ok());
+        let callback = health.clone();
+        callback.mark_failed();
+        assert!(!health.available());
+        assert!(health.check().is_err());
+    }
+
+    #[test]
+    fn late_old_callback_does_not_poison_replacement_stream() {
+        let old_stream = StreamHealth::default();
+        let late_callback = old_stream.clone();
+        drop(old_stream);
+        let replacement = StreamHealth::default();
+        late_callback.mark_failed();
+        assert!(late_callback.check().is_err());
+        assert!(replacement.available());
+        assert!(replacement.check().is_ok());
+    }
+
+    #[test]
+    fn each_request_reopens_and_drops_the_previous_output_first() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct Output(Rc<Cell<usize>>);
+        impl Drop for Output {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let drops = Rc::new(Cell::new(0));
+        let mut slot = Some(Output(Rc::clone(&drops)));
+        for expected in 1..=3 {
+            let result: Result<(), ()> = replace_output(&mut slot, || {
+                assert_eq!(
+                    drops.get(),
+                    expected,
+                    "old stream must close before opening"
+                );
+                Ok(Output(Rc::clone(&drops)))
+            });
+            assert!(result.is_ok());
+            assert!(slot.is_some());
+        }
+    }
+
+    #[test]
+    fn missing_device_then_repeated_failures_can_recover_without_restart() {
+        let mut slot: Option<u8> = None;
+        for _ in 0..3 {
+            assert_eq!(
+                replace_output(&mut slot, || Err("no device")),
+                Err("no device")
+            );
+            assert!(slot.is_none());
+        }
+        assert_eq!(replace_output(&mut slot, || Ok::<_, &str>(7)), Ok(()));
+        assert_eq!(slot, Some(7));
+        assert_eq!(
+            replace_output(&mut slot, || Err("unplugged")),
+            Err("unplugged")
+        );
+        assert!(slot.is_none(), "never retain the stale device on failure");
+        assert_eq!(replace_output(&mut slot, || Ok::<_, &str>(8)), Ok(()));
+        assert_eq!(slot, Some(8));
+    }
 
     #[test]
     fn all_presets_generate_bounded_audio() {
