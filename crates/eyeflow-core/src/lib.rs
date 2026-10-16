@@ -1,5 +1,8 @@
 //! Portable desktop adapter plus a distinct conservative mobile interval engine.
 //! Serialize access to each opaque handle; never mix the two host contracts.
+#[cfg(not(feature = "portable-state"))]
+compile_error!("eyeflow-core persistence ABI requires the portable-state feature");
+
 pub mod config;
 #[path = "../../../src/core.rs"]
 pub mod core;
