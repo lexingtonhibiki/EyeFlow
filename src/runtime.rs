@@ -465,14 +465,11 @@ impl Runtime {
                 duration_secs,
             } => self.audio.play_cue(preset, volume_pct, duration_secs),
             SettingsAction::PreviewCustom { path, volume_pct } => {
-                if let Err(e) = self
+                let result = self
                     .audio
-                    .play_custom(std::path::Path::new(&path), volume_pct)
-                {
-                    if let Some(s) = &mut self.settings {
-                        s.custom_sound_error =
-                            Some(tr_fill("runtime.custom_play_failed", "{err}", e));
-                    }
+                    .play_custom(std::path::Path::new(&path), volume_pct);
+                if let Some(s) = &mut self.settings {
+                    s.record_custom_preview_result(result);
                 }
             }
             SettingsAction::PickCustomSound => {

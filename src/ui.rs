@@ -96,6 +96,14 @@ impl SettingsState {
         }
     }
 
+    /// Store only the latest preview result; a successful retry clears the old
+    /// transient playback error without changing the selected custom file.
+    pub fn record_custom_preview_result(&mut self, result: Result<(), String>) {
+        self.custom_sound_error = result
+            .err()
+            .map(|e| tr_fill("runtime.custom_play_failed", "{err}", e));
+    }
+
     /// “修改即保存”模式下已无调用方（footer 不再依赖它），暂保留供调试/将来使用
     #[allow(dead_code)]
     pub fn has_unsaved(&self) -> bool {
@@ -553,7 +561,8 @@ fn delivery_card(
                     .response
                     .on_hover_text(tr("ui.weak_sound_custom"));
                 let custom = s.draft.sound_preset == SoundPreset::Custom;
-                let can_preview = view.audio_ok && (!custom || s.draft.custom_sound_path.is_some());
+                // A failed or missing stream must not disable the action that retries it.
+                let can_preview = !custom || s.draft.custom_sound_path.is_some();
                 if ui
                     .add_enabled(can_preview, egui::Button::new(tr("ui.preview")))
                     .clicked()
@@ -1063,7 +1072,129 @@ pub fn human_duration(d: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::hours_label;
+    use super::*;
+
+    fn preview_position(shape: &egui::epaint::Shape) -> Option<egui::Pos2> {
+        match shape {
+            egui::epaint::Shape::Text(text) => {
+                let index = crate::i18n::KEYS.binary_search(&"ui.preview").unwrap();
+                let label = text.galley.text();
+                if label == crate::i18n::EN_US[index] || label == crate::i18n::ZH_CN[index] {
+                    Some(text.pos + text.galley.size() * 0.5)
+                } else {
+                    None
+                }
+            }
+            egui::epaint::Shape::Vec(shapes) => shapes.iter().find_map(preview_position),
+            _ => None,
+        }
+    }
+
+    /// Exercise the real delivery card with pointer press/release events, not a
+    /// copy of the enablement expression. No window, speaker or GPU is created.
+    fn click_preview(state: &mut SettingsState, audio_ok: bool) -> Vec<SettingsAction> {
+        // Other unit tests change the global language. Hold their shared test
+        // lock so labels cannot move between pointer press and release frames.
+        let _language = crate::tr::TEST_LANGUAGE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let ctx = egui::Context::default();
+        let stats = Stats::default();
+        let view = SettingsView {
+            state_label: "",
+            reminder_line: String::new(),
+            hotkey_active: false,
+            stats: &stats,
+            audio_ok,
+            update_status: &UpdateStatus::Idle,
+        };
+        let mut frame = |events| {
+            let mut actions = Vec::new();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 1200.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                delivery_card(ui, state, &view, &mut actions);
+            });
+            // Headless test: we inspect layout/actions, not upload font textures.
+            output.textures_delta.clear();
+            (output, actions)
+        };
+        // The first layout may request a discard; locate the final painted text.
+        let (output, _) = frame(Vec::new());
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|s| preview_position(&s.shape))
+            .expect("preview button must be painted, even when disabled");
+        frame(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        let (_, actions) = frame(vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        actions
+    }
+
+    #[test]
+    fn unavailable_output_still_allows_builtin_preview_with_draft_values() {
+        let mut state = SettingsState::new(Config::default(), false);
+        state.draft.sound_preset = SoundPreset::TripleBeep;
+        state.draft.cue_volume_pct = 175;
+        state.draft.cue_duration_secs = 4;
+        let actions = click_preview(&mut state, false);
+        assert!(actions.contains(&SettingsAction::Preview {
+            preset: SoundPreset::TripleBeep,
+            volume_pct: 175,
+            duration_secs: 4,
+        }));
+    }
+
+    #[test]
+    fn unavailable_output_allows_custom_preview_but_missing_file_and_mute_do_not() {
+        let mut state = SettingsState::new(Config::default(), false);
+        state.draft.sound_preset = SoundPreset::Custom;
+        state.draft.custom_sound_path = Some("chosen.wav".to_owned());
+        state.draft.cue_volume_pct = 150;
+        assert!(
+            click_preview(&mut state, false).contains(&SettingsAction::PreviewCustom {
+                path: "chosen.wav".to_owned(),
+                volume_pct: 150,
+            })
+        );
+        state.draft.custom_sound_path = None;
+        assert!(click_preview(&mut state, false).is_empty());
+        state.draft.sound_preset = SoundPreset::GentleChime;
+        state.draft.sound_enabled = false;
+        assert!(click_preview(&mut state, false).is_empty());
+    }
+
+    #[test]
+    fn successful_custom_preview_clears_only_the_previous_error() {
+        let mut state = SettingsState::new(Config::default(), false);
+        state.draft.custom_sound_path = Some("chosen.wav".to_owned());
+        state.draft.cue_volume_pct = 150;
+        let draft = state.draft.clone();
+        state.record_custom_preview_result(Err("no output".to_owned()));
+        assert!(state.custom_sound_error.is_some());
+        state.record_custom_preview_result(Ok(()));
+        assert!(state.custom_sound_error.is_none());
+        assert_eq!(state.draft, draft);
+    }
 
     /// 滑条数值的显示形态：整小时不写尾零（`2` 而不是 `2.00`）。
     ///
