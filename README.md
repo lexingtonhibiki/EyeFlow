@@ -237,6 +237,10 @@ This README carries what a user needs. **Everything about *why* the project is b
 - **Translations**: [locales/zh-CN.toml](locales/zh-CN.toml) and [locales/en-US.toml](locales/en-US.toml) are plain flat TOML. `build.rs` treats the Chinese file as the single source of truth and **fails the build if any key is missing or extra** in the other language — a missing translation can never reach a user as a raw key.
 - **Tests as guardrails**: alongside the unit tests there are gates for locale parity, glyph coverage of both font chains, tray menu IDs, README/spec drift and the width of every settings row.
 
+## Cross-platform development preview
+
+Native Android/iOS clients and a reusable Rust scheduler are under development in `mobile/` and `crates/eyeflow-core/`. The existing Windows app is retained. Read [scope, platform limitations and verification](docs/cross-platform.md) before building: Android selected-app monitoring requires explicit Usage Access; Android uses explicit continuous-session states and verified lock intervals rather than treating unselected apps as rest. iOS cross-app continuous monitoring is unavailable in this preview: the earlier daily-cumulative monitor and automatic shield are disabled, not offered as a substitute. Its voluntary foreground tool sends no lock-screen reminders. See [continuous-use rules](docs/mobile-continuous-use.md). Source support is not a signed or device-verified release.
+
 ## Credits
 
 EyeFlow is designed and written by **[lexingtonhibiki](https://github.com/lexingtonhibiki)**, and released under the MIT license. It is built on the shoulders of the Rust ecosystem — [egui](https://github.com/emilk/egui) / [eframe](https://github.com/emilk/egui/tree/master/crates/eframe) for the UI, [tray-icon](https://github.com/tauri-apps/tray-icon), [global-hotkey](https://github.com/tauri-apps/global-hotkey) and [rodio](https://github.com/RustAudio/rodio).
@@ -496,6 +500,10 @@ set EYEFLOW_DEMO=1 && target\release\eyeflow.exe
 - **翻译**：[locales/zh-CN.toml](locales/zh-CN.toml) 与 [locales/en-US.toml](locales/en-US.toml) 是扁平 TOML。`build.rs` 以中文文件为唯一事实来源，**另一种语言缺键或多键都会让构建直接失败**——漏翻永远不会以 key 的形式出现在用户界面上。
 - **测试即护栏**：除单元测试外，还有语言表对齐、两条字体链的字形覆盖、托盘菜单 ID、README / spec 漂移，以及设置窗每一行的宽度闸门。
 
+## 跨平台开发预览
+
+原生 Android / iOS 客户端和可复用 Rust 调度器正在 `mobile/` 与 `crates/eyeflow-core/` 中开发，现有 Windows 应用保持保留。构建前请阅读[范围、平台限制与验证情况](docs/cross-platform.md)：Android 目标应用监测需要用户明确授予使用情况访问权限，并通过明确的连续使用状态与经过确认的锁屏区间判断休息，不把切换到非目标应用算作休息。本预览尚不支持 iOS 跨应用连续使用监测，之前的每日累计监测与自动遮罩已禁用，不作为替代方案。iOS 仅提供自愿使用的前台工具，不发送锁屏提醒。另见[连续使用规则](docs/mobile-continuous-use.md)。提供源码支持不等于已经签名或通过设备验证的发行版本。
+
 ## 致谢
 
 EyeFlow 由 **[lexingtonhibiki](https://github.com/lexingtonhibiki)** 设计与编写，以 MIT 许可证发布。它站在 Rust 生态的肩膀上——界面用 [egui](https://github.com/emilk/egui) / [eframe](https://github.com/emilk/egui/tree/master/crates/eframe)，托盘与热键用 [tray-icon](https://github.com/tauri-apps/tray-icon) 与 [global-hotkey](https://github.com/tauri-apps/global-hotkey)，音频用 [rodio](https://github.com/RustAudio/rodio)。
@@ -509,7 +517,3 @@ EyeFlow 由 **[lexingtonhibiki](https://github.com/lexingtonhibiki)** 设计与�
 [MIT](LICENSE) © 2026 lexingtonhibiki
 
 [↑ 回到顶部](#eyeflow) ｜ [Switch to English →](#eyeflow)
-
-## Cross-platform development preview / 跨平台开发预览
-
-Native Android/iOS clients and a reusable Rust scheduler are under development in `mobile/` and `crates/eyeflow-core/`. The existing Windows app is retained. Read [scope, platform limitations and verification](docs/cross-platform.md) before building: Android selected-app monitoring requires explicit Usage Access; Android uses explicit continuous-session states and verified lock intervals rather than treating unselected apps as rest. iOS cross-app continuous monitoring is unavailable in this preview: the earlier daily-cumulative monitor and automatic shield are disabled, not offered as a substitute. Its voluntary foreground tool sends no lock-screen reminders. See [continuous-use rules](docs/mobile-continuous-use.md). Source support is not a signed or device-verified release.
