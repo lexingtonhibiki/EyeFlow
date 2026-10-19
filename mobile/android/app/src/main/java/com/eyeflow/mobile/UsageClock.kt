@@ -25,9 +25,12 @@ internal class UsageClock(startMs: Long, private val ownPackage: String) {
         val gap = now - cursor
         // A suspended handler, clock discontinuity or missing access cannot prove continuity.
         val unexplainedUnlock = locked == true && !currentLocked && history.none { it.kind == EventKind.UNLOCK || it.kind == EventKind.SCREEN_ON }
-        val lastLock = history.filter { it.kind == EventKind.LOCK }.maxOfOrNull { it.atMs }
-        val lastEnd = history.filter { it.kind == EventKind.UNLOCK || it.kind == EventKind.SCREEN_ON }.maxOfOrNull { it.atMs }
-        val unclosedShortLock = gap <= MAX_RECONSTRUCT_GAP_MS && !currentLocked && lastLock != null && (lastEnd == null || lastEnd < lastLock)
+        // Use the same stable order as replay, including boundaries with equal
+        // timestamps. An earlier unlock cannot close a later lock at the same time.
+        val lastBoundary = history.lastOrNull {
+            it.kind == EventKind.LOCK || it.kind == EventKind.UNLOCK || it.kind == EventKind.SCREEN_ON
+        }
+        val unclosedShortLock = gap <= MAX_RECONSTRUCT_GAP_MS && !currentLocked && lastBoundary?.kind == EventKind.LOCK
         if (!observationReliable || unexplainedUnlock || unclosedShortLock) {
             output += UseInterval(gap, UseState.UNKNOWN)
             foreground = null; locked = null; ownWasVisible = false

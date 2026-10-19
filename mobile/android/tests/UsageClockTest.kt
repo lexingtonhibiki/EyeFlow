@@ -68,6 +68,28 @@ fun main() {
     check(reversed.state == UseState.UNKNOWN)
     check(sample(reversed, 2000, locked = true).time(UseState.LOCKED) == 0L)
     check(sample(reversed, 3000, locked = true).time(UseState.LOCKED) == 1000L)
+    // Timestamp ties preserve event order. A terminal LOCK contradicting the
+    // current unlocked sensor cannot prove rest, even if an unlock shares its time.
+    for (end in listOf(EventKind.UNLOCK, EventKind.SCREEN_ON)) {
+        for (boundaryAt in listOf(0L, 1000L)) {
+            for (previouslyLocked in listOf(false, true)) {
+                val tied = UsageClock(0, "eyeflow")
+                sample(tied, 0, locked = previouslyLocked)
+                val contradicted = sample(tied, 30000, listOf(
+                    UseEvent(boundaryAt, end), UseEvent(boundaryAt, EventKind.LOCK)))
+                check(contradicted.time(UseState.LOCKED) == 0L) {
+                    "Terminal LOCK after $end at same timestamp invented rest"
+                }
+                check(contradicted.time(UseState.UNKNOWN) == 30000L)
+                val ordered = UsageClock(0, "eyeflow")
+                sample(ordered, 0, locked = previouslyLocked)
+                val ended = sample(ordered, 30000, listOf(
+                    UseEvent(boundaryAt, EventKind.LOCK), UseEvent(boundaryAt, end)))
+                check(ended.time(UseState.LOCKED) == if (previouslyLocked) boundaryAt else 0L)
+                check(ended.sumOf { it.durationMs } == 30000L)
+            }
+        }
+    }
     val slept = UsageClock(0, "eyeflow")
     sample(slept, 0, locked = true)
     val provedSleep = sample(slept, 900000, listOf(UseEvent(900000, EventKind.SCREEN_ON), UseEvent(900000, EventKind.FOREGROUND, "reader")))
