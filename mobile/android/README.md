@@ -110,8 +110,10 @@ CI explicitly selects the hosted image's preinstalled NDK 27.3.13750724 and CMak
 3.31.5 with `-PeyeflowNdkVersion` / `-PeyeflowCmakeVersion`; local defaults remain
 27.0.12077973 / 3.22.1. The preflight requires JDK17, SDK35, build-tools35.0.0 and
 these native tools already installed. It does not accept licenses or install SDK
-packages, and disables Gradle's SDK auto-download. A changed runner image fails
-closed for review instead of silently selecting a different toolchain.
+packages, and disables Gradle's SDK auto-download. If these selected Android
+SDK/NDK/CMake packages are absent, preflight fails rather than downloading
+replacements. Rust toolchains, cargo-ndk, Gradle and Maven dependencies still use
+normal network downloads; this is not an offline or installation-free build.
 
 ## Host verification
 

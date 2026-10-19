@@ -21,7 +21,9 @@ jobs:
       EYEFLOW_NDK_VERSION: 27.3.13750724
       EYEFLOW_CMAKE_VERSION: 3.31.5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Require preinstalled Android tools (no SDK downloads or license acceptance)
         shell: bash
         run: |
@@ -37,8 +39,9 @@ jobs:
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$EYEFLOW_NDK_VERSION" >> "$GITHUB_ENV"
           echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
+          toolchain: stable
           targets: aarch64-linux-android,x86_64-linux-android
       - name: Install pinned Rust Android build helper
         run: cargo install cargo-ndk --version 4.1.2 --locked
@@ -59,7 +62,7 @@ jobs:
           mobile/android/app/build/outputs/apk/debug/app-debug.apk
           --readelf "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
       - name: Upload candidate APK and lint report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: EyeFlow-android-debug-${{ github.sha }}
           if-no-files-found: error
