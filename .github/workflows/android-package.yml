@@ -30,11 +30,15 @@ jobs:
           set -euo pipefail
           : "${ANDROID_HOME:?Android SDK must already be installed}"
           : "${JAVA_HOME_17_X64:?JDK 17 must already be installed}"
+          test -x "$JAVA_HOME_17_X64/bin/java"
           test -x "$JAVA_HOME_17_X64/bin/javac"
           test -f "$ANDROID_HOME/platforms/android-35/android.jar"
           test -x "$ANDROID_HOME/build-tools/35.0.0/aapt2"
           test -x "$ANDROID_HOME/ndk/$EYEFLOW_NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          test -x "$ANDROID_HOME/ndk/$EYEFLOW_NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
           test -x "$ANDROID_HOME/cmake/$EYEFLOW_CMAKE_VERSION/bin/cmake"
+          test -x "$ANDROID_HOME/cmake/$EYEFLOW_CMAKE_VERSION/bin/ninja"
+          command -v rustup
           command -v kotlinc
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$EYEFLOW_NDK_VERSION" >> "$GITHUB_ENV"
