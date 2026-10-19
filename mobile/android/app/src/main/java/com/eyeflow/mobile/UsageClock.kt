@@ -19,20 +19,22 @@ internal class UsageClock(startMs: Long, private val ownPackage: String) {
                selected: Set<String>, ownVisible: Boolean, voluntary: Boolean): List<UseInterval> {
         val now = nowMs.coerceAtLeast(cursor)
         val output = mutableListOf<UseInterval>()
+        // Only boundaries inside this observation can prove its continuity.
+        val history = events.filter { it.atMs in cursor..now }.sortedBy { it.atMs }
+        val observationReliable = reliable && nowMs >= cursor
         val gap = now - cursor
         // A suspended handler, clock discontinuity or missing access cannot prove continuity.
-        val unexplainedUnlock = locked == true && !currentLocked && events.none { it.kind == EventKind.UNLOCK || it.kind == EventKind.SCREEN_ON }
-        val lastLock = events.filter { it.atMs in cursor..now && it.kind == EventKind.LOCK }.maxOfOrNull { it.atMs }
-        val lastEnd = events.filter { it.atMs in cursor..now && (it.kind == EventKind.UNLOCK || it.kind == EventKind.SCREEN_ON) }.maxOfOrNull { it.atMs }
+        val unexplainedUnlock = locked == true && !currentLocked && history.none { it.kind == EventKind.UNLOCK || it.kind == EventKind.SCREEN_ON }
+        val lastLock = history.filter { it.kind == EventKind.LOCK }.maxOfOrNull { it.atMs }
+        val lastEnd = history.filter { it.kind == EventKind.UNLOCK || it.kind == EventKind.SCREEN_ON }.maxOfOrNull { it.atMs }
         val unclosedShortLock = gap <= MAX_RECONSTRUCT_GAP_MS && !currentLocked && lastLock != null && (lastEnd == null || lastEnd < lastLock)
-        if (!reliable || unexplainedUnlock || unclosedShortLock) {
+        if (!observationReliable || unexplainedUnlock || unclosedShortLock) {
             output += UseInterval(gap, UseState.UNKNOWN)
             foreground = null; locked = null; ownWasVisible = false
         } else if (gap > MAX_RECONSTRUCT_GAP_MS) {
             // Sleep may suspend the Handler. A successful timestamp-aligned event
             // query can still prove LOCK spans with explicit start/end evidence.
             // It cannot turn an arbitrary unobserved app interval into screen use.
-            val history = events.filter { it.atMs in cursor..now }.sortedBy { it.atMs }
             val hasEnd = history.any { it.kind == EventKind.UNLOCK || it.kind == EventKind.SCREEN_ON }
             var lockStart: Long? = if (locked == true && hasEnd) cursor else null
             val proved = mutableListOf<Pair<Long, Long>>()
@@ -72,7 +74,7 @@ internal class UsageClock(startMs: Long, private val ownPackage: String) {
                 foreground != null -> UseState.OUT_OF_SCOPE
                 else -> UseState.UNKNOWN
             }
-            for (event in events.filter { it.atMs in cursor..now }.sortedBy { it.atMs }) {
+            for (event in history) {
                 output += UseInterval(event.atMs - at, classify())
                 at = event.atMs
                 when (event.kind) {
@@ -87,7 +89,7 @@ internal class UsageClock(startMs: Long, private val ownPackage: String) {
         }
         cursor = now
         // A present-time sensor establishes proof only FROM NOW, never retroactively.
-        if (!reliable) {
+        if (!observationReliable) {
             foreground = null; locked = null; state = UseState.UNKNOWN
         } else {
             if (locked != currentLocked) {

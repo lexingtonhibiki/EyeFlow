@@ -46,6 +46,28 @@ fun main() {
     val missingUnlock = UsageClock(0, "eyeflow")
     sample(missingUnlock, 0, locked = true)
     check(sample(missingUnlock, 10000).time(UseState.LOCKED) == 0L)
+    // An unlock outside this sample cannot prove when an observed lock ended.
+    // Otherwise 29s of prior lock plus this false 1s can clear a short-use burden.
+    for (kind in listOf(EventKind.UNLOCK, EventKind.SCREEN_ON)) {
+        for (timestamp in listOf(999L, 2001L)) {
+            val staleUnlock = UsageClock(1000, "eyeflow")
+            sample(staleUnlock, 1000, locked = true)
+            val missingBoundary = sample(staleUnlock, 2000, listOf(UseEvent(timestamp, kind)))
+            check(missingBoundary.time(UseState.LOCKED) == 0L) {
+                "$kind at $timestamp outside [1000, 2000] invented locked rest"
+            }
+            check(missingBoundary.time(UseState.UNKNOWN) == 1000L)
+        }
+    }
+    // A backward monotonic sample is an observation discontinuity, not a zero
+    // duration continuation of the previous lock or foreground evidence.
+    val reversed = UsageClock(1000, "eyeflow")
+    sample(reversed, 1000, locked = true)
+    val reversedSample = sample(reversed, 999, locked = true)
+    check(reversedSample.all { it.state == UseState.UNKNOWN })
+    check(reversed.state == UseState.UNKNOWN)
+    check(sample(reversed, 2000, locked = true).time(UseState.LOCKED) == 0L)
+    check(sample(reversed, 3000, locked = true).time(UseState.LOCKED) == 1000L)
     val slept = UsageClock(0, "eyeflow")
     sample(slept, 0, locked = true)
     val provedSleep = sample(slept, 900000, listOf(UseEvent(900000, EventKind.SCREEN_ON), UseEvent(900000, EventKind.FOREGROUND, "reader")))
