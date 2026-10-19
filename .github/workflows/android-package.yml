@@ -1,0 +1,72 @@
+name: Android debug package (not device acceptance)
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'mobile/android/**'
+      - 'crates/eyeflow-core/**'
+      - 'src/core.rs'
+      - '.github/workflows/android-package.yml'
+permissions:
+  contents: read
+concurrency:
+  group: android-package-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  android-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Explicit, reviewed hosted-runner versions, not silent changes to local defaults.
+      EYEFLOW_NDK_VERSION: 27.3.13750724
+      EYEFLOW_CMAKE_VERSION: 3.31.5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require preinstalled Android tools (no SDK downloads or license acceptance)
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ANDROID_HOME:?Android SDK must already be installed}"
+          : "${JAVA_HOME_17_X64:?JDK 17 must already be installed}"
+          test -x "$JAVA_HOME_17_X64/bin/javac"
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          test -x "$ANDROID_HOME/ndk/$EYEFLOW_NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          test -x "$ANDROID_HOME/cmake/$EYEFLOW_CMAKE_VERSION/bin/cmake"
+          command -v kotlinc
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$EYEFLOW_NDK_VERSION" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - name: Install pinned Rust Android build helper
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Run Kotlin policy and native host contracts
+        run: bash mobile/android/tests/run-host-tests.sh
+      - name: Build Android Rust libraries
+        run: bash mobile/android/build-rust.sh
+      - name: Compile, lint and verify actual APK native closure
+        working-directory: mobile/android
+        run: >-
+          bash gradlew --no-daemon :app:assembleDebug :app:lintDebug
+          -Pandroid.builder.sdkDownload=false
+          -PeyeflowNdkVersion=$EYEFLOW_NDK_VERSION
+          -PeyeflowCmakeVersion=$EYEFLOW_CMAKE_VERSION
+      - name: Prove packaging gate rejects broken APKs
+        run: >-
+          python3 mobile/android/tests/test-apk-native-verifier.py
+          mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          --readelf "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+      - name: Upload candidate APK and lint report
+        uses: actions/upload-artifact@v4
+        with:
+          name: EyeFlow-android-debug-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            mobile/android/app/build/outputs/apk/debug/app-debug.apk
+            mobile/android/app/build/reports/lint-results-debug.*
+# A fresh debug signing key may not update an existing installation. Use a
+# disposable emulator first. Successful packaging is NOT device acceptance,
+# release signing, a Play submission, or evidence that reminders work on hardware.

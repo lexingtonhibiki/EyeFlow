@@ -96,6 +96,23 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 The script outputs arm64-v8a and x86_64 Rust libraries, imported/packaged by CMake.
 Version code4 / version name0.3.0 retain application ID com.eyeflow.mobile.
 
+## Candidate package CI
+
+The proposed `Android debug package (not device acceptance)` workflow uses one
+Ubuntu 24.04 job (30-minute timeout; superseded runs cancelled). It runs host
+policy/JNI tests, builds both Android ABIs, compiles and lints the app, and checks
+the actual APK plus deliberately broken packaging fixtures before uploading a
+7-day debug artifact. A successful job is not emulator/device acceptance or a
+release. The per-run debug key may not update an existing installation; try a
+disposable emulator first, never uninstall an existing app just to bypass signing.
+
+CI explicitly selects the hosted image's preinstalled NDK 27.3.13750724 and CMake
+3.31.5 with `-PeyeflowNdkVersion` / `-PeyeflowCmakeVersion`; local defaults remain
+27.0.12077973 / 3.22.1. The preflight requires JDK17, SDK35, build-tools35.0.0 and
+these native tools already installed. It does not accept licenses or install SDK
+packages, and disables Gradle's SDK auto-download. A changed runner image fails
+closed for review instead of silently selecting a different toolchain.
+
 ## Host verification
 
 ```sh

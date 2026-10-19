@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.eyeflow.mobile"
     compileSdk = 35
-    ndkVersion = "27.0.12077973"
+    ndkVersion = providers.gradleProperty("eyeflowNdkVersion").getOrElse("27.0.12077973")
     defaultConfig {
         applicationId = "com.eyeflow.mobile"
         minSdk = 26
@@ -14,7 +14,7 @@ android {
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
-    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = providers.gradleProperty("eyeflowCmakeVersion").getOrElse("3.22.1") } }
     // Explicitly package the Rust runtime. Do not rely solely on AGP discovering
     // transitive CMake imports: the JNI bridge requires this DSO at runtime.
     sourceSets.getByName("main").jniLibs.srcDir("src/main/jniLibs")
