@@ -1,0 +1,4 @@
+.build/
+Frameworks/
+*.xcodeproj/
+DerivedData/

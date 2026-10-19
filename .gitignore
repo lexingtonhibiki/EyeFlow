@@ -23,3 +23,14 @@ Thumbs.db
 
 # 本机 agent 工作记忆(不入库)
 /.workbuddy/
+
+# Cross-platform native build outputs
+**/target/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/app/build/
+mobile/android/build/
+mobile/android/app/src/main/jniLibs/
+mobile/ios/build/
+mobile/ios/Frameworks/
+mobile/ios/*.xcodeproj/

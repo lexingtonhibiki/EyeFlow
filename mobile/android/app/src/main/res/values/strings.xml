@@ -1,0 +1,3 @@
+<resources>
+    <string name="session_totals">休息完成记录 %1$d 次 · 锁屏休息 %2$d 次\n延后 %3$d 次 · 短/长待休息使用 %4$d/%5$d 分钟</string>
+</resources>
