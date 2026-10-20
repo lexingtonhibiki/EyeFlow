@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   baseline:
-    name: Baseline native reminder and tray Quit
+    name: Observe baseline native reminder and tray Quit
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -19,7 +19,108 @@ jobs:
         with:
           key: shutdown-baseline
           cache-on-failure: true
-      - name: Build unchanged baseline
+      - name: Add bounded observation logs to immutable baseline
+        shell: python
+        run: |
+          """Diagnostic-only logging against immutable EyeFlow baseline 749ab16.
+          
+          Does not change shutdown, timers, sensors, configuration or startup behavior.
+          Hashes and replacement counts deliberately fail closed if baseline changes.
+          """
+          from pathlib import Path
+          import hashlib
+          
+          EXPECTED = {
+              "src/app.rs": "014b0aa0157421804f7a649ee41f8e9c466d09c615d1898e226ddb016bce50d9",
+              "src/core.rs": "a911c4a075457f6bc8b4684e74b1dac647dd0051f5117ba067053cfde0515145",
+          }
+          source = {}
+          for name, digest in EXPECTED.items():
+              # Checkout on Windows may use CRLF. Hash canonical LF bytes only.
+              text = Path(name).read_text(encoding="utf-8")
+              actual = hashlib.sha256(text.encode("utf-8")).hexdigest()
+              if actual != digest:
+                  raise SystemExit(f"Unexpected baseline {name}: {actual}")
+              source[name] = text
+          
+          
+          def replace(name, old, new):
+              if source[name].count(old) != 1:
+                  raise SystemExit(f"Expected exactly one diagnostic insertion point in {name}: {old!r}")
+              source[name] = source[name].replace(old, new, 1)
+          
+          
+          replace("src/app.rs", '''    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+                  let now = Instant::now();
+                  self.rt.step(now);''', '''    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+                  // DIAGNOSTIC ONLY: bounded observations, no changes to control flow.
+                  static TRACE_LOGIC: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                  let trace_index = TRACE_LOGIC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                  let trace = trace_index < 6 || self.rt.quit;
+                  if trace {
+                      log::debug!("SHUTDOWN_DIAG logic enter frame={} quit={}", trace_index, self.rt.quit);
+                  }
+                  let now = Instant::now();
+                  self.rt.step(now);
+                  if trace || self.rt.quit {
+                      log::debug!("SHUTDOWN_DIAG logic after-step frame={} quit={} phase={:?} due_secs={}", trace_index, self.rt.quit, self.rt.core.phase, self.rt.core.next_break_in(now).as_secs());
+                  }''')
+          replace("src/app.rs", '''        if self.rt.quit {
+                      ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);''', '''        if self.rt.quit {
+                      log::debug!("SHUTDOWN_DIAG logic exit via quit (sending ROOT Close)");
+                      ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);''')
+          replace("src/app.rs", '''            if self.idle_frames >= 3 {
+                          ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);''', '''            if self.idle_frames >= 3 {
+                          log::debug!("SHUTDOWN_DIAG logic exit via idle close");
+                          ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);''')
+          replace("src/app.rs", '''        ctx.request_repaint_after(wait);
+              }
+          
+              fn ui''', '''        ctx.request_repaint_after(wait);
+                  if trace {
+                      log::debug!("SHUTDOWN_DIAG logic exit frame={}", trace_index);
+                  }
+              }
+          
+              fn ui''')
+          replace("src/app.rs", '''        let now = Instant::now();
+                  self.show_panel(&ctx, now);
+                  self.show_settings(&ctx, now);''', '''        let now = Instant::now();
+                  // DIAGNOSTIC ONLY: identify a blocked native immediate rendering call.
+                  static TRACE_UI: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                  let trace_index = TRACE_UI.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                  let trace = trace_index < 6 || self.rt.quit;
+                  if trace {
+                      log::debug!("SHUTDOWN_DIAG ui before-panel frame={}", trace_index);
+                  }
+                  self.show_panel(&ctx, now);
+                  if trace {
+                      log::debug!("SHUTDOWN_DIAG ui after-panel before-settings frame={}", trace_index);
+                  }
+                  self.show_settings(&ctx, now);
+                  if trace {
+                      log::debug!("SHUTDOWN_DIAG ui after-settings frame={}", trace_index);
+                  }''')
+          replace("src/core.rs", '''        // 2. 离开：计时暂停；进入离开状态即视为一次自然休息（离开阈值远大于休息时长）；''', '''        // DIAGNOSTIC ONLY: sample state at most once per five-second wall-clock bucket.
+                  // Read-only: never override sensor values, due time, phase or configuration.
+                  static TRACE_BUCKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+                  let trace_bucket = std::time::SystemTime::now()
+                      .duration_since(std::time::UNIX_EPOCH)
+                      .unwrap_or_default()
+                      .as_secs() / 5;
+                  if TRACE_BUCKET.swap(trace_bucket, std::sync::atomic::Ordering::Relaxed) != trace_bucket {
+                      log::debug!("SHUTDOWN_DIAG tick state={:?} idle_secs={} fullscreen={} interruptible={} away_secs={} enabled={} visual={} quiet={} phase={:?} due_secs={}",
+                          self.state, self.sensors.idle_secs, self.sensors.fullscreen, self.sensors.interruptible,
+                          self.cfg.away_secs, self.cfg.enabled, self.cfg.visual_enabled, quiet, self.phase,
+                          self.next_break_in(now).as_secs());
+                  }
+          
+                  // 2. 离开：计时暂停；进入离开状态即视为一次自然休息（离开阈值远大于休息时长）；''')
+          
+          for name, text in source.items():
+              Path(name).write_text(text, encoding="utf-8", newline="\n")
+              print(f"Applied observational-only logging: {name}")
+      - name: Build baseline with observation logs only
         run: cargo build --release --locked
       - name: Install official MSYS2 Mesa test dependency
         uses: msys2/setup-msys2@v2
@@ -187,11 +288,24 @@ jobs:
                   if ($popup.Count -gt 0) { break }
                   Start-Sleep -Milliseconds 100
               }
-              if (-not $popup -or $popup.Count -eq 0) { throw 'No actual visible reminder: startup, desktop, WGL, sensor or scheduling precondition failed; inspect logs' }
+              if (-not $popup -or $popup.Count -eq 0) {
+                  # Observation only AFTER the popup precondition has failed. WM_NULL does
+                  # not change app state; bounded SendMessageTimeout tests message-loop life.
+                  $responses = @([EFWin]::Windows([uint32]$proc.Id) | ForEach-Object {
+                      $reply = [IntPtr]::Zero
+                      $timer = [System.Diagnostics.Stopwatch]::StartNew()
+                      $sent = [EFWin]::SendMessageTimeout([IntPtr]$_.Handle,0,[IntPtr]::Zero,[IntPtr]::Zero,2,500,[ref]$reply)
+                      $errorCode = if ($sent -eq [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }
+                      $timer.Stop()
+                      [ordered]@{handle=$_.Handle; title=$_.Title; class=$_.Class; responded=($sent -ne [IntPtr]::Zero); elapsedMs=$timer.ElapsedMilliseconds; win32Error=$errorCode}
+                  })
+                  $responses | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $OutputDirectory 'timeout-responsiveness.json')
+                  throw 'No actual visible reminder: startup, desktop, WGL, sensor or scheduling precondition failed; inspect logs and timeout responsiveness'
+              }
               Snapshot 'before-exit'
               $result.popupHandles = @($popup | ForEach-Object {$_.Handle})
               if ($CloseSettingsFirst) {
-                  $settings = @([EFWin]::Windows([uint32]$proc.Id) | Where-Object {$_.Visible -and $_.Title -notlike 'EyeFlow Reminder *' -and $_.Title -ne 'EyeFlow' -and $_.Class -ne 'tray_icon_app'})
+                  $settings = @([EFWin]::Windows([uint32]$proc.Id) | Where-Object {$_.Visible -and $_.Title -eq 'EyeFlow Settings'})
                   if ($settings.Count -ne 1) { throw 'Cannot uniquely resolve settings HWND' }
                   Post $settings[0].Handle 0x0010 0 0
                   Start-Sleep -Milliseconds 750
@@ -262,6 +376,7 @@ jobs:
             'result.json',
             'before-exit-windows.json',
             'after-exit-windows.json',
+            'timeout-responsiveness.json',
             'before-exit-screenshot-error.txt',
             'after-exit-screenshot-error.txt',
             'appdata/eyeflow/config.toml',
