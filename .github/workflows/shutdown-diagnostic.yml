@@ -18,8 +18,53 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: shutdown-baseline
+          cache-on-failure: true
       - name: Build unchanged baseline
         run: cargo build --release --locked
+      - name: Install official MSYS2 Mesa test dependency
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-mesa mingw-w64-ucrt-x86_64-binutils
+      - name: Stage software OpenGL beside isolated test executable
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mkdir -p shutdown-runtime shutdown-diagnostics
+          cp target/release/eyeflow.exe shutdown-runtime/eyeflow.exe
+          pacman -Q > shutdown-diagnostics/msys2-package-versions.txt
+          # Copy only Mesa's two WGL entry DLLs and their recursive UCRT64 imports.
+          # No DLL is installed in Windows directories; normal OS imports stay OS-owned.
+          declare -A staged=()
+          queue=(opengl32.dll libgallium_wgl.dll)
+          while ((${#queue[@]})); do
+            dll="${queue[0]}"
+            queue=("${queue[@]:1}")
+            key="${dll,,}"
+            [[ -n "${staged[$key]:-}" ]] && continue
+            src=$(find /ucrt64/bin -maxdepth 1 -type f -iname "$dll" -print -quit)
+            if [[ -z "$src" ]]; then
+              echo "Missing official registry DLL: $dll" >&2
+              exit 1
+            fi
+            staged[$key]=1
+            cp "$src" "shutdown-runtime/$(basename "$src")"
+            while IFS= read -r dep; do
+              dep="${dep//$'\r'/}"
+              [[ -z "$dep" ]] && continue
+              found=$(find /ucrt64/bin -maxdepth 1 -type f -iname "$dep" -print -quit)
+              if [[ -n "$found" ]]; then
+                queue+=("$dep")
+              elif [[ "${dep,,}" == api-ms-win-* || "${dep,,}" == ext-ms-win-* || -f "/c/Windows/System32/$dep" ]]; then
+                : # Existing OS DLL/API set, never copied or modified.
+              else
+                echo "Unresolved import $dep from $dll; stop rather than fetch elsewhere" >&2
+                exit 1
+              fi
+            done < <(/ucrt64/bin/objdump.exe -p "$src" | sed -n 's/^[[:space:]]*DLL Name: //p')
+          done
+          sha256sum shutdown-runtime/*.dll | tee shutdown-diagnostics/mesa-dll-sha256.txt
       - name: Write isolated native smoke script
         shell: python
         run: |
@@ -36,6 +81,7 @@ jobs:
               [Parameter(Mandatory=$true)][string]$OutputDirectory,
               [ValidateSet('tray','root-close')][string]$ExitMethod = 'tray',
               [switch]$CloseSettingsFirst,
+              [switch]$RequireSoftwareRenderer,
               [int]$PopupTimeoutSeconds = 90,
               [int]$ExitTimeoutSeconds = 5
           )
@@ -107,8 +153,33 @@ jobs:
               $info.EnvironmentVariables['APPDATA'] = $appdata
               $info.EnvironmentVariables['EYEFLOW_DEMO'] = '1'
               $info.EnvironmentVariables['RUST_LOG'] = 'debug,eframe=debug,egui_glow=debug'
+              if ($RequireSoftwareRenderer) {
+                  # Only this child process uses software rendering; no driver/system settings.
+                  $info.EnvironmentVariables['LIBGL_ALWAYS_SOFTWARE'] = 'true'
+                  $info.EnvironmentVariables['GALLIUM_DRIVER'] = 'llvmpipe'
+              }
               $proc = [System.Diagnostics.Process]::Start($info)
               $result.pid = $proc.Id
+              if ($RequireSoftwareRenderer) {
+                  $rendererLog = Join-Path $appdata 'eyeflow/eyeflow.log'
+                  $rendererDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                  $rendererText = ''
+                  while ([DateTime]::UtcNow -lt $rendererDeadline -and -not $proc.HasExited) {
+                      if (Test-Path -LiteralPath $rendererLog) {
+                          $rendererText = Get-Content -Raw -LiteralPath $rendererLog
+                          if ($rendererText -match 'opengl renderer:') { break }
+                      }
+                      Start-Sleep -Milliseconds 100
+                  }
+                  $version = [regex]::Match($rendererText, 'opengl version: (?:OpenGL ES )?(\d+)\.(\d+)[^\r\n]*')
+                  $renderer = [regex]::Match($rendererText, 'opengl renderer: ([^\r\n]+)')
+                  $result.glVersion = $version.Value
+                  $result.glRenderer = $renderer.Groups[1].Value
+                  Write-Output "Renderer evidence: $($result.glVersion); $($result.glRenderer)"
+                  if (-not $version.Success -or [int]$version.Groups[1].Value -lt 2 -or $result.glRenderer -notmatch '(?i)llvmpipe') {
+                      throw 'Software GL precondition not verified: require actual logged OpenGL >=2 and llvmpipe, no version spoofing'
+                  }
+              }
               $deadline = [DateTime]::UtcNow.AddSeconds($PopupTimeoutSeconds)
               $popup = $null
               while ([DateTime]::UtcNow -lt $deadline -and -not $proc.HasExited) {
@@ -181,7 +252,7 @@ jobs:
           Path("Test-EyeFlowShutdown.ps1").write_text(script, encoding="utf-8")
       - name: Run baseline tray Quit while reminder is visible
         shell: pwsh
-        run: ./Test-EyeFlowShutdown.ps1 -Binary ./target/release/eyeflow.exe -OutputDirectory ./shutdown-diagnostics/baseline -ExitMethod tray -CloseSettingsFirst
+        run: ./Test-EyeFlowShutdown.ps1 -Binary ./shutdown-runtime/eyeflow.exe -OutputDirectory ./shutdown-diagnostics/baseline -ExitMethod tray -CloseSettingsFirst -RequireSoftwareRenderer
       - name: Print isolated native evidence even on failure
         if: always()
         shell: pwsh
