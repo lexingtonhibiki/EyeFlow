@@ -7,9 +7,9 @@ permissions:
   contents: read
 jobs:
   baseline:
-    name: Observe baseline native reminder and tray Quit
+    name: Controlled Desktop fixture - original vs lifecycle candidate
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,88 +19,504 @@ jobs:
         with:
           key: shutdown-baseline
           cache-on-failure: true
-      - name: Add bounded observation logs to immutable baseline
-        shell: python
+      - name: Write reviewed A/B preparation script
+        shell: pwsh
         run: |
-          """Diagnostic-only logging against immutable EyeFlow baseline 749ab16.
+          @'
+          """Prepare controlled shutdown diagnostic ONLY; never commit generated sources.
           
-          Does not change shutdown, timers, sensors, configuration or startup behavior.
-          Hashes and replacement counts deliberately fail closed if baseline changes.
+          Starting at immutable baseline749ab16, optionally apply the reviewed lifecycle
+          candidate, then add identical observational logging and Desktop sensor fixture.
+          Natural context suppression is NOT validated. Real idle, scheduler, tray native
+          command handling and eframe/native-window shutdown remain active.
           """
           from pathlib import Path
+          import argparse
           import hashlib
+          import subprocess
           
-          EXPECTED = {
+          parser = argparse.ArgumentParser()
+          parser.add_argument("--candidate", action="store_true")
+          args = parser.parse_args()
+          BASE = "749ab168fdc3342d73400fc01f974a10aaba2194"
+          if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() != BASE:
+              raise SystemExit("Wrong baseline revision")
+          PATCH_TEXT = r'''diff --git a/scripts/test-ui-session.py b/scripts/test-ui-session.py
+          new file mode 100644
+          index 0000000..eb8718d
+          --- /dev/null
+          +++ b/scripts/test-ui-session.py
+          @@ -0,0 +1,45 @@
+          +#!/usr/bin/env python3
+          +"""Run the real egui shutdown regression without the Windows tray/audio shell.
+          +
+          +Requires Python 3.11+ and the project's Rust toolchain. Run `cargo fetch --locked`
+          +first to populate dependencies. This supplements, not replaces, Windows CI and
+          +native UI/process-exit acceptance. No GPU, fonts, audio device or desktop needed.
+          +"""
+          +import json
+          +import os
+          +from pathlib import Path
+          +import shutil
+          +import subprocess
+          +import tempfile
+          +import tomllib
+          +
+          +ROOT = Path(__file__).resolve().parents[1]
+          +
+          +
+          +def main():
+          +    original = tomllib.loads((ROOT / "Cargo.toml").read_text())
+          +    with tempfile.TemporaryDirectory(prefix="eyeflow-shutdown-") as directory:
+          +        work = Path(directory)
+          +        (work / "src").mkdir()
+          +        (work / "tests").mkdir()
+          +        # Copy only the inputs needed by the regression and its wiring guard.
+          +        for name in ["ui_session.rs", "app.rs", "runtime.rs"]:
+          +            shutil.copyfile(ROOT / "src" / name, work / "src" / name)
+          +        shutil.copyfile(ROOT / "tests" / "ui_session_shutdown.rs",
+          +                        work / "tests" / "ui_session_shutdown.rs")
+          +        (work / "Cargo.toml").write_text(
+          +            '[package]\nname = "eyeflow-shutdown-tests"\nversion = "0.0.0"\n'
+          +            'edition = "2021"\nautobins = false\n[dependencies]\n'
+          +            f'egui = {json.dumps(original["dependencies"]["egui"])}\n'
+          +        )
+          +        # Preserve product dependency selections; cargo only adapts the temporary
+          +        # root-package entry. Never modify the repository lockfile.
+          +        shutil.copyfile(ROOT / "Cargo.lock", work / "Cargo.lock")
+          +        env = os.environ.copy()
+          +        env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target" / "shutdown-tests"))
+          +        subprocess.run(["cargo", "test", "--offline", "--manifest-path",
+          +                        str(work / "Cargo.toml")], env=env, check=True)
+          +
+          +
+          +if __name__ == "__main__":
+          +    main()
+          diff --git a/src/app.rs b/src/app.rs
+          index 7e79e63..783e015 100644
+          --- a/src/app.rs
+          +++ b/src/app.rs
+          @@ -17,6 +17,7 @@ use crate::runtime::Runtime;
+           use crate::tips;
+           use crate::tr::{tr, tr_fill, trn, Lang};
+           use crate::ui::{self, SettingsView};
+          +use crate::ui_session::UiSessionState;
+           use crate::wallpaper::{self, WallpaperCache};
+           
+           #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+          @@ -43,8 +44,7 @@ pub struct UiSession<'a> {
+               panel_epoch: u64,
+               panel_kind: PanelKind,
+               panel_noactivate_applied: bool,
+          -    /// 会话结束条件满足后再多画几帧，避免阶段切换瞬间反复拆建 GL 上下文
+          -    idle_frames: u32,
+          +    lifecycle: UiSessionState,
+               /// 严格模式背景图纹理（随会话生命周期）
+               wallpaper: WallpaperCache,
+               /// 演示模式（`EYEFLOW_DEMO_TABS=1`）里上一次自动翻页签的时刻
+          @@ -78,7 +78,7 @@ impl<'a> UiSession<'a> {
+                       panel_epoch: 0,
+                       panel_kind: PanelKind::None,
+                       panel_noactivate_applied: false,
+          -            idle_frames: 0,
+          +            lifecycle: UiSessionState::default(),
+                       wallpaper: WallpaperCache::new(),
+                       demo_tab_at: Instant::now(),
+                   }
+          @@ -274,7 +274,19 @@ impl<'a> UiSession<'a> {
+           impl eframe::App for UiSession<'_> {
+               fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+                   let now = Instant::now();
+          -        self.rt.step(now);
+          +        // 外部关闭根窗口表示退出程序；自己发出的空闲会话 Close 则只释放 UI。
+          +        if !self.lifecycle.is_closing() && ctx.input(|i| i.viewport().close_requested()) {
+          +            self.rt.quit = true;
+          +        }
+          +        if !self.lifecycle.is_closing() {
+          +            self.rt.step(now);
+          +        }
+          +        if self
+          +            .lifecycle
+          +            .update(ctx, self.rt.quit, self.rt.needs_ui(now))
+          +        {
+          +            return;
+          +        }
+           
+                   // 语言切换：托盘由 `Runtime::apply_language` 立即重写，egui 侧只需重装字体
+                   if crate::tr::language() != self.font_lang {
+          @@ -282,20 +294,6 @@ impl eframe::App for UiSession<'_> {
+                       set_fonts(ctx);
+                   }
+           
+          -        if self.rt.quit {
+          -            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+          -            return;
+          -        }
+          -        let now = Instant::now();
+          -        if self.rt.needs_ui(now) {
+          -            self.idle_frames = 0;
+          -        } else {
+          -            self.idle_frames += 1;
+          -            if self.idle_frames >= 3 {
+          -                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+          -                return;
+          -            }
+          -        }
+                   // 预热窗口里把唤醒点贴到「浮窗出现」的那一刻：常规的 500 ms 节奏
+                   // 会把 HeadsUp 的切换最多拖后半帧；预热之后浮窗已能在一帧内画出来，
+                   // 再让切换晚半帧就白预热了。
+          @@ -308,6 +306,11 @@ impl eframe::App for UiSession<'_> {
+               }
+           
+               fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+          +        // eframe 在 logic 返回后仍会调用 ui。关闭期间不得再创建/渲染子视口：
+          +        // 根视口 Close 延迟到后续事件循环处理，不应在等待期间保留/新建提醒窗口。
+          +        if self.lifecycle.is_closing() || self.rt.quit {
+          +            return;
+          +        }
+                   let ctx = ui.ctx().clone();
+                   let now = Instant::now();
+                   self.show_panel(&ctx, now);
+          diff --git a/src/main.rs b/src/main.rs
+          index 42f5988..0944c48 100644
+          --- a/src/main.rs
+          +++ b/src/main.rs
+          @@ -17,6 +17,7 @@ mod tips;
+           mod tr;
+           mod tray;
+           mod ui;
+          +mod ui_session;
+           mod update;
+           mod wallpaper;
+           
+          diff --git a/src/runtime.rs b/src/runtime.rs
+          index e96215d..dbd7808 100644
+          --- a/src/runtime.rs
+          +++ b/src/runtime.rs
+          @@ -214,6 +214,9 @@ impl Runtime {
+               /// 是在「预告该出现」的那一刻才从零开始建的（GL 上下文 + 字体 + 着色器），
+               /// 于是用户先听到提示音、再看着窗口从白底上一点点画出来。
+               pub fn needs_ui(&self, now: Instant) -> bool {
+          +        if self.quit {
+          +            return false;
+          +        }
+                   self.settings.is_some()
+                       || (self.core.cfg.visual_enabled && !matches!(self.core.phase, Phase::Idle))
+                       || (self.core.cfg.visual_enabled && self.core.flash_active(now))
+          @@ -222,6 +225,9 @@ impl Runtime {
+           
+               /// 处理所有待处理输入并推进调度核心一步。两种模式都调用它。
+               pub fn step(&mut self, now: Instant) {
+          +        if self.quit {
+          +            return;
+          +        }
+                   while let Ok(ev) = self.rx.try_recv() {
+                       match ev {
+                           Event::KeyPress(t) => self.core.on_key(t),
+          @@ -231,6 +237,10 @@ impl Runtime {
+                   }
+                   for cmd in self.tray.poll() {
+                       self.handle_tray(cmd, now);
+          +            if self.quit {
+          +                // Quit wins over queued commands/hotkeys and a reminder due this tick.
+          +                return;
+          +            }
+                   }
+                   self.sync_esc_hotkey();
+                   while let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() {
+          diff --git a/src/ui_session.rs b/src/ui_session.rs
+          new file mode 100644
+          index 0000000..fe51e23
+          --- /dev/null
+          +++ b/src/ui_session.rs
+          @@ -0,0 +1,38 @@
+          +//! Terminal shutdown state shared by the logic and drawing halves of a UI session.
+          +//!
+          +//! eframe calls `ui` even after `logic` returns. Once closing starts, do not
+          +//! render or create child windows while waiting for ROOT's Close to be handled.
+          +//! A Close command is deferred, not immediate native-window destruction.
+          +
+          +use egui::{Context, ViewportCommand, ViewportId};
+          +
+          +#[derive(Default)]
+          +pub(crate) struct UiSessionState {
+          +    idle_frames: u32,
+          +    closing: bool,
+          +}
+          +
+          +impl UiSessionState {
+          +    pub(crate) fn is_closing(&self) -> bool {
+          +        self.closing
+          +    }
+          +
+          +    /// Returns true when logic and UI must stop producing normal work.
+          +    pub(crate) fn update(&mut self, ctx: &Context, quit: bool, needs_ui: bool) -> bool {
+          +        if quit {
+          +            self.closing = true;
+          +        }
+          +        if !self.closing {
+          +            if needs_ui {
+          +                self.idle_frames = 0;
+          +            } else {
+          +                self.idle_frames += 1;
+          +                self.closing = self.idle_frames >= 3;
+          +            }
+          +        }
+          +        if self.closing {
+          +            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+          +        }
+          +        self.closing
+          +    }
+          +}
+          diff --git a/tests/ui_session_shutdown.rs b/tests/ui_session_shutdown.rs
+          new file mode 100644
+          index 0000000..cddd1ed
+          --- /dev/null
+          +++ b/tests/ui_session_shutdown.rs
+          @@ -0,0 +1,189 @@
+          +//! Real egui 0.36 immediate-viewport regression; no Win32/GL or fake egui types.
+          +//! The renderer below performs egui passes and the event ordering used by
+          +//! eframe's glow backend, but does not create native windows. Windows UI smoke
+          +//! testing remains necessary to validate native teardown and process exit.
+          +
+          +#[path = "../src/ui_session.rs"]
+          +mod ui_session;
+          +
+          +use std::cell::RefCell;
+          +use std::rc::Rc;
+          +use std::sync::{Arc, Mutex};
+          +use std::time::Duration;
+          +
+          +use egui::{Context, RawInput, ViewportBuilder, ViewportCommand, ViewportId};
+          +use ui_session::UiSessionState;
+          +
+          +// No GPU in this harness: acknowledge texture updates explicitly rather than
+          +// dropping pending deltas (epaint treats that as an integration bug).
+          +fn run_ui(ctx: &Context, input: RawInput, ui: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
+          +    let mut output = ctx.run_ui(input, ui);
+          +    output.textures_delta.clear();
+          +    output
+          +}
+          +
+          +fn has_root_close(output: &egui::FullOutput) -> bool {
+          +    output.viewport_output[&ViewportId::ROOT]
+          +        .commands
+          +        .contains(&ViewportCommand::Close)
+          +}
+          +
+          +/// Run the real nested egui pass exactly where an eframe immediate renderer
+          +/// does, recording which pass owns the Close command.
+          +fn context() -> (Context, Rc<RefCell<Vec<bool>>>) {
+          +    let ctx = Context::default();
+          +    ctx.set_embed_viewports(false);
+          +    let nested_closes = Rc::new(RefCell::new(Vec::new()));
+          +    let recorded = nested_closes.clone();
+          +    Context::set_immediate_viewport_renderer(move |ctx, mut viewport| {
+          +        let mut input = RawInput {
+          +            viewport_id: viewport.ids.this,
+          +            ..Default::default()
+          +        };
+          +        input
+          +            .viewports
+          +            .insert(viewport.ids.this, Default::default());
+          +        let output = run_ui(ctx, input, |ui| (viewport.viewport_ui_cb)(ui));
+          +        recorded.borrow_mut().push(has_root_close(&output));
+          +    });
+          +    (ctx, nested_closes)
+          +}
+          +
+          +fn draw_child(ctx: &Context, name: &str) {
+          +    ctx.show_viewport_immediate(
+          +        ViewportId::from_hash_of(name),
+          +        ViewportBuilder::default(),
+          +        |ui, _| {
+          +            ui.label(name);
+          +            ui.ctx().request_repaint_after(Duration::from_millis(250));
+          +        },
+          +    );
+          +}
+          +
+          +#[test]
+          +fn legacy_quit_still_retains_reminder_until_root_close_is_processed() {
+          +    let (ctx, nested) = context();
+          +    let output = run_ui(&ctx, RawInput::default(), |ui| {
+          +        // Old logic sent Close then returned, but eframe still called App::ui.
+          +        ui.ctx()
+          +            .send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+          +        draw_child(ui.ctx(), "heads-up");
+          +    });
+          +    // egui correctly retains commands until the outermost pass. This does NOT
+          +    // reproduce a persistent popup: it shows the old path keeps the child in
+          +    // the quit frame while waiting for root teardown.
+          +    assert_eq!(*nested.borrow(), vec![false]);
+          +    assert!(has_root_close(&output));
+          +    assert!(output
+          +        .viewport_output
+          +        .contains_key(&ViewportId::from_hash_of("heads-up")));
+          +}
+          +
+          +#[test]
+          +fn quit_preserves_close_in_root_output_and_does_not_spawn_children() {
+          +    for children in [
+          +        vec![],
+          +        vec!["heads-up"],
+          +        vec!["break"],
+          +        vec!["strict"],
+          +        vec!["flash"],
+          +        vec!["settings"],
+          +        vec!["heads-up", "settings"],
+          +    ] {
+          +        let (ctx, nested) = context();
+          +        let mut state = UiSessionState::default();
+          +        // First frame actually creates the requested child viewports.
+          +        let _ = run_ui(&ctx, RawInput::default(), |ui| {
+          +            for name in &children {
+          +                draw_child(ui.ctx(), name);
+          +            }
+          +        });
+          +        nested.borrow_mut().clear();
+          +        let output = run_ui(&ctx, RawInput::default(), |ui| {
+          +            assert!(state.update(ui.ctx(), true, true));
+          +            // Same guard used by UiSession::ui, after logic returns.
+          +            if state.is_closing() {
+          +                return;
+          +            }
+          +            for name in &children {
+          +                draw_child(ui.ctx(), name);
+          +            }
+          +        });
+          +        assert!(has_root_close(&output), "{children:?}");
+          +        assert!(nested.borrow().is_empty(), "{children:?}");
+          +        for name in &children {
+          +            assert!(
+          +                !output
+          +                    .viewport_output
+          +                    .contains_key(&ViewportId::from_hash_of(name)),
+          +                "{name}"
+          +            );
+          +        }
+          +        // Even if a queued reminder/settings request arrives, closure is terminal.
+          +        let output = run_ui(&ctx, RawInput::default(), |ui| {
+          +            assert!(state.update(ui.ctx(), false, true));
+          +        });
+          +        assert!(has_root_close(&output));
+          +    }
+          +}
+          +
+          +#[test]
+          +fn close_wakes_root_even_in_logic_only_mode() {
+          +    let ctx = Context::default();
+          +    // Consume the automatic initial repaint, then observe Close requesting one.
+          +    let _ = run_ui(&ctx, RawInput::default(), |_| {});
+          +    let _ = run_ui(&ctx, RawInput::default(), |_| {});
+          +    let requests = Arc::new(Mutex::new(Vec::new()));
+          +    let recorded = requests.clone();
+          +    ctx.set_request_repaint_callback(move |request| {
+          +        recorded
+          +            .lock()
+          +            .unwrap()
+          +            .push((request.viewport_id, request.delay));
+          +    });
+          +    let mut state = UiSessionState::default();
+          +    let output = ctx.run_logic(&RawInput::default(), |ctx| {
+          +        state.update(ctx, true, false);
+          +    });
+          +    assert!(output.viewport_commands[&ViewportId::ROOT].contains(&ViewportCommand::Close));
+          +    assert!(requests
+          +        .lock()
+          +        .unwrap()
+          +        .contains(&(ViewportId::ROOT, Duration::ZERO)));
+          +}
+          +
+          +#[test]
+          +fn idle_close_keeps_grace_period_and_resets_when_ui_is_needed() {
+          +    let ctx = Context::default();
+          +    let mut state = UiSessionState::default();
+          +    assert!(!state.update(&ctx, false, false));
+          +    assert!(!state.update(&ctx, false, false));
+          +    assert!(!state.update(&ctx, false, true));
+          +    assert!(!state.update(&ctx, false, false));
+          +    assert!(!state.update(&ctx, false, false));
+          +    assert!(state.update(&ctx, false, false));
+          +    assert!(state.is_closing());
+          +    // A later session has its own fresh lifecycle and may show the next reminder.
+          +    assert!(!UiSessionState::default().update(&ctx, false, true));
+          +}
+          +
+          +#[test]
+          +fn production_wiring_guards_ui_and_stops_runtime_before_tick() {
+          +    // Keep the integration gate tied to App::ui, not only the helper tested above.
+          +    let app = include_str!("../src/app.rs");
+          +    let ui = app.split("    fn ui(&mut self,").nth(1).unwrap();
+          +    let guard = ui
+          +        .find("if self.lifecycle.is_closing() || self.rt.quit")
+          +        .unwrap();
+          +    assert!(guard < ui.find("self.show_panel(").unwrap());
+          +    assert!(guard < ui.find("self.show_settings(").unwrap());
+          +    assert!(app
+          +        .contains("!self.lifecycle.is_closing() && ctx.input(|i| i.viewport().close_requested())"));
+          +    // Settings X is still a child-window close, not application exit.
+          +    assert!(app.contains("if close {\n            rt.settings = None;\n        }"));
+          +    let runtime = include_str!("../src/runtime.rs");
+          +    let step = runtime.split("    pub fn step(").nth(1).unwrap();
+          +    assert!(step.find("if self.quit").unwrap() < step.find("self.rx.try_recv()").unwrap());
+          +    let after_tray = step.split("self.handle_tray(cmd, now);").nth(1).unwrap();
+          +    assert!(after_tray.find("if self.quit").unwrap() < after_tray.find("self.core.tick(").unwrap());
+          +}
+          '''
+          BASE_HASHES = {
               "src/app.rs": "014b0aa0157421804f7a649ee41f8e9c466d09c615d1898e226ddb016bce50d9",
               "src/core.rs": "a911c4a075457f6bc8b4684e74b1dac647dd0051f5117ba067053cfde0515145",
+              "src/detector.rs": "dfdf2a8cb506674c08fa85393643c382c369d8c44c9490c189e06f2207994b0a",
           }
-          source = {}
-          for name, digest in EXPECTED.items():
-              # Checkout on Windows may use CRLF. Hash canonical LF bytes only.
-              text = Path(name).read_text(encoding="utf-8")
-              actual = hashlib.sha256(text.encode("utf-8")).hexdigest()
-              if actual != digest:
-                  raise SystemExit(f"Unexpected baseline {name}: {actual}")
-              source[name] = text
+          for name, expected in BASE_HASHES.items():
+              actual = hashlib.sha256(Path(name).read_text(encoding="utf-8").encode()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f"Unexpected pristine baseline {name}: {actual}")
+          if args.candidate:
+              patch = PATCH_TEXT.encode("utf-8")
+              assert hashlib.sha256(patch).hexdigest() == "94825abd61fe81cee15d38734a72e519e9528d76ec002066e5330d48aaf15fad"
+              subprocess.run(["git", "apply", "--check", "-"], input=patch, check=True)
+              subprocess.run(["git", "apply", "-"], input=patch, check=True)
+              print("Applied reviewed shutdown candidate; not a release")
+          else:
+              print("Original shutdown implementation retained")
           
+          source = {name: Path(name).read_text(encoding="utf-8") for name in BASE_HASHES}
           
           def replace(name, old, new):
               if source[name].count(old) != 1:
-                  raise SystemExit(f"Expected exactly one diagnostic insertion point in {name}: {old!r}")
+                  raise SystemExit(f"Expected exactly one insertion point in {name}: {old!r}")
               source[name] = source[name].replace(old, new, 1)
           
-          
-          replace("src/app.rs", '''    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-                  let now = Instant::now();
-                  self.rt.step(now);''', '''    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-                  // DIAGNOSTIC ONLY: bounded observations, no changes to control flow.
+          replace("src/app.rs", '    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {', '''    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+                  // DIAGNOSTIC ONLY: identical observations in both A/B variants.
                   static TRACE_LOGIC: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
                   let trace_index = TRACE_LOGIC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                   let trace = trace_index < 6 || self.rt.quit;
                   if trace {
                       log::debug!("SHUTDOWN_DIAG logic enter frame={} quit={}", trace_index, self.rt.quit);
-                  }
-                  let now = Instant::now();
-                  self.rt.step(now);
+                  }''')
+          replace("src/app.rs", 'self.rt.step(now);', '''self.rt.step(now);
                   if trace || self.rt.quit {
                       log::debug!("SHUTDOWN_DIAG logic after-step frame={} quit={} phase={:?} due_secs={}", trace_index, self.rt.quit, self.rt.core.phase, self.rt.core.next_break_in(now).as_secs());
                   }''')
-          replace("src/app.rs", '''        if self.rt.quit {
-                      ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);''', '''        if self.rt.quit {
-                      log::debug!("SHUTDOWN_DIAG logic exit via quit (sending ROOT Close)");
-                      ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);''')
-          replace("src/app.rs", '''            if self.idle_frames >= 3 {
-                          ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);''', '''            if self.idle_frames >= 3 {
-                          log::debug!("SHUTDOWN_DIAG logic exit via idle close");
-                          ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);''')
-          replace("src/app.rs", '''        ctx.request_repaint_after(wait);
-              }
-          
-              fn ui''', '''        ctx.request_repaint_after(wait);
+          replace("src/app.rs", '        ctx.request_repaint_after(wait);', '''        ctx.request_repaint_after(wait);
                   if trace {
                       log::debug!("SHUTDOWN_DIAG logic exit frame={}", trace_index);
-                  }
-              }
-          
-              fn ui''')
+                  }''')
           replace("src/app.rs", '''        let now = Instant::now();
                   self.show_panel(&ctx, now);
                   self.show_settings(&ctx, now);''', '''        let now = Instant::now();
-                  // DIAGNOSTIC ONLY: identify a blocked native immediate rendering call.
                   static TRACE_UI: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
                   let trace_index = TRACE_UI.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                   let trace = trace_index < 6 || self.rt.quit;
-                  if trace {
-                      log::debug!("SHUTDOWN_DIAG ui before-panel frame={}", trace_index);
-                  }
+                  if trace { log::debug!("SHUTDOWN_DIAG ui before-panel frame={}", trace_index); }
                   self.show_panel(&ctx, now);
-                  if trace {
-                      log::debug!("SHUTDOWN_DIAG ui after-panel before-settings frame={}", trace_index);
-                  }
+                  if trace { log::debug!("SHUTDOWN_DIAG ui after-panel before-settings frame={}", trace_index); }
                   self.show_settings(&ctx, now);
-                  if trace {
-                      log::debug!("SHUTDOWN_DIAG ui after-settings frame={}", trace_index);
-                  }''')
+                  if trace { log::debug!("SHUTDOWN_DIAG ui after-settings frame={}", trace_index); }''')
+          
           replace("src/core.rs", '''        // 2. 离开：计时暂停；进入离开状态即视为一次自然休息（离开阈值远大于休息时长）；''', '''        // DIAGNOSTIC ONLY: sample state at most once per five-second wall-clock bucket.
                   // Read-only: never override sensor values, due time, phase or configuration.
                   static TRACE_BUCKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
@@ -117,23 +533,64 @@ jobs:
           
                   // 2. 离开：计时暂停；进入离开状态即视为一次自然休息（离开阈值远大于休息时长）；''')
           
+          replace("src/detector.rs", '    let quns_busy = matches!(quns, Ok(st) if st == QUNS_PRESENTATION_MODE || st == QUNS_QUIET_TIME);', '''    // DIAGNOSTIC FIXTURE ONLY: the hosted runner reports Gaming indefinitely.
+              // Observe its real context, but hold Desktop eligibility identically in A/B
+              // so the already-visible-popup -> tray Quit behavior can be tested.
+              static FIXTURE_NOTICE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+              let first_fixture_sample = !FIXTURE_NOTICE.swap(true, std::sync::atomic::Ordering::Relaxed);
+              if first_fixture_sample {
+                  log::warn!("SHUTDOWN_DIAG CONTROLLED DESKTOP FIXTURE: raw_quns={:?} rectangle_fullscreen={}; only fullscreen/interruptible overridden, real idle retained; NOT natural scheduling validation", quns, rect_fs);
+              }
+              let quns_busy = matches!(quns, Ok(st) if st == QUNS_PRESENTATION_MODE || st == QUNS_QUIET_TIME);''')
+          replace("src/detector.rs", '    let fullscreen = quns_busy || rect_fs;', '''    if first_fixture_sample {
+                  log::warn!("SHUTDOWN_DIAG measured_fullscreen={} forced_fullscreen=false forced_interruptible=true", quns_busy || rect_fs);
+              }
+              let fullscreen = false;''')
+          
           for name, text in source.items():
               Path(name).write_text(text, encoding="utf-8", newline="\n")
-              print(f"Applied observational-only logging: {name}")
-      - name: Build baseline with observation logs only
-        run: cargo build --release --locked
+              print(f"Applied identical diagnostic observations/fixture: {name}")
+          print("CONTROLLED Desktop sensor fixture active: fullscreen=false, interruptible=true; real idle unchanged")
+          '@ | Set-Content -Encoding utf8 prepare_shutdown_ab.py
+      - name: Prepare two pristine source trees with identical controlled fixture
+        shell: pwsh
+        run: |
+          git worktree add --detach candidate-source 749ab168fdc3342d73400fc01f974a10aaba2194
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create pristine candidate source tree' }
+          python ./prepare_shutdown_ab.py
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline fixture preparation failed' }
+          Push-Location candidate-source
+          try {
+            python ../prepare_shutdown_ab.py --candidate
+            if ($LASTEXITCODE -ne 0) { throw 'Candidate fixture preparation failed' }
+          } finally { Pop-Location }
+          foreach ($file in @('core.rs','detector.rs')) {
+            $baseline = (Get-FileHash "src/$file" -Algorithm SHA256).Hash
+            $candidate = (Get-FileHash "candidate-source/src/$file" -Algorithm SHA256).Hash
+            if ($baseline -ne $candidate) { throw "A/B fixture differs: $file" }
+            Write-Output "Identical fixture $file SHA256 $baseline"
+          }
+      - name: Build original and candidate binaries with the same dependency cache
+        shell: pwsh
+        run: |
+          cargo build --release --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Original fixture binary build failed' }
+          New-Item -ItemType Directory -Force shutdown-runtime/baseline,shutdown-runtime/candidate | Out-Null
+          Copy-Item target/release/eyeflow.exe shutdown-runtime/baseline/eyeflow.exe
+          cargo build --release --locked --manifest-path candidate-source/Cargo.toml --target-dir target
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate fixture binary build failed' }
+          Copy-Item target/release/eyeflow.exe shutdown-runtime/candidate/eyeflow.exe
       - name: Install official MSYS2 Mesa test dependency
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
           install: mingw-w64-ucrt-x86_64-mesa mingw-w64-ucrt-x86_64-binutils
-      - name: Stage software OpenGL beside isolated test executable
+      - name: Stage identical software OpenGL libraries beside both test executables
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          mkdir -p shutdown-runtime shutdown-diagnostics
-          cp target/release/eyeflow.exe shutdown-runtime/eyeflow.exe
+          mkdir -p shutdown-diagnostics
           pacman -Q > shutdown-diagnostics/msys2-package-versions.txt
           # Copy only Mesa's two WGL entry DLLs and their recursive UCRT64 imports.
           # No DLL is installed in Windows directories; normal OS imports stay OS-owned.
@@ -150,7 +607,8 @@ jobs:
               exit 1
             fi
             staged[$key]=1
-            cp "$src" "shutdown-runtime/$(basename "$src")"
+            cp "$src" "shutdown-runtime/baseline/$(basename "$src")"
+            cp "$src" "shutdown-runtime/candidate/$(basename "$src")"
             while IFS= read -r dep; do
               dep="${dep//$'\r'/}"
               [[ -z "$dep" ]] && continue
@@ -165,7 +623,7 @@ jobs:
               fi
             done < <(/ucrt64/bin/objdump.exe -p "$src" | sed -n 's/^[[:space:]]*DLL Name: //p')
           done
-          sha256sum shutdown-runtime/*.dll | tee shutdown-diagnostics/mesa-dll-sha256.txt
+          sha256sum shutdown-runtime/baseline/*.dll shutdown-runtime/candidate/*.dll | tee shutdown-diagnostics/mesa-dll-sha256.txt
       - name: Write isolated native smoke script
         shell: python
         run: |
@@ -189,7 +647,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
           $OutputDirectory = (Resolve-Path $OutputDirectory).Path
-          $result = [ordered]@{status='inconclusive'; reason='Not started'; method=$ExitMethod; binary=$Binary; settingsClosed=[bool]$CloseSettingsFirst}
+          $result = [ordered]@{controlledDesktopFixture=$true; naturalSchedulingValidated=$false; status='inconclusive'; reason='Not started'; method=$ExitMethod; binary=$Binary; settingsClosed=[bool]$CloseSettingsFirst}
           $proc = $null
           Add-Type @'
           using System;
@@ -342,13 +800,19 @@ jobs:
                   if ($root.Count -ne 1) { throw 'Cannot uniquely resolve root anchor HWND' }
                   Post $root[0].Handle 0x0010 0 0
               }
-              $result.status='failed' # Preconditions now established; exit failure is a real failure.
-              if (-not $proc.WaitForExit($ExitTimeoutSeconds*1000)) { throw "App remained alive after $ExitTimeoutSeconds seconds" }
+              $exited = $proc.WaitForExit($ExitTimeoutSeconds*1000)
+              $log = Join-Path $appdata 'eyeflow/eyeflow.log'
+              if ($ExitMethod -eq 'tray') {
+                  $result.trayQuitObserved = (Test-Path -LiteralPath $log) -and ((Get-Content -Raw -LiteralPath $log) -match '用户从托盘退出')
+                  if (-not $result.trayQuitObserved) {
+                      throw 'No log evidence that real tray Quit reached Runtime; dispatch precondition inconclusive, not a shutdown regression'
+                  }
+              }
+              $result.status='failed' # Visible popup AND actual Quit handling established.
+              if (-not $exited) { throw "App remained alive after $ExitTimeoutSeconds seconds following verified Quit" }
               $result.exitCode=$proc.ExitCode
               if ($proc.ExitCode -ne 0) { throw "Nonzero process exit: $($proc.ExitCode)" }
               if (@([EFWin]::Windows([uint32]$proc.Id)).Count -ne 0) { throw 'PID-owned HWND remains after exit' }
-              $log = Join-Path $appdata 'eyeflow/eyeflow.log'
-              if ($ExitMethod -eq 'tray' -and (Get-Content -Raw $log) -notmatch '用户从托盘退出') { $result.status='inconclusive'; throw 'No log evidence that real tray Quit reached Runtime' }
               $result.status='passed'; $result.reason='Visible reminder established; requested exit completed normally and no PID HWND survived'
           } catch {
               $result.reason=$_.ToString()
@@ -364,49 +828,63 @@ jobs:
           exit 1
           '''
           Path("Test-EyeFlowShutdown.ps1").write_text(script, encoding="utf-8")
-      - name: Run baseline tray Quit while reminder is visible
+      - name: Run BOTH native variants even if original shutdown fails
         shell: pwsh
-        run: ./Test-EyeFlowShutdown.ps1 -Binary ./shutdown-runtime/eyeflow.exe -OutputDirectory ./shutdown-diagnostics/baseline -ExitMethod tray -CloseSettingsFirst -RequireSoftwareRenderer
-      - name: Print isolated native evidence even on failure
+        run: |
+          # Each child script records evidence and cleans up only its own process.
+          # Do not stop after original failure; the candidate must run identically.
+          $PSNativeCommandUseErrorActionPreference = $false
+          foreach ($variant in @('baseline','candidate')) {
+            Write-Output "===== CONTROLLED FIXTURE VARIANT $variant ====="
+            & pwsh -NoProfile -File ./Test-EyeFlowShutdown.ps1 -Binary "./shutdown-runtime/$variant/eyeflow.exe" -OutputDirectory "./shutdown-diagnostics/$variant" -ExitMethod tray -CloseSettingsFirst -RequireSoftwareRenderer
+            Write-Output "Variant $variant diagnostic exit code: $LASTEXITCODE"
+          }
+          exit 0
+      - name: Evaluate bounded A/B evidence without overstating reproduction
+        shell: pwsh
+        run: |
+          $baselinePath = 'shutdown-diagnostics/baseline/result.json'
+          $candidatePath = 'shutdown-diagnostics/candidate/result.json'
+          if (-not (Test-Path $baselinePath) -or -not (Test-Path $candidatePath)) { throw 'Missing native result; A/B inconclusive' }
+          $b = Get-Content -Raw $baselinePath | ConvertFrom-Json
+          $c = Get-Content -Raw $candidatePath | ConvertFrom-Json
+          $originalFailureVerified = $b.status -eq 'failed' -and $b.trayQuitObserved -eq $true -and @($b.popupHandles).Count -gt 0
+          $verdict = 'inconclusive'
+          if ($b.status -eq 'passed' -and $c.status -eq 'passed') {
+            $verdict = 'not-reproduced: both exit correctly under controlled fixture'
+          } elseif ($originalFailureVerified -and $c.status -eq 'passed') {
+            $verdict = 'original failure and candidate pass verified under controlled fixture only'
+          } elseif ($c.status -eq 'failed') {
+            $verdict = 'candidate did not satisfy native shutdown acceptance'
+          }
+          $summary = [ordered]@{verdict=$verdict; baseline=$b.status; candidate=$c.status; originalFailureVerified=$originalFailureVerified; naturalSchedulingValidated=$false; softwareRenderer='llvmpipe'; fixture='fullscreen=false, interruptible=true, real idle retained'}
+          $summary | ConvertTo-Json | Tee-Object -FilePath shutdown-diagnostics/ab-summary.json
+          if ($c.status -eq 'failed') { exit 1 }
+          if ($verdict -eq 'inconclusive') { exit 2 }
+      - name: Print isolated evidence for both variants even on failure
         if: always()
         shell: pwsh
         run: |
-          $root = Join-Path $PWD 'shutdown-diagnostics/baseline'
-          $paths = @(
-            'result.json',
-            'before-exit-windows.json',
-            'after-exit-windows.json',
-            'timeout-responsiveness.json',
-            'before-exit-screenshot-error.txt',
-            'after-exit-screenshot-error.txt',
-            'appdata/eyeflow/config.toml',
-            'appdata/eyeflow/eyeflow.log'
-          )
-          foreach ($relative in $paths) {
-            Write-Output "===== BEGIN $relative ====="
-            $file = Join-Path $root $relative
-            if (Test-Path -LiteralPath $file -PathType Leaf) {
-              # This is the synthetic isolated test profile, never a user profile.
-              # Bound debug output while retaining startup and the terminal cause.
-              $lines = @(Get-Content -LiteralPath $file -Encoding utf8 -ErrorAction Continue)
-              if ($lines.Count -gt 600) {
-                $lines | Select-Object -First 200 | Write-Output
-                Write-Output "... omitted $($lines.Count - 600) middle lines ..."
-                $lines | Select-Object -Last 400 | Write-Output
-              } else {
-                $lines | Write-Output
-              }
-            } else {
-              Write-Output '(not created)'
+          foreach ($variant in @('baseline','candidate')) {
+            foreach ($relative in @('result.json','before-exit-windows.json','after-exit-windows.json','timeout-responsiveness.json','before-exit-screenshot-error.txt','after-exit-screenshot-error.txt','appdata/eyeflow/config.toml','appdata/eyeflow/eyeflow.log')) {
+              Write-Output "===== BEGIN $variant/$relative ====="
+              $file = Join-Path "shutdown-diagnostics/$variant" $relative
+              if (Test-Path -LiteralPath $file -PathType Leaf) {
+                $lines = @(Get-Content -LiteralPath $file -Encoding utf8 -ErrorAction Continue)
+                if ($lines.Count -gt 600) {
+                  $lines | Select-Object -First 200 | Write-Output
+                  Write-Output "... omitted $($lines.Count - 600) middle lines ..."
+                  $lines | Select-Object -Last 400 | Write-Output
+                } else { $lines | Write-Output }
+              } else { Write-Output '(not created)' }
+              Write-Output "===== END $variant/$relative ====="
             }
-            Write-Output "===== END $relative ====="
           }
-          # Preserve the prior native step result: diagnostics never turn an
-          # inconclusive run into a pass or suppress its original nonzero exit.
-      - name: Upload native diagnostics even on failure
+          if (Test-Path shutdown-diagnostics/ab-summary.json) { Get-Content shutdown-diagnostics/ab-summary.json }
+      - name: Upload diagnostic evidence only - never distribute fixture binaries
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: eyeflow-baseline-shutdown-${{ github.run_id }}
+          name: eyeflow-controlled-shutdown-ab-${{ github.run_id }}
           path: shutdown-diagnostics/
           if-no-files-found: warn
