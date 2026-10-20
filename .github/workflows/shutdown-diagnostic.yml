@@ -182,6 +182,41 @@ jobs:
       - name: Run baseline tray Quit while reminder is visible
         shell: pwsh
         run: ./Test-EyeFlowShutdown.ps1 -Binary ./target/release/eyeflow.exe -OutputDirectory ./shutdown-diagnostics/baseline -ExitMethod tray -CloseSettingsFirst
+      - name: Print isolated native evidence even on failure
+        if: always()
+        shell: pwsh
+        run: |
+          $root = Join-Path $PWD 'shutdown-diagnostics/baseline'
+          $paths = @(
+            'result.json',
+            'before-exit-windows.json',
+            'after-exit-windows.json',
+            'before-exit-screenshot-error.txt',
+            'after-exit-screenshot-error.txt',
+            'appdata/eyeflow/config.toml',
+            'appdata/eyeflow/eyeflow.log'
+          )
+          foreach ($relative in $paths) {
+            Write-Output "===== BEGIN $relative ====="
+            $file = Join-Path $root $relative
+            if (Test-Path -LiteralPath $file -PathType Leaf) {
+              # This is the synthetic isolated test profile, never a user profile.
+              # Bound debug output while retaining startup and the terminal cause.
+              $lines = @(Get-Content -LiteralPath $file -Encoding utf8 -ErrorAction Continue)
+              if ($lines.Count -gt 600) {
+                $lines | Select-Object -First 200 | Write-Output
+                Write-Output "... omitted $($lines.Count - 600) middle lines ..."
+                $lines | Select-Object -Last 400 | Write-Output
+              } else {
+                $lines | Write-Output
+              }
+            } else {
+              Write-Output '(not created)'
+            }
+            Write-Output "===== END $relative ====="
+          }
+          # Preserve the prior native step result: diagnostics never turn an
+          # inconclusive run into a pass or suppress its original nonzero exit.
       - name: Upload native diagnostics even on failure
         if: always()
         uses: actions/upload-artifact@v4
