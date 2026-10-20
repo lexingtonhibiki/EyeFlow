@@ -1,0 +1,191 @@
+name: EyeFlow native shutdown diagnostic
+on:
+  workflow_dispatch:
+  push:
+    branches: ["audit/eyeflow-shutdown-*"]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    name: Baseline native reminder and tray Quit
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 749ab168fdc3342d73400fc01f974a10aaba2194
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: shutdown-baseline
+      - name: Build unchanged baseline
+        run: cargo build --release --locked
+      - name: Write isolated native smoke script
+        shell: python
+        run: |
+          from pathlib import Path
+          script = r'''
+          # Native app smoke only. Run on an isolated Windows runner, never a user's desktop.
+          # Exercises Win32 tray -> muda MenuEvent -> Runtime::step -> native eframe teardown.
+          # Synthetic WM_COMMAND is not a physical mouse click; the real application pipeline
+          # after native menu selection is exercised. MN_GETHMENU is an undocumented Win32
+          # menu message; inability to resolve it is INCONCLUSIVE, never a passing test.
+          [CmdletBinding()]
+          param(
+              [Parameter(Mandatory=$true)][string]$Binary,
+              [Parameter(Mandatory=$true)][string]$OutputDirectory,
+              [ValidateSet('tray','root-close')][string]$ExitMethod = 'tray',
+              [switch]$CloseSettingsFirst,
+              [int]$PopupTimeoutSeconds = 90,
+              [int]$ExitTimeoutSeconds = 5
+          )
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
+          $OutputDirectory = (Resolve-Path $OutputDirectory).Path
+          $result = [ordered]@{status='inconclusive'; reason='Not started'; method=$ExitMethod; binary=$Binary; settingsClosed=[bool]$CloseSettingsFirst}
+          $proc = $null
+          Add-Type @'
+          using System;
+          using System.Collections.Generic;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public class EFWindow { public long Handle; public uint Pid; public string Title; public string Class; public bool Visible; }
+          public static class EFWin {
+           public delegate bool EnumProc(IntPtr hwnd, IntPtr data);
+           [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr data);
+           [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+           [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
+           [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+           [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+           [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
+           [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr h,uint m,IntPtr w,IntPtr l,uint flags,uint timeout,out IntPtr result);
+           [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr menu);
+           [DllImport("user32.dll")] public static extern uint GetMenuItemID(IntPtr menu,int pos);
+           [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetMenuString(IntPtr menu,uint item,StringBuilder text,int size,uint flags);
+           public static EFWindow[] Windows(uint wanted) {
+            var list=new List<EFWindow>();
+            EnumWindows((h,d)=>{uint pid;GetWindowThreadProcessId(h,out pid);if(pid==wanted){var t=new StringBuilder(1024);var c=new StringBuilder(256);GetWindowText(h,t,t.Capacity);GetClassName(h,c,c.Capacity);list.Add(new EFWindow{Handle=h.ToInt64(),Pid=pid,Title=t.ToString(),Class=c.ToString(),Visible=IsWindowVisible(h)});}return true;},IntPtr.Zero);
+            return list.ToArray();
+           }
+          }
+          '@
+          function Snapshot([string]$name) {
+              if ($proc) { @([EFWin]::Windows([uint32]$proc.Id)) | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $OutputDirectory "$name-windows.json") }
+              try {
+                  Add-Type -AssemblyName System.Windows.Forms
+                  Add-Type -AssemblyName System.Drawing
+                  $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+                  $bitmap = New-Object System.Drawing.Bitmap($bounds.Width,$bounds.Height)
+                  $g = [System.Drawing.Graphics]::FromImage($bitmap)
+                  $g.CopyFromScreen($bounds.Location,[System.Drawing.Point]::Empty,$bounds.Size)
+                  $bitmap.Save((Join-Path $OutputDirectory "$name.png"))
+                  $g.Dispose(); $bitmap.Dispose()
+              } catch { $_.ToString() | Set-Content (Join-Path $OutputDirectory "$name-screenshot-error.txt") }
+          }
+          function Post([long]$handle,[uint32]$message,[long]$wparam,[long]$lparam) {
+              if (-not [EFWin]::PostMessage([IntPtr]$handle,$message,[IntPtr]$wparam,[IntPtr]$lparam)) { throw "PostMessage failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+          }
+          try {
+              if ($env:OS -ne 'Windows_NT') { throw 'Windows required' }
+              # Do not accidentally interact with an existing user's instance/global mutex.
+              if (Get-Process eyeflow -ErrorAction SilentlyContinue) { throw 'Existing EyeFlow process: use a clean isolated runner' }
+              $appdata = Join-Path $OutputDirectory 'appdata'
+              New-Item -ItemType Directory -Force (Join-Path $appdata 'eyeflow') | Out-Null
+              @'
+          language = "en-US"
+          visual_enabled = true
+          sound_enabled = false
+          strict_mode = false
+          hotkey_enabled = false
+          update_check_enabled = false
+          quiet_start = "00:00"
+          quiet_end = "00:00"
+          '@ | Set-Content -Encoding UTF8 (Join-Path $appdata 'eyeflow/config.toml')
+              $info = New-Object System.Diagnostics.ProcessStartInfo
+              $info.FileName = (Resolve-Path $Binary).Path
+              $info.UseShellExecute = $false
+              $info.EnvironmentVariables['APPDATA'] = $appdata
+              $info.EnvironmentVariables['EYEFLOW_DEMO'] = '1'
+              $info.EnvironmentVariables['RUST_LOG'] = 'debug,eframe=debug,egui_glow=debug'
+              $proc = [System.Diagnostics.Process]::Start($info)
+              $result.pid = $proc.Id
+              $deadline = [DateTime]::UtcNow.AddSeconds($PopupTimeoutSeconds)
+              $popup = $null
+              while ([DateTime]::UtcNow -lt $deadline -and -not $proc.HasExited) {
+                  $popup = @([EFWin]::Windows([uint32]$proc.Id) | Where-Object {$_.Visible -and $_.Title -like 'EyeFlow Reminder *'})
+                  if ($popup.Count -gt 0) { break }
+                  Start-Sleep -Milliseconds 100
+              }
+              if (-not $popup -or $popup.Count -eq 0) { throw 'No actual visible reminder: startup, desktop, WGL, sensor or scheduling precondition failed; inspect logs' }
+              Snapshot 'before-exit'
+              $result.popupHandles = @($popup | ForEach-Object {$_.Handle})
+              if ($CloseSettingsFirst) {
+                  $settings = @([EFWin]::Windows([uint32]$proc.Id) | Where-Object {$_.Visible -and $_.Title -notlike 'EyeFlow Reminder *' -and $_.Title -ne 'EyeFlow' -and $_.Class -ne 'tray_icon_app'})
+                  if ($settings.Count -ne 1) { throw 'Cannot uniquely resolve settings HWND' }
+                  Post $settings[0].Handle 0x0010 0 0
+                  Start-Sleep -Milliseconds 750
+                  if ($proc.HasExited) { $result.status='failed'; throw 'Closing settings unexpectedly terminated app' }
+                  if (-not @([EFWin]::Windows([uint32]$proc.Id) | Where-Object {$_.Visible -and $_.Title -like 'EyeFlow Reminder *'}).Count) { $result.status='failed'; throw 'Closing settings unexpectedly removed reminder' }
+              }
+              if ($ExitMethod -eq 'tray') {
+                  $tray = @([EFWin]::Windows([uint32]$proc.Id) | Where-Object {$_.Class -eq 'tray_icon_app'})
+                  if ($tray.Count -ne 1) { throw 'Cannot uniquely resolve application tray HWND' }
+                  Post $tray[0].Handle 6002 0 0x0205 # tray-icon0.24 WM_USER_TRAYICON / WM_RBUTTONUP
+                  $menuWindow = @()
+                  $until = [DateTime]::UtcNow.AddSeconds(3)
+                  while ([DateTime]::UtcNow -lt $until) {
+                      $menuWindow = @([EFWin]::Windows([uint32]$proc.Id) | Where-Object {$_.Visible -and $_.Class -eq '#32768'})
+                      if ($menuWindow.Count -eq 1) { break }
+                      Start-Sleep -Milliseconds 50
+                  }
+                  if ($menuWindow.Count -ne 1) { throw 'Native tray menu unavailable on this desktop' }
+                  $menu = [IntPtr]::Zero
+                  $sent = [EFWin]::SendMessageTimeout([IntPtr]$menuWindow[0].Handle,0x01E1,[IntPtr]::Zero,[IntPtr]::Zero,2,1000,[ref]$menu)
+                  if ($sent -eq [IntPtr]::Zero -or $menu -eq [IntPtr]::Zero) { throw 'Could not inspect native popup HMENU' }
+                  $count = [EFWin]::GetMenuItemCount($menu)
+                  if ($count -lt 1) { throw 'Empty native tray menu' }
+                  $text = New-Object System.Text.StringBuilder 256
+                  [void][EFWin]::GetMenuString($menu,[uint32]($count-1),$text,256,0x400)
+                  $command = [EFWin]::GetMenuItemID($menu,$count-1)
+                  if ($command -eq [uint32]::MaxValue -or $text.ToString() -notmatch '(?i)exit|quit|退出') { throw "Last menu item is not verified Quit: $text" }
+                  $result.menuText=$text.ToString(); $result.commandId=$command
+                  Post $tray[0].Handle 0x001F 0 0 # Cancel native menu mode before command dispatch.
+                  Start-Sleep -Milliseconds 100
+                  Post $tray[0].Handle 0x0111 $command 0 # Real muda subclass WM_COMMAND -> MenuEvent.
+              } else {
+                  $root = @([EFWin]::Windows([uint32]$proc.Id) | Where-Object {$_.Title -eq 'EyeFlow' -and $_.Class -ne 'tray_icon_app'})
+                  if ($root.Count -ne 1) { throw 'Cannot uniquely resolve root anchor HWND' }
+                  Post $root[0].Handle 0x0010 0 0
+              }
+              $result.status='failed' # Preconditions now established; exit failure is a real failure.
+              if (-not $proc.WaitForExit($ExitTimeoutSeconds*1000)) { throw "App remained alive after $ExitTimeoutSeconds seconds" }
+              $result.exitCode=$proc.ExitCode
+              if ($proc.ExitCode -ne 0) { throw "Nonzero process exit: $($proc.ExitCode)" }
+              if (@([EFWin]::Windows([uint32]$proc.Id)).Count -ne 0) { throw 'PID-owned HWND remains after exit' }
+              $log = Join-Path $appdata 'eyeflow/eyeflow.log'
+              if ($ExitMethod -eq 'tray' -and (Get-Content -Raw $log) -notmatch '用户从托盘退出') { $result.status='inconclusive'; throw 'No log evidence that real tray Quit reached Runtime' }
+              $result.status='passed'; $result.reason='Visible reminder established; requested exit completed normally and no PID HWND survived'
+          } catch {
+              $result.reason=$_.ToString()
+          } finally {
+              Snapshot 'after-exit'
+              # Cleanup happens only AFTER recording outcome. Forced termination never counts as pass.
+              if ($proc -and -not $proc.HasExited) { $result.forcedCleanup=$true; $proc.Kill(); [void]$proc.WaitForExit(5000) }
+              $result | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 (Join-Path $OutputDirectory 'result.json')
+              $result | ConvertTo-Json -Depth 8 | Write-Output
+          }
+          if ($result.status -eq 'passed') { exit 0 }
+          if ($result.status -eq 'inconclusive') { exit 2 }
+          exit 1
+          '''
+          Path("Test-EyeFlowShutdown.ps1").write_text(script, encoding="utf-8")
+      - name: Run baseline tray Quit while reminder is visible
+        shell: pwsh
+        run: ./Test-EyeFlowShutdown.ps1 -Binary ./target/release/eyeflow.exe -OutputDirectory ./shutdown-diagnostics/baseline -ExitMethod tray -CloseSettingsFirst
+      - name: Upload native diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eyeflow-baseline-shutdown-${{ github.run_id }}
+          path: shutdown-diagnostics/
+          if-no-files-found: warn
