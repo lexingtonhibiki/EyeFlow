@@ -757,22 +757,33 @@ mod quit_tests {
         for id in [reminder, settings] {
             input.viewports.insert(id, egui::ViewportInfo::default());
         }
-        let output = ctx.run_ui(input, |ui| {
+        let mut output = ctx.run_ui(input, |ui| {
             assert!(close_ui_for_quit(ui.ctx(), true));
+            // Inspect every active viewport before egui prunes children which
+            // intentionally are not rendered again during this exit pass.
+            for id in [ViewportId::ROOT, reminder, settings] {
+                ui.ctx().viewport_for(id, |viewport| {
+                    assert!(viewport.commands.contains(&ViewportCommand::Visible(false)));
+                    assert!(viewport.commands.contains(&ViewportCommand::Close));
+                });
+            }
         });
-        for id in [ViewportId::ROOT, reminder, settings] {
-            let commands = &output.viewport_output[&id].commands;
-            assert!(commands.contains(&ViewportCommand::Visible(false)));
-            assert!(commands.contains(&ViewportCommand::Close));
-        }
+        // Headless test: no renderer consumes font texture updates.
+        output.textures_delta.clear();
+        assert!(output.viewport_output[&ViewportId::ROOT]
+            .commands
+            .contains(&ViewportCommand::Close));
+        assert!(!output.viewport_output.contains_key(&reminder));
+        assert!(!output.viewport_output.contains_key(&settings));
     }
 
     #[test]
     fn normal_frames_do_not_close_any_windows() {
         let ctx = egui::Context::default();
-        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             assert!(!close_ui_for_quit(ui.ctx(), false));
         });
+        output.textures_delta.clear();
         for viewport in output.viewport_output.values() {
             assert!(!viewport.commands.contains(&ViewportCommand::Close));
             assert!(!viewport.commands.contains(&ViewportCommand::Visible(false)));
