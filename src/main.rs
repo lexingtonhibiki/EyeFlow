@@ -13,6 +13,8 @@ mod i18n;
 #[allow(dead_code)]
 mod icon;
 mod runtime;
+#[cfg(feature = "desktop-smoke")]
+mod smoke_control;
 mod stats;
 mod tips;
 mod tr;
@@ -156,6 +158,11 @@ fn main() {
     let stats = Stats::load();
 
     let (tx, rx) = mpsc::channel();
+    #[cfg(feature = "desktop-smoke")]
+    if let Err(error) = smoke_control::start(tx.clone()) {
+        log::error!("Smoke control could not start: {error}");
+        return;
+    }
 
     // 启动顺序按「用户多久能看见东西」排，不是按代码依赖排。
     // 托盘图标出现是 spec N3 承诺的「双击后 < 1 秒」，而 `AudioPlayer::new()`

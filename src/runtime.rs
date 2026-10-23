@@ -246,6 +246,18 @@ impl Runtime {
         }
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
+                #[cfg(feature = "desktop-smoke")]
+                Event::SmokeCommand(command) => {
+                    // Exercise the existing tray action and ordinary shutdown
+                    // path; never substitute process termination for a quit.
+                    self.handle_tray(command, now);
+                    if self.quit {
+                        if self.core.stats.dirty {
+                            self.core.stats.save();
+                        }
+                        return;
+                    }
+                }
                 Event::KeyPress(t) => self.core.on_key(t),
                 Event::Sensors(s) => self.core.set_sensors(s),
                 Event::UpdateChecked(result) => self.on_update_checked(result),

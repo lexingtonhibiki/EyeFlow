@@ -85,6 +85,8 @@ default = ["desktop", "update-check"]
 desktop = ["dep:eframe", "dep:egui", "dep:tray-icon", "dep:global-hotkey",
     "dep:rodio", "dep:rfd", "dep:image", "dep:windows", "dep:env_logger", "dep:x11rb", "dep:gtk", "dep:sys-locale", "dep:fs2", "dep:zbus", "dep:font-kit"]
 update-check = ["dep:ureq", "dep:serde_json"]
+# Explicit test binary only; never enable this for packaged/released artifacts.
+desktop-smoke = ["desktop"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13.2", features = ["screensaver"], optional = true }

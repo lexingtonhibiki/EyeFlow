@@ -5,8 +5,10 @@ Linux: this script starts its own dedicated Xvfb + Openbox session.
 macOS: requires an existing GUI session and the official Swift toolchain.
   python3 scripts/test-desktop-smoke.py target/debug/eyeflow
 
-macOS checks only visible windows through public CGWindowListCopyWindowInfo.
-It does not claim interactive/quit acceptance; SIGTERM there is cleanup only.
+Default macOS mode checks visible startup via public CGWindowListCopyWindowInfo.
+With --stdin-control, a separate test-feature binary uses private stdin to invoke
+the shared menu actions and verify ordinary popup shutdown, not mouse clicks.
+SIGTERM is cleanup only and never a successful normal-quit observation.
 No Accessibility, Screen Recording, System Events, or synthetic macOS input.
 """
 import argparse
@@ -179,9 +181,48 @@ def mac_windows(probe, pid):
             and w.get("kCGWindowBounds", {}).get("Height", 0) > 100]
 
 
+
+def mac_controlled_smoke(proc, probe, args, report):
+    def send(value):
+        if proc.stdin is None:
+            raise SmokeFailure("Missing private control pipe")
+        proc.stdin.write((value + "\n").encode("ascii"))
+        proc.stdin.flush()
+
+    wait_for(proc, lambda: mac_windows(probe, proc.pid), args.timeout)
+    send("open-settings")
+    before = wait_for(proc, lambda: (w if len(w := mac_windows(probe, proc.pid)) >= 2 else None), args.timeout)
+    before_ids = {w["kCGWindowNumber"] for w in before}
+    send("rest-now")
+
+    def popup_created():
+        windows = mac_windows(probe, proc.pid)
+        return windows if len(windows) >= 3 and any(w["kCGWindowNumber"] not in before_ids for w in windows) else None
+
+    report["simultaneous_windows"] = wait_for(proc, popup_created, args.timeout)
+    started = time.monotonic()
+    send("quit")
+    try:
+        code = proc.wait(timeout=args.max_exit_seconds)
+    except subprocess.TimeoutExpired as exc:
+        raise SmokeFailure("Shared menu Quit timed out; forced cleanup is not a pass") from exc
+    elapsed = time.monotonic() - started
+    if code != 0 or elapsed > args.max_exit_seconds:
+        raise SmokeFailure(f"Shared menu Quit: exit={code}, elapsed={elapsed:.3f}s")
+    deadline = time.monotonic() + 2
+    while mac_windows(probe, proc.pid):
+        if time.monotonic() >= deadline:
+            raise SmokeFailure("Owned visible windows remain after normal quit")
+        time.sleep(0.05)
+    report.update(shared_menu_quit_exit=True, exit_code=code, exit_seconds=elapsed,
+                  actual_tray_mouse_click="not tested; test-only private pipe supplies menu actions")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
+    parser.add_argument("--stdin-control", action="store_true",
+                        help="macOS only: test-feature binary with a private stdin command pipe")
     parser.add_argument("--timeout", type=float, default=30)
     parser.add_argument("--max-exit-seconds", type=float, default=2)
     args = parser.parse_args()
@@ -190,6 +231,8 @@ def main():
     system = sys.platform
     if system not in ("linux", "darwin"):
         parser.error("Only Linux X11 and macOS are supported by this script")
+    if args.stdin_control and system != "darwin":
+        parser.error("Private control lifecycle probe is macOS-only")
     if not args.binary.is_file():
         parser.error("Binary does not exist")
     if system == "linux":
@@ -201,6 +244,8 @@ def main():
               "automatic_monitoring": "not validated; unknown lock state may pause it",
               "hardware_audio": "not tested (disabled)",
               "tray_panel": "not tested"}
+    if args.stdin_control:
+        report["scope"] = "macos-test-build-shared-menu-lifecycle"
     proc = None
     desktop_children = []
     with tempfile.TemporaryDirectory(prefix="eyeflow-native-smoke-") as temp_name:
@@ -221,6 +266,8 @@ def main():
         env.update(HOME=str(home), APPDATA=str(appdata), XDG_CONFIG_HOME=str(xdg),
                    XDG_CACHE_HOME=str(temp / "cache"), XDG_DATA_HOME=str(temp / "data"),
                    EYEFLOW_DEMO="1", RUST_LOG="debug")
+        if args.stdin_control:
+            env.pop("EYEFLOW_DEMO", None)
         if system == "linux":
             env.pop("WAYLAND_DISPLAY", None)
             env["XDG_SESSION_TYPE"] = "x11"
@@ -233,10 +280,14 @@ def main():
             probe = mac_probe(temp) if system == "darwin" else None
             with output.open("w", encoding="utf-8") as stream:
                 started = time.monotonic()
-                proc = subprocess.Popen([str(args.binary.resolve())], env=env,
+                arguments = [str(args.binary.resolve())] + (["--smoke-stdin"] if args.stdin_control else [])
+                proc = subprocess.Popen(arguments, env=env,
+                                        stdin=subprocess.PIPE if args.stdin_control else subprocess.DEVNULL,
                                         cwd=temp, stdout=stream, stderr=subprocess.STDOUT)
                 if system == "linux":
                     linux_smoke(proc, args, report, started)
+                elif args.stdin_control:
+                    mac_controlled_smoke(proc, probe, args, report)
                 else:
                     report["visible_owned_windows"] = wait_for(
                         proc, lambda: (w if len(w := mac_windows(probe, proc.pid)) >= 2 else None), args.timeout)
@@ -260,6 +311,12 @@ def main():
                     pass
                 except Exception as exc:
                     report["cleanup_error"] = f"{type(exc).__name__}: {exc}"
+                    report["status"] = "failed"
+            if proc is not None and proc.stdin is not None:
+                try:
+                    proc.stdin.close()
+                except OSError as exc:
+                    report["control_pipe_cleanup_error"] = str(exc)
                     report["status"] = "failed"
             for child in reversed(desktop_children):
                 try:

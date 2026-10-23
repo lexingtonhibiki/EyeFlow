@@ -9,6 +9,8 @@ use crate::core::Sensors;
 /// 托盘菜单、热键都由各自 crate 的全局 channel 在主线程轮询，不经此总线。
 #[derive(Debug, Clone)]
 pub enum Event {
+    #[cfg(feature = "desktop-smoke")]
+    SmokeCommand(crate::tray::TrayCommand),
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     KeyPress(Instant),
     Sensors(Sensors),
