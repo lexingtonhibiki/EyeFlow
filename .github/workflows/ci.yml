@@ -12,6 +12,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  shared-core:
+    name: Shared core (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Test shared core without native desktop dependencies
+        run: cargo test --locked --no-default-features
+
   ci:
     name: Check / Test / Build (windows-latest)
     runs-on: windows-latest
@@ -45,9 +58,7 @@ jobs:
           "installer.nsi UTF-8 BOM OK"
 
       # 生产代码（--bins）阻塞：今天已经是零警告，守住它不花钱。
-      # 注意用 `--bins` 而不是 ADR-0007 判决七原文的 `--lib --bins`——
-      # 本项目是纯 bin crate，没有 lib target，`cargo clippy --lib --bins`
-      # 会直接报 "no library targets found" 而根本跑不起来。
+      # 桌面生产代码保持原有 --bins 门禁；共享库另由 shared-core job 验收。
       # --all-targets 保持 advisory：clippy 的 lint 集合每个 stable 版本都在变，
       # 一旦对测试代码也 -D warnings，下一次例行工具链升级就会红灯，
       # 而唯一能修的人是作者、修法往往是加 #[allow]——

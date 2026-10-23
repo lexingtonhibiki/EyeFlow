@@ -56,10 +56,17 @@ cargo +stable-x86_64-pc-windows-gnu test
 
 | feature | 默认 | 作用 |
 |---|---|---|
+| `desktop` | **开** | 编译原生桌面程序及 GUI / 音频 / 托盘依赖；当前桌面后端仍仅支持 Windows |
 | `update-check` | **开**（v0.7.0 起） | 编译在线更新检查所需的 TLS + JSON 栈（`ureq` / `rustls` / `ring` / `serde_json`），实测 +1,139,200 B。v0.6 默认关掉它是为了体积，但那样下载版里「关于」页的更新开关根本不存在——把一个用户用得上的功能砍成"体积优化"是算错账，v0.7.0 改回默认开启 |
 
-极限体积构建：`cargo build --release --no-default-features`（约 8.66 MiB）。
+极限体积构建：`cargo build --release --no-default-features --features desktop`（约 8.66 MiB）。
 体积取舍的完整推导见 [ADR-0007](docs/adr/0007-v0.6-scope.md) 判决五与 [CHANGELOG](CHANGELOG.md) 的 v0.7.0。
+
+与 GUI 依赖分离的共享库可独立验收：`cargo test --locked --lib --no-default-features`。
+共享库仍保留配置与统计的文件读写 API，不是无 I/O 的纯逻辑库。
+此命令测试调度、配置、统计和翻译，不创建窗口或读取原生传感器，
+也不代表 Linux / macOS 桌面已经可用。三平台桌面适配仍需实现消息循环、
+单实例、空闲与全屏检测、自启动、配置路径和字体选择，并进行原生冒烟测试。
 
 ## 发布流程（维护者）
 

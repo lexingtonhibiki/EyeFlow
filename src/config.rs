@@ -865,19 +865,19 @@ global_mute_hotkey = "Ctrl+Shift+E"
             let orig = crate::tr::language();
             set_language(Lang::EnUs);
 
-            let two_hours = crate::ui::human_duration(Duration::from_secs(7200));
+            let two_hours = crate::duration_format::human_duration(Duration::from_secs(7200));
             assert!(
                 !two_hours.contains("0 min"),
                 "英文 2 小时输出成 {two_hours:?} —— 必须有一条 m > 0 的分支（ADR-0008 风险 3）"
             );
-            let two_h_five = crate::ui::human_duration(Duration::from_secs(7500));
+            let two_h_five = crate::duration_format::human_duration(Duration::from_secs(7500));
             assert!(
                 two_h_five.contains("2") && two_h_five.contains("5"),
                 "英文 2 小时 5 分输出成 {two_h_five:?} —— 数字丢了"
             );
 
             set_language(Lang::ZhCn);
-            let zh = crate::ui::human_duration(Duration::from_secs(7200));
+            let zh = crate::duration_format::human_duration(Duration::from_secs(7200));
             assert!(
                 zh.contains("小时"),
                 "中文模式输出成 {zh:?} —— 切语言后 human_duration 走的是英文分支"

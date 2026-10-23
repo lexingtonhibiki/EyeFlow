@@ -6,6 +6,7 @@ mod autostart;
 mod config;
 mod core;
 mod detector;
+mod duration_format;
 mod event;
 // 与 build.rs / examples 共享；ICO 编码部分在主程序里不会用到
 mod i18n;

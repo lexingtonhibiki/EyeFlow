@@ -198,7 +198,7 @@ cargo build --release
 :: artifact: target\release\eyeflow.exe (about 10 MB, update check included)
 
 :: smallest possible build: drop the update check's TLS stack (about -1.1 MB)
-cargo build --release --no-default-features
+cargo build --release --no-default-features --features desktop
 
 :: one-shot build + package (writes dist\EyeFlow-<version>-Setup.exe when NSIS is found)
 build-release.cmd
@@ -457,7 +457,7 @@ cargo build --release
 :: 产物：target\release\eyeflow.exe（约 10 MB，含更新检查）
 
 :: 极限体积构建：去掉更新检查的 TLS 栈（约 -1.1 MB）
-cargo build --release --no-default-features
+cargo build --release --no-default-features --features desktop
 
 :: 一键构建 + 打包（检测到 NSIS 时输出 dist\EyeFlow-<版本>-Setup.exe）
 build-release.cmd

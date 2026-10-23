@@ -11,21 +11,46 @@ keywords = ["eye-care", "break-reminder", "20-20-20", "tray", "windows"]
 categories = ["gui"]
 build = "build.rs"
 
+[[bin]]
+name = "eyeflow"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[[example]]
+name = "eframe_min"
+required-features = ["desktop"]
+
+[[example]]
+name = "right_edge_gate"
+required-features = ["desktop"]
+
+[[example]]
+name = "row_width_probe"
+required-features = ["desktop"]
+
+[[test]]
+name = "layout_width"
+required-features = ["desktop"]
+
+[[test]]
+name = "i18n_glyphs"
+required-features = ["desktop"]
+
 [dependencies]
 # GUI — glow backend keeps the binary small; wgpu (the 0.34+ default) is unnecessary here
-eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
-egui = "0.36"
+eframe = { optional = true, version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+egui = { version = "0.36", optional = true }
 
 # System tray + global hotkey (both must be created on the thread that runs the Win32 message loop)
-tray-icon = "0.24"
-global-hotkey = "0.8"
+tray-icon = { version = "0.24", optional = true }
+global-hotkey = { version = "0.8", optional = true }
 
 # Audio — synthesized cues plus decoders for user-supplied files (wav / mp3 / ogg / flac / m4a)
-rodio = { version = "0.22", default-features = false, features = ["playback", "wav", "mp3", "vorbis", "flac", "mp4"] }
+rodio = { optional = true, version = "0.22", default-features = false, features = ["playback", "wav", "mp3", "vorbis", "flac", "mp4"] }
 
 # Native file dialogs (custom cue / strict-mode wallpaper) and image decoding for the wallpaper
-rfd = "0.17"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
+rfd = { version = "0.17", optional = true }
+image = { optional = true, version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
 
 # 可选的更新检查（`update-check` feature）——对 GitHub Releases API 的只读查询。
 #
@@ -37,12 +62,12 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # 而默认关掉 feature 意味着**下载版里那个开关根本不存在**（用户看到的是一行「此构建
 # 未包含在线更新检查」）——把一个自己都解释不清的空缺当成"体积优化"是错的。
 # 代价就是那 1.1 MB，仍然只有 Electron 类竞品的十分之一。
-# 想要极限体积的构建：`cargo build --release --no-default-features`（回到 ~8.66 MB）。
+# 想要极限体积的构建：`cargo build --release --no-default-features --features desktop`（回到 ~8.66 MB）。
 ureq = { version = "3", optional = true }
 serde_json = { version = "1", optional = true }
 
 # Windows API
-windows = { version = "0.62", features = [
+windows = { optional = true, version = "0.62", features = [
     "Win32_Foundation",
     # GetUserDefaultLocaleName：首次运行时决定界面语言的初值（ADR-0008）
     "Win32_Globalization",
@@ -61,14 +86,18 @@ toml = "1"
 
 # Utilities
 log = "0.4"
-env_logger = "0.11"
+env_logger = { version = "0.11", optional = true }
 chrono = "0.4"
 rand = "0.9"
 
 [features]
 # 在线更新检查所需的 TLS + JSON 栈，**v0.7.0 起默认开启**（理由见上方 ureq 注释）。
-# 想要最小体积：cargo build --release --no-default-features
-default = ["update-check"]
+# 想要最小体积：cargo build --release --no-default-features --features desktop
+default = ["desktop", "update-check"]
+# Keep native dependencies out of shared-core builds. This does not yet provide
+# non-Windows desktop backends; the executable still requires the Windows layer.
+desktop = ["dep:eframe", "dep:egui", "dep:tray-icon", "dep:global-hotkey",
+    "dep:rodio", "dep:rfd", "dep:image", "dep:windows", "dep:env_logger"]
 update-check = ["dep:ureq", "dep:serde_json"]
 
 [build-dependencies]
