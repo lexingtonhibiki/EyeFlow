@@ -11,8 +11,9 @@ System Noto CJK fonts are a package dependency, not bundled font copies.
 
 macOS: separate Apple Silicon (arm64) and Intel (x86_64) builds. Automatic
 reminders are currently paused because lock/fullscreen state is unavailable.
-Manual rest/settings/quit still require native GUI validation. System PingFang
-is read on the user's Mac, never copied into this app or disk image.
+Current CI previews require macOS 15.0 or newer. Manual rest/settings/quit
+still require native GUI validation. Installed system CJK fonts are read on
+the user's Mac, never copied into this app or disk image.
 The app/DMG is NOT Developer ID signed or notarized. A compiler-generated
 ad-hoc binary signature is not Developer ID signing. Gatekeeper may prevent
 launch. Do not disable system security to install this preview.

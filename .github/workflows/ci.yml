@@ -48,7 +48,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libasound2-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev fonts-noto-cjk xvfb xdotool dpkg-dev desktop-file-utils
+          sudo apt-get install -y libgtk-3-dev libasound2-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev fonts-noto-cjk xvfb xdotool openbox wmctrl libgl1-mesa-dri libgl1 libegl1 dpkg-dev desktop-file-utils
       - name: Inspect installed macOS CJK font families
         if: runner.os == 'macOS'
         shell: bash
@@ -95,6 +95,10 @@ jobs:
           else
             cargo build --locked --release
           fi
+      - name: Verify native visible windows and Linux popup exit
+        # Linux owns a private Xvfb/WM; macOS checks startup windows only.
+        # macOS SIGTERM is cleanup, never evidence of an ordinary app exit.
+        run: python3 scripts/test-desktop-smoke.py target/release/eyeflow
       - name: Assemble native preview package (not a release)
         shell: bash
         run: |
