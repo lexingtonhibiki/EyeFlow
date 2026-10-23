@@ -66,20 +66,6 @@ image = { optional = true, version = "0.25", default-features = false, features 
 ureq = { version = "3", optional = true }
 serde_json = { version = "1", optional = true }
 
-# Windows API
-windows = { optional = true, version = "0.62", features = [
-    "Win32_Foundation",
-    # GetUserDefaultLocaleName：首次运行时决定界面语言的初值（ADR-0008）
-    "Win32_Globalization",
-    "Win32_Graphics_Gdi",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Registry",
-    "Win32_System_Threading",
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_UI_Shell",
-] }
-
 # Config / persistence
 serde = { version = "1", features = ["derive"] }
 toml = "1"
@@ -109,6 +95,21 @@ zbus = { version = "5.19", features = ["blocking-api"], optional = true }
 sys-locale = { version = "0.3", optional = true }
 fs2 = { version = "0.4", optional = true }
 font-kit = { version = "0.14", optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows API
+windows = { optional = true, version = "0.62", features = [
+    "Win32_Foundation",
+    # GetUserDefaultLocaleName：首次运行时决定界面语言的初值（ADR-0008）
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+] }
 
 [build-dependencies]
 winresource = "0.1"
