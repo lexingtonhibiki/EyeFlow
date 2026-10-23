@@ -49,7 +49,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libgtk-3-dev libasound2-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev fonts-noto-cjk xvfb xdotool openbox wmctrl libgl1-mesa-dri libgl1 libegl1 dpkg-dev desktop-file-utils
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libgtk-3-dev libasound2-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev fonts-noto-cjk xvfb xdotool openbox wmctrl libgl1-mesa-dri libgl1 libegl1 libxkbcommon-x11-0 dpkg-dev desktop-file-utils
       - name: Inspect installed macOS CJK font families
         if: runner.os == 'macOS'
         shell: bash
@@ -194,8 +194,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
-      # 带在线更新检查的构建：默认 feature 关掉了 TLS 栈，
-      # 这个 job 保证那条路径不会悄悄烂掉（见 ADR-0007 判决五）。
+      # update-check 已是默认 feature；保留显式 feature 构建，验证该调用方式兼容。
       - name: Build release binary (with update-check feature)
         run: cargo build --release --locked --features update-check
 

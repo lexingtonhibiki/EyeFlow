@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_ID = "io.github.lexingtonhibiki.eyeflow"
 RUNTIME = ("libgtk-3-0t64", "libasound2t64", "libayatana-appindicator3-1",
            "libxdo3", "libfontconfig1", "fonts-noto-cjk", "libgl1", "libegl1",
-           "libwayland-client0", "libxkbcommon0", "xdg-utils")
+           "libwayland-client0", "libxkbcommon0", "libxkbcommon-x11-0", "xdg-utils")
 
 
 def notice_for(target, root=ROOT):

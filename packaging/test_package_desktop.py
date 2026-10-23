@@ -26,6 +26,21 @@ class PackagingTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 PACKAGE.version_parts(value)
 
+    def test_linux_runtime_includes_dynamically_loaded_xkb_x11(self):
+        # xkbcommon-dl 0.4.2 first opens libxkbcommon-x11.so.0. It is
+        # runtime-loaded, so dpkg-shlibdeps alone cannot discover this need.
+        self.assertIn("libxkbcommon0", PACKAGE.RUNTIME)
+        self.assertIn("libxkbcommon-x11-0", PACKAGE.RUNTIME)
+        self.assertNotIn("libxkbcommon-x11-dev", PACKAGE.RUNTIME)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "fixture"
+            binary.write_bytes(b"NOT EXECUTABLE: dependency contract fixture")
+            PACKAGE.stage_linux(root / "stage", binary, "0.7.4", ", ".join(PACKAGE.RUNTIME))
+            control = (root / "stage/DEBIAN/control").read_text()
+            depends = next(line for line in control.splitlines() if line.startswith("Depends: "))
+            self.assertIn("libxkbcommon-x11-0", depends.removeprefix("Depends: ").split(", "))
+
     def test_plist_round_trip(self):
         result = plistlib.loads(plistlib.dumps(PACKAGE.plist("0.7.4-test.2", "11.0")))
         self.assertEqual(result["CFBundleShortVersionString"], "0.7.4")
