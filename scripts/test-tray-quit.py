@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -23,6 +24,8 @@ def main():
     args = parser.parse_args()
     if os.name != "nt":
         raise SystemExit("This test requires a Windows desktop session")
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     user = c.WinDLL("user32", use_last_error=True)
     callback_type = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
     user.EnumWindows.argtypes = [callback_type, w.LPARAM]
@@ -59,7 +62,7 @@ def main():
             if value:
                 return value
             time.sleep(0.02)
-        raise AssertionError("Windows UI did not reach expected state")
+        raise AssertionError(f"Windows UI timeout: exit={proc.poll()}, windows={windows(proc.pid)!r}")
 
     with tempfile.TemporaryDirectory(prefix="eyeflow-quit-") as temp:
         config = Path(temp) / "eyeflow"
@@ -88,8 +91,10 @@ def main():
                         item_id = user.GetMenuItemID(menu.value, pos)
                         break
                 assert item_id is not None, f"Menu item not found: {label}"
+                print(json.dumps({"command": label, "tray_hwnd": tray, "menu_item_id": item_id}), flush=True)
                 # End tracking, then deliver the real native command to its owner.
                 assert user.PostMessageW(tray, 0x001F, 0, 0)  # WM_CANCELMODE
+                wait_for(lambda: not any(x[1] == "#32768" and x[3] for x in windows(proc.pid)))
                 start = time.monotonic()
                 assert user.PostMessageW(tray, 0x0111, item_id, 0)  # WM_COMMAND
                 return start
@@ -108,12 +113,14 @@ def main():
             assert not windows(proc.pid), "Native windows survived process exit"
             print(json.dumps({"exit_seconds": elapsed, "windows_before": before, "exit_code": proc.returncode}))
         finally:
-            log = config / "eyeflow.log"
-            if log.exists():
-                print(log.read_text(encoding="utf-8", errors="replace"))
-            if proc.poll() is None:
-                proc.terminate()  # cleanup only; exceptions/timeouts still fail the test
-                proc.wait(timeout=5)
+            try:
+                if proc.poll() is None:
+                    proc.terminate()  # cleanup only; exceptions/timeouts still fail the test
+                    proc.wait(timeout=5)
+            finally:
+                log = config / "eyeflow.log"
+                if log.exists():
+                    print(log.read_text(encoding="utf-8", errors="replace"))
 
 
 if __name__ == "__main__":
