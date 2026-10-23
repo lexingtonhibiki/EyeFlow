@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "cargo_lock_sha256": "13c38e41b335416f1ff65c2bc25c4cb9ff868f3b892faeb0c2f3beac4f03c208",
+  "manifest_dependency_configuration_sha256": "7e071b1de3252cbc90214d33c175f78368d85e310f7e8e61ccd612ce59b6c265",
+  "feature_selection": {
+    "default_features": true,
+    "extra_features": []
+  },
+  "graph": "normal,no-proc-macro; target-filtered; 334 package-version union",
+  "targets": {
+    "x86_64-pc-windows-msvc": {
+      "file": "THIRD_PARTY_NOTICES.windows.txt",
+      "sha256": "7eff9088783cd28567a4e47c4d72c00bfb8166fda8f549db7499c6f7843ea392"
+    },
+    "aarch64-apple-darwin": {
+      "file": "THIRD_PARTY_NOTICES.aarch64-apple-darwin.txt",
+      "sha256": "5481414a113a0ccaaf7e08abcf6a25787b70c1917c46ca59a227dc814138da8a"
+    },
+    "x86_64-apple-darwin": {
+      "file": "THIRD_PARTY_NOTICES.x86_64-apple-darwin.txt",
+      "sha256": "681bcc96120dbab6c8ba256928b1af3f8ae8e4f1569a8f9af667abf7b5762cbc"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "file": "THIRD_PARTY_NOTICES.x86_64-unknown-linux-gnu.txt",
+      "sha256": "8c338de372b138c03883423b7d3361daf73c301c5a31aab569135db768c0ae15"
+    }
+  },
+  "license_dependency_audit_baseline_revision": "719bd5ef3ceec726f8f1eebfe57513d35a1ff4f4",
+  "configuration_reconciliation": "2026-10-23: added non-default desktop-smoke=[desktop], no dependencies changed; all four default normal,no-proc-macro trees exactly matched original audited trees (excluding root path line). Smoke-feature binaries are not distribution inputs."
+}

@@ -2,6 +2,7 @@
 """Assemble native test artifacts. Does not build, install, sign, or publish."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -18,6 +19,47 @@ BUNDLE_ID = "io.github.lexingtonhibiki.eyeflow"
 RUNTIME = ("libgtk-3-0t64", "libasound2t64", "libayatana-appindicator3-1",
            "libxdo3", "libfontconfig1", "fonts-noto-cjk", "libgl1", "libegl1",
            "libwayland-client0", "libxkbcommon0", "xdg-utils")
+
+
+def notice_for(target, root=ROOT):
+    """Fail closed if audited inputs or selected notice differ; not a legal verdict."""
+    directory = root / "packaging/notices"
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    if manifest["feature_selection"] != {"default_features": True, "extra_features": []}:
+        raise ValueError("Only the audited default-feature build is supported")
+    if hashlib.sha256((root / "Cargo.lock").read_bytes()).hexdigest() != manifest["cargo_lock_sha256"]:
+        raise ValueError("Cargo.lock changed: refresh and review target notices before packaging")
+    cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+    dependencies = {key: cargo.get(key, {}) for key in ("features", "dependencies", "build-dependencies", "target")}
+    digest = hashlib.sha256(json.dumps(dependencies, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if digest != manifest["manifest_dependency_configuration_sha256"]:
+        raise ValueError("Cargo dependency/features configuration changed: review notice coverage")
+    entry = manifest["targets"][target]
+    label = "windows" if target == "x86_64-pc-windows-msvc" else target
+    expected = f"THIRD_PARTY_NOTICES.{label}.txt"
+    if entry["file"] != expected:
+        raise ValueError("Notice filename must match the exact target, never a candidate file")
+    notice = directory / expected
+    if notice.is_symlink() or not notice.is_file():
+        raise ValueError(f"Missing regular target notice: {expected}")
+    if hashlib.sha256(notice.read_bytes()).hexdigest() != entry["sha256"]:
+        raise ValueError(f"Notice changed since review: {expected}")
+    return notice
+
+
+def build_info(version, target):
+    """Record the packaging checkout, never relabel the license audit as a build."""
+    manifest = json.loads((ROOT / "packaging/notices/manifest.json").read_text())
+    return json.dumps({
+        "version": version,
+        "target": target,
+        "package_checkout_revision": run("git", "-C", ROOT, "rev-parse", "HEAD"),
+        "package_checkout_tracked_files_dirty": bool(run("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no")),
+        "license_dependency_audit_baseline_revision": manifest["license_dependency_audit_baseline_revision"],
+        "cargo_lock_sha256": manifest["cargo_lock_sha256"],
+        "feature_selection": manifest["feature_selection"],
+        "provenance_requirement": "Input binary must be built with default features from this checkout; packaging alone cannot verify binary provenance.",
+    }, indent=2) + "\n"
 
 
 def version_parts(value):
@@ -58,11 +100,14 @@ def plist(version, minimum):
 
 
 def stage_linux(stage, binary, version, dependencies):
+    notice = notice_for("x86_64-unknown-linux-gnu")
     _, deb_version = version_parts(version)
     copy(binary, stage / "usr/bin/eyeflow", True)
     copy(ROOT / "assets/icon-preview.png", stage / "usr/share/icons/hicolor/256x256/apps/eyeflow.png")
     copy(ROOT / "packaging/eyeflow.desktop", stage / "usr/share/applications/eyeflow.desktop")
     copy(ROOT / "LICENSE", stage / "usr/share/doc/eyeflow/copyright")
+    copy(notice, stage / "usr/share/doc/eyeflow/THIRD_PARTY_NOTICES.txt")
+    write(stage / "usr/share/doc/eyeflow/BUILD_INFO.json", build_info(version, "x86_64-unknown-linux-gnu"))
     copy(ROOT / "packaging/PLATFORM-NOTES.txt", stage / "usr/share/doc/eyeflow/PLATFORM-NOTES.txt")
     size = sum(p.stat().st_size for p in (stage / "usr").rglob("*") if p.is_file())
     write(stage / "DEBIAN/control", f"""Package: eyeflow
@@ -119,10 +164,14 @@ def mac(stage, binary, version, output, arch, minimum):
         dependency = line.strip().split(" (", 1)[0]
         if not dependency.startswith(("/usr/lib/", "/System/Library/")):
             raise ValueError(f"Unbundled non-system dylib: {dependency}")
+    target = "aarch64-apple-darwin" if arch == "arm64" else "x86_64-apple-darwin"
+    notice = notice_for(target)
     app = stage / "EyeFlow.app"
     copy(binary, app / "Contents/MacOS/eyeflow", True)
     resources = app / "Contents/Resources"
     copy(ROOT / "LICENSE", resources / "LICENSE.txt")
+    copy(notice, resources / "THIRD_PARTY_NOTICES.txt")
+    write(resources / "BUILD_INFO.json", build_info(version, target))
     copy(ROOT / "packaging/PLATFORM-NOTES.txt", resources / "PLATFORM-NOTES.txt")
     with (app / "Contents/Info.plist").open("wb") as stream:
         plistlib.dump(plist(version, minimum), stream)
@@ -183,13 +232,21 @@ def publish(artifact, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("platform", choices=("linux", "macos"))
-    parser.add_argument("--binary", required=True, type=Path)
-    parser.add_argument("--version", required=True)
+    parser.add_argument("platform", nargs="?", choices=("linux", "macos"))
+    parser.add_argument("--binary", type=Path)
+    parser.add_argument("--version")
+    parser.add_argument("--check-notices", action="store_true", help="Validate all four audited target notices without building")
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     parser.add_argument("--arch", choices=("arm64", "x86_64"))
     parser.add_argument("--macos-min-version")
     args = parser.parse_args()
+    if args.check_notices:
+        for target in ("x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"):
+            notice_for(target)
+        print("All four target notices match audited lockfile and dependency/features configuration.")
+        return
+    if not args.platform or not args.binary or not args.version:
+        parser.error("Packaging requires platform, --binary and --version")
     version_parts(args.version)
     actual = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
     if args.version != actual:

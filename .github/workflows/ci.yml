@@ -45,10 +45,11 @@ jobs:
         shell: bash
         run: test "$(uname -m)" = "${{ matrix.arch }}"
       - name: Install Linux native development libraries
+        timeout-minutes: 10
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libasound2-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev fonts-noto-cjk xvfb xdotool openbox wmctrl libgl1-mesa-dri libgl1 libegl1 dpkg-dev desktop-file-utils
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libgtk-3-dev libasound2-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev fonts-noto-cjk xvfb xdotool openbox wmctrl libgl1-mesa-dri libgl1 libegl1 dpkg-dev desktop-file-utils
       - name: Inspect installed macOS CJK font families
         if: runner.os == 'macOS'
         shell: bash
@@ -99,6 +100,29 @@ jobs:
         # Linux owns a private Xvfb/WM; macOS checks startup windows only.
         # macOS SIGTERM is cleanup, never evidence of an ordinary app exit.
         run: python3 scripts/test-desktop-smoke.py target/release/eyeflow
+      - name: Verify packaging build excludes test control feature
+        shell: bash
+        run: |
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/eyeflow-default-metadata.json"
+          python3 - "$RUNNER_TEMP/eyeflow-default-metadata.json" <<'PYTHON'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          root = next(node for node in data["resolve"]["nodes"] if node["id"] == data["resolve"]["root"])
+          assert "desktop-smoke" not in root["features"], root["features"]
+          print("Default package features:", root["features"])
+          PYTHON
+          shasum -a 256 target/release/eyeflow > "$RUNNER_TEMP/eyeflow-production.sha256"
+      - name: Build isolated macOS lifecycle-test executable
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          MACOSX_DEPLOYMENT_TARGET=15.0 cargo test --locked --features desktop-smoke --target-dir target/desktop-smoke --bin eyeflow smoke_control::tests
+          MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --locked --release --features desktop-smoke --target-dir target/desktop-smoke
+          shasum -a 256 -c "$RUNNER_TEMP/eyeflow-production.sha256"
+      - name: Verify shared menu actions and normal macOS popup exit
+        if: runner.os == 'macOS'
+        # Private stdin in a separate test-feature binary, not a native mouse click.
+        run: python3 scripts/test-desktop-smoke.py target/desktop-smoke/release/eyeflow --stdin-control
       - name: Assemble native preview package (not a release)
         shell: bash
         run: |
@@ -174,6 +198,49 @@ jobs:
       # 这个 job 保证那条路径不会悄悄烂掉（见 ADR-0007 判决五）。
       - name: Build release binary (with update-check feature)
         run: cargo build --release --locked --features update-check
+
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify audited third-party notices
+        run: python scripts/package-desktop.py --check-notices
+      - name: Install official NSIS build tool
+        run: choco install nsis -y --no-progress
+      - name: Build and inspect Windows installer without installing
+        shell: pwsh
+        run: |
+          $v = python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DPRODUCT_VERSION=$v" installer/installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "NSIS build failed" }
+          $installer = "dist/EyeFlow-$v-Setup.exe"
+          $unpack = Join-Path $env:RUNNER_TEMP "eyeflow-nsis-inspection"
+          & 7z x $installer "-o$unpack" -y
+          if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed" }
+          $expected = @{
+            'eyeflow.exe' = 'target/release/eyeflow.exe';
+            'LICENSE.txt' = 'LICENSE';
+            'THIRD_PARTY_NOTICES.txt' = 'packaging/notices/THIRD_PARTY_NOTICES.windows.txt'
+          }
+          foreach ($name in $expected.Keys) {
+            $files = @(Get-ChildItem $unpack -Recurse -File -Filter $name)
+            if ($files.Count -ne 1) { throw "Expected exactly one $name in installer" }
+            if ((Get-FileHash $files[0].FullName).Hash -ne (Get-FileHash $expected[$name]).Hash) {
+              throw "Installer payload mismatch: $name"
+            }
+          }
+          Get-ChildItem $unpack -Recurse -File | Select-Object FullName, Length
+          (Get-FileHash $installer -Algorithm SHA256).Hash | Out-File "$installer.sha256" -Encoding ascii
+      - name: Retain Windows installer preview (no Release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: eyeflow-preview-windows-x86_64
+          path: |
+            dist/*-Setup.exe
+            dist/*-Setup.exe.sha256
+          retention-days: 7
+          if-no-files-found: error
 
   msrv:
     name: MSRV 1.95
