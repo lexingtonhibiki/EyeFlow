@@ -10,6 +10,7 @@ import ctypes as c
 from ctypes import wintypes as w
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -21,6 +22,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
     parser.add_argument("--max-exit-seconds", type=float, default=2.0)
+    parser.add_argument("--expected-renderer", help="Require this renderer in the real application GL log")
     args = parser.parse_args()
     if os.name != "nt":
         raise SystemExit("This test requires a Windows desktop session")
@@ -106,6 +108,12 @@ def main():
             before = windows(proc.pid)
             assert any(x[3] and x[2] == "EyeFlow Settings" for x in before), before
             assert any(x[3] and x[2].startswith("EyeFlow Reminder") for x in before), before
+            if args.expected_renderer:
+                log_text = (config / "eyeflow.log").read_text(encoding="utf-8", errors="replace")
+                renderers = re.findall(r"opengl renderer: ([^\r\n]+)", log_text)
+                assert renderers, "No OpenGL renderer evidence in application log"
+                assert all(args.expected_renderer.lower() in name.lower() for name in renderers), renderers
+                print(json.dumps({"opengl_renderers": renderers}), flush=True)
             start = command("Quit")
             proc.wait(timeout=args.max_exit_seconds)
             elapsed = time.monotonic() - start

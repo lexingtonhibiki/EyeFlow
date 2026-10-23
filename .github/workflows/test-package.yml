@@ -39,9 +39,43 @@ jobs:
         id: build
         run: cargo build --release --locked
 
+      # Hosted Windows runners expose only GDI Generic OpenGL 1.1. Keep Mesa
+      # and its dependencies in a disposable test prefix, never in the package.
+      - name: Prepare private software OpenGL for native test
+        shell: pwsh
+        env:
+          CONDA_PKGS_DIRS: ${{ runner.temp }}/eyeflow-conda-cache
+        run: |
+          $conda = Join-Path $env:CONDA "Scripts/conda.exe"
+          if (-not (Test-Path $conda)) { throw "Runner's preinstalled Conda is missing" }
+          $prefix = Join-Path $env:RUNNER_TEMP "eyeflow-mesa"
+          & $conda create --yes --no-default-packages --override-channels --channel https://conda.anaconda.org/conda-forge --prefix $prefix "mesa-llvmpipe=26.2.5=hca91ad9_0"
+          if ($LASTEXITCODE -ne 0) { throw "Private Mesa dependency installation failed" }
+          $package = "mesa-llvmpipe-26.2.5-hca91ad9_0"
+          $expectedHash = "320e4d51ab471ac19e38c4104d4dd6ac1efcdda655b45a98830db6be39cb614f"
+          $archive = Join-Path $env:CONDA_PKGS_DIRS "$package.conda"
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) {
+            throw "Mesa package archive SHA256 mismatch"
+          }
+          $record = Get-Content (Join-Path $prefix "conda-meta/$package.json") -Raw | ConvertFrom-Json
+          if ($record.sha256 -ne $expectedHash) { throw "Installed Mesa metadata SHA256 mismatch" }
+          foreach ($dll in @("opengl32.dll", "libgallium_wgl.dll")) {
+            if (-not (Test-Path (Join-Path $prefix "Library/bin/$dll"))) { throw "Missing Mesa DLL: $dll" }
+          }
+          & $conda list --prefix $prefix --explicit
+          if ($LASTEXITCODE -ne 0) { throw "Could not record resolved renderer dependencies" }
+          Copy-Item target/release/eyeflow.exe (Join-Path $prefix "Library/bin/eyeflow.exe")
+          if ((Get-FileHash target/release/eyeflow.exe).Hash -ne (Get-FileHash (Join-Path $prefix "Library/bin/eyeflow.exe")).Hash) {
+            throw "Private test executable differs from built executable"
+          }
+
       - name: Native tray quit with reminder and settings open
         id: native_quit
-        run: python scripts/test-tray-quit.py target/release/eyeflow.exe
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+          LIBGL_ALWAYS_SOFTWARE: "true"
+        run: python scripts/test-tray-quit.py "$env:RUNNER_TEMP/eyeflow-mesa/Library/bin/eyeflow.exe" --expected-renderer llvmpipe
 
       # 守卫:installer.nsi 必须带 UTF-8 BOM。丢了 BOM 时 makensis 在英文 CI
       # 上(ACP=1252)不会报错,而是把中文按 CP1252 逐字节解成乱码写进安装包——
