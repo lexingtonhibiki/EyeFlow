@@ -38,10 +38,7 @@ cargo clippy --bins -- -D warnings
 cargo test
 ```
 
-- **推前请再跑一遍 GNU 工具链**。CI 只跑 `windows-latest`（MSVC），不加 GNU 矩阵是有意为之
-  （ADR-0007 判决七：`lessons.md` §3.3 那次事故的教训是「写显式断言」不是「矩阵翻倍」，
-  为一个已根因消除的 bug 类别付永久 CI 成本是错配）。本机默认工具链就是 GNU，成本近零：
-
+- **涉及 Windows 的改动，推前请再跑一遍 GNU 工具链**。原生 CI 已覆盖 Windows、Ubuntu 24.04 和 macOS 两种架构，并独立检查共享核心与 Windows MSRV；GUI、音频、桌面会话的能力与验收边界见 [平台说明](docs/portability-notes.md)。
 ```bat
 cargo +stable-x86_64-pc-windows-gnu test
 ```
@@ -56,7 +53,7 @@ cargo +stable-x86_64-pc-windows-gnu test
 
 | feature | 默认 | 作用 |
 |---|---|---|
-| `desktop` | **开** | 编译原生桌面程序及 GUI / 音频 / 托盘依赖；当前桌面后端仍仅支持 Windows |
+| `desktop` | **开** | 编译原生桌面程序及 GUI / 音频 / 托盘依赖；桌面后端包括 Windows、Linux 与 macOS，具体能力并不完全对等 |
 | `update-check` | **开**（v0.7.0 起） | 编译在线更新检查所需的 TLS + JSON 栈（`ureq` / `rustls` / `ring` / `serde_json`），实测 +1,139,200 B。v0.6 默认关掉它是为了体积，但那样下载版里「关于」页的更新开关根本不存在——把一个用户用得上的功能砍成"体积优化"是算错账，v0.7.0 改回默认开启 |
 
 极限体积构建：`cargo build --release --no-default-features --features desktop`（约 8.66 MiB）。

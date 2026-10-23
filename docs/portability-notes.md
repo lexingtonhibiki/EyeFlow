@@ -1,70 +1,43 @@
-# 跨平台移植与内存/维护成本评估
+# 三桌面平台：共享核心与能力边界
 
-> 2026-09-08 · 回答三个问题:①移植其他平台,性能/内存能不能更小?②会不会更容易维护?③手头的 Qt 6.9 与 exe 压缩工具该不该用上?
+> 更新于 2026-10-23。v0.7.4 正式 Release 尚未创建；这是当前候选的实现范围，不是全平台真机验收声明。
 
-## 1. 现状:这套代码其实已经"大半跨平台"
+## 架构
 
-| 模块 | 占比 | 跨平台情况 |
+提醒调度、配置模型、统计规则和本地化共享 Rust 核心；`cargo test --locked --lib --no-default-features` 不需要桌面依赖。配置与统计模块仍有文件 I/O，不能称为完全纯函数核心。
+
+平台层提供带有效期的观测，而不是把检测失败转换成“用户正在活动”或“可以打扰”。未知、失败、权限不足、过期与未来时间戳默认暂停自动提醒，取消待发预告；恢复后不补发积压提醒。手动休息不依赖完整的自动监测能力。
+
+GUI、音频和托盘复用 eframe/egui、rodio、tray-icon，但窗口生命周期、桌面协议、权限及运行库不同。Linux/macOS 保持可见主窗口入口，不把托盘存在作为唯一操作途径。Windows 历史内存数据不代表其他平台；本文不对未实测平台给出内存或性能保证。
+
+## 平台矩阵
+
+| 平台 | 发布目标 | 自动感知与限制 |
 |---|---|---|
-| `core.rs` 调度核心 / `stats.rs` / `tips.rs` / `config.rs` | ~45% | **纯 Rust,零平台依赖**,直接复用 |
-| `audio.rs`(rodio) | ~8% | rodio 后端 = WASAPI / CoreAudio / ALSA,自动适配 |
-| `tray.rs`(tray-icon) / 热键(global-hotkey) | ~10% | 两库都官方支持 Win / macOS / Linux(Linux 托盘需 libappindicator 运行库) |
-| `app.rs` + `ui.rs`(eframe/egui) | ~25% | eframe 支持 Win / macOS / Linux(X11);`apply_noactivate` 等焦点打磨需要 `#[cfg(windows)]` |
-| `detector.rs` + `autostart.rs` + 单实例 | ~12% | **唯一的硬平台耦合**(Win32),需要逐平台重写 |
+| Windows | Windows 10/11 x64，NSIS 安装版及便携 ZIP | 现有 Win32 空闲/全屏/可打扰检测；失败仍作为未知处理。支持可选自启与全局热键。 |
+| Linux X11 | Ubuntu 24.04 amd64 DEB，GNOME/KDE X11 增强检测 | XScreenSaver 空闲、EWMH 全屏、会话锁屏观测；全部必要观测有效才自动提醒。桌面服务缺失或会话不匹配时暂停。 |
+| Linux Wayland | 基础手动界面 | 自动空闲检测与原生 Wayland 全局热键尚未实现；XWayland 不能当作完整桌面观测。 |
+| macOS | macOS 15+，Apple Silicon arm64 / Intel x86_64 独立 DMG | CoreGraphics 真实空闲数据；可靠锁屏/全屏检测明确标为不支持，默认暂停自动提醒。 |
 
-所以移植的正确姿势不是换框架,而是把 `detector.rs` 抽象成 `PlatformSensors` trait(空闲秒数 / 前台全屏 / 可打扰性三个方法),再逐平台实现:
+Linux/macOS 自启尚未实现，界面禁用对应选项；不会静默安装服务或扩大系统权限。
 
-| 平台 | 空闲 | 全屏/可打扰 | 预计工作量 |
-|---|---|---|---|
-| macOS | `CGEventSource.secondsSinceLastEventType` | `CGWindowListCopyWindowInfo`(层级 + 边界)+ NSWorkspace | 1~2 天 |
-| Linux/X11 | XScreenSaver 扩展 / `org.freedesktop.ScreenSaver` | EWMH `_NET_WM_STATE_FULLSCREEN` | 2~3 天 |
-| Linux/Wayland | 组合器相关,需 portal | 无统一协议,逐合成器适配 | 数天起,最难 |
+## macOS 显式兼容提醒
 
-**结论:继续用 Rust/egui 这条线移植,是工作量最小、维护面最小的路径**——一套语言、一套 UI 工具包、一份 27 个测试的核心逻辑;换框架等于把已经验证的东西全部重写一遍。
+`compatibility_reminders` 默认关闭。用户明确接受“无法保证锁屏/全屏时不打扰”后，可开启兼容提醒，以真实、有效的空闲数据驱动共享调度。
 
-## 2. 内存还能不能更小?
+此选项只放宽明确为 `Unsupported` 的 macOS 锁屏/全屏能力，不绕过 `Unavailable`、`Failed`、`PermissionRequired`、过期或无效空闲数据。无 GUI 会话仍暂停；也不能让 Wayland 获得尚不存在的空闲能力。切换模式取消待发预告并重置间隔，保留手动休息，避免对同一次离席重复计入自然休息。
 
-先看清 200 MB UI 会话的构成(本机 NVIDIA 实测):
+## 分发、字体与安全
 
-| 成分 | 量级 | 能否省 |
-|---|---|---|
-| OpenGL 上下文 + 显卡驱动堆 | ~120~150 MB | **换掉 GL 才能省**(见下) |
-| 中文字体(msyh.ttc 整包读入) | ~20 MB | 可子集化到常用字形(~1~2 MB),省 ~18 MB |
-| egui 默认字体 + 图集 | ~5~10 MB | 可关 default_fonts / 精简 |
-| 常驻部分(托盘 + 音频 + 线程) | **2.5 MB 私有 / 16 MB 工作集** | 已接近 Rust 进程下限 |
+- Windows 未签名；macOS 未做 Developer ID 签名或公证，ad-hoc 链接签名不等于发行者身份。系统可能阻止运行，不提供关闭安全保护的指引。
+- Linux 使用发行版 Noto CJK 依赖；macOS 从用户已安装的 CJK 字体中选择。系统字体只读取、不复制入包。字体名称存在不保证对应字体文件可读取，实际选择需检查字形覆盖。
+- egui 默认内嵌字体确实随二进制分发，对应许可证与声明已纳入目标平台 notices，不能与系统字体“不打包”混淆。
+- 当前依赖/声明技术审核已完成；这不构成法律保证，也不能替代后续依赖变更后的重新核验。
 
-按收益排序的做法:
+## 已有证据与剩余验收
 
-1. **浮窗 / 休息面板改 Win32 自绘(GDI/Direct2D)**——已列入 README Roadmap。面板只有文字 + 进度 + 三个按钮,自绘约 300~400 行,可把 UI 会话从 ~200 MB 压到 ~30 MB 且无驱动残留;代价是 Windows 专有、少一套声明式 UI。
-2. **字体子集化**(fonttools/pyftsubset 预生成 `assets/font-subset.ttf` 提交进仓库):省 ~18 MB,半小时工作量,跨平台同样受益。
-3. 保持"按需会话"架构不变——这是空闲 16 MB 的根本,别动。
+原生构建、单元测试、字形检查与 DEB/两种 DMG 打包曾在 [CI 39913488232](https://github.com/lexingtonhibiki/EyeFlow/actions/runs/39913488232) 通过。Linux 的隔离 Xvfb 空闲增长/输入重置检查不是 GNOME/KDE 全桌面锁屏验收。
 
-跨平台角度:macOS/Linux 的 GL 驱动堆通常比 NVIDIA/Windows 小(UI 会话约 60~100 MB),而常驻部分一样是 16 MB 级——**"按需会话"这个架构本身移植过去,就已经是各平台的省内存形态**。
+[CI 39914871161](https://github.com/lexingtonhibiki/EyeFlow/actions/runs/39914871161) 的两个 macOS 架构完成生产二进制可见窗口启动检查；这不等于正常退出、真实音频或所有界面交互通过。Linux 该次任务停留在依赖安装阶段，未获得 GUI 验收结果，不能计为 GUI 通过。
 
-## 3. Qt 6.9 值不值得换?
-
-诚实对比(针对 EyeFlow 这种"后台常驻 + 罕见小窗口"形态):
-
-| | 现方案(Rust + egui,按需会话) | Qt 6.9 重写(C++/Widgets 或 QML) |
-|---|---|---|
-| 空闲常驻 | **16 MB**(无窗口时零 GUI 依赖) | Qt 库从进程启动就得加载(QGuiApplication/QSystemTrayIcon),**~40~80 MB 起步**,做不出"无 UI 时零 GUI" |
-| UI 会话 | ~200 MB(GL)/ 自绘后 ~30 MB | Widgets ~50~90 MB;QML 走 RHI→D3D,同样是 GPU 上下文 |
-| 包体 | exe 7 MB | exe 20~40 MB(动态链接还需带 Qt DLL 或静态链增大) |
-| 跨平台集成 | tray-icon/global-hotkey 已覆盖,Wayland 是短板 | **Qt 的强项**:QSystemTrayIcon、QScreen、D-Bus/portal 绑定成熟,Linux 桌面体验更稳 |
-| 维护 | 单语言单工具链,27 个测试护住核心逻辑;代码量 ~3.5k 行 | 你熟 Qt 是加分项,但 C++ 内存/生命周期手工管理,且全部逻辑要重写移植 |
-| 迁移成本 | —(已是现状) | 全量重写;核心逻辑可移植但 UI 全部重来 |
-
-**结论:不建议为"省内存/易维护"换 Qt**——对这个形态 Qt 只会让空闲内存更高、包体更大。Qt 真正值得上的时机是:产品要长出"完整的桌面主窗口"(统计图表、列表、复杂表单),或你明确想统一到 C++/Qt 技术栈、且愿意接受常驻内存换开发效率。折中方案(Rust 核心 + cxx-qt 绑定 Qt UI)会同时引入两套工具链的复杂度,对这个体量是负资产。
-
-## 4. exe 压缩工具(UPX 等):不建议
-
-- **杀软误报**是主要代价:加壳的未签名 exe 是 Defender / SmartScreen 启发式的重点关照对象, winget 提交也会受影响;一旦误报,清理成本远高于 4 MB。
-- **不省内存**:UPX 是自解压,运行时解包反而抬高私有内存。
-- 安装包已经由 NSIS LZMA 压到 2.8 MB(源 exe 7.2 MB),收益只剩便携版那几 MB。
-- 若坚持要更小的便携 exe:先做字体子集化 + 关 `default_fonts`(预计 ~5 MB),这比加壳安全得多。
-
-## 5. 建议的路线
-
-1. 短期(Windows 打磨):字体子集化 → 浮窗 Win32 自绘(把 UI 会话压到 ~30 MB)。
-2. 跨平台:抽 `PlatformSensors` trait → macOS 实现 → Linux/X11;发布以 GitHub Actions matrix 一并出包。
-3. Qt 不引入;UPX 不使用。
+新兼容设置与测试专用窗口控制链的验收仍需核对最新 CI。Windows 早期云端双窗口托盘退出曾测得 0.187 秒、正常退出且无残留窗口，但使用软件 OpenGL 且关闭音频，不代表用户硬件。用户确认过音频设备拔插后恢复声音，未确认后续退出修复包。正式发布前以[发布记录](releases/v0.7.4.md)中的最终提交与验收结果为准。

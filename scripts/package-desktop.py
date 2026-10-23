@@ -119,8 +119,8 @@ Priority: optional
 Installed-Size: {(size + 1023) // 1024}
 Depends: {dependencies}
 Homepage: https://github.com/lexingtonhibiki/EyeFlow
-Description: Context-aware eye-care break reminder (platform preview)
- Ubuntu 24.04 amd64 preview; native capability validation remains required.
+Description: Context-aware eye-care break reminder
+ Desktop eye-care reminders for Ubuntu 24.04 amd64.
  See /usr/share/doc/eyeflow/PLATFORM-NOTES.txt for limitations.
 """)
 

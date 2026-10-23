@@ -5,93 +5,310 @@ on:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    runs-on: windows-latest
+  build:
+    name: Release build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            arch: x86_64
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            arch: x86_64
+          - os: macos-15
+            target: aarch64-apple-darwin
+            arch: arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Verify tag matches Cargo.toml version
-        id: ver
-        shell: pwsh
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify exact tag, checkout, version and release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
-          $tag = "${{ github.ref_name }}" -replace '^v', ''
-          $manifest = (Get-Content Cargo.toml -Raw) -match '(?m)^version\s*=\s*"([^"]+)"'
-          $cargoVer = $Matches[1]
-          if ($tag -ne $cargoVer) {
-            throw "tag v$tag != Cargo.toml $cargoVer"
-          }
-          "version=$tag" >> $env:GITHUB_OUTPUT
-
-      - name: Build release binary
-        run: cargo build --release --locked
-
-      # 守卫:installer.nsi 必须带 UTF-8 BOM。丢了 BOM 时 makensis 在英文 CI
-      # 上(ACP=1252)不会报错,而是把中文按 CP1252 逐字节解成乱码写进安装包——
-      # v0.7.0/v0.7.1 的乱码安装包就是这么发出去的。这里按字节断言,失败即拦住发版。
-      - name: Check installer BOM (UTF-8)
-        shell: pwsh
+          python - <<'PY'
+          import os, pathlib, re, subprocess, tomllib
+          tag = os.environ['RELEASE_TAG']
+          assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag), tag
+          version = tomllib.loads(pathlib.Path('Cargo.toml').read_text(encoding='utf-8'))['package']['version']
+          assert tag == 'v' + version, (tag, version)
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          tagged = subprocess.check_output(['git', 'rev-parse', tag + '^{commit}'], text=True).strip()
+          assert head == tagged == os.environ['RELEASE_SHA'], (head, tagged)
+          notes = pathlib.Path('docs/releases') / (tag + '.md')
+          assert notes.is_file(), notes
+          note_text = notes.read_text(encoding='utf-8')
+          assert f'<!-- release-ready: {tag} -->' in note_text, 'Release notes not approved for this tag'
+          assert '- [ ]' not in note_text, 'Release notes contain unfinished acceptance items'
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as out:
+              out.write('RELEASE_VERSION=' + version + '\n')
+          PY
+      - name: Install Linux development and package tools
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
-          $bytes = [System.IO.File]::ReadAllBytes("installer/installer.nsi")
-          if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
-            throw "installer/installer.nsi 缺少 UTF-8 BOM —— 安装界面会乱码。请在文件开头写回 EF BB BF。"
-          }
-          "installer.nsi UTF-8 BOM OK"
-
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libgtk-3-dev libasound2-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev fonts-noto-cjk dpkg-dev desktop-file-utils
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify native target and default features
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          rustc -vV
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/metadata.json"
+          python - <<'PY'
+          import json, os, pathlib, subprocess
+          info = subprocess.check_output(['rustc', '-vV'], text=True)
+          assert 'host: ' + os.environ['EXPECTED_TARGET'] in info
+          data = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'metadata.json').read_text(encoding='utf-8'))
+          root = next(n for n in data['resolve']['nodes'] if n['id'] == data['resolve']['root'])
+          assert 'desktop-smoke' not in root['features'], root['features']
+          package = next(p for p in data['packages'] if p['id'] == root['id'])
+          features = package['features']
+          expected, pending = set(), ['default']
+          while pending:
+              feature = pending.pop()
+              if feature in expected:
+                  continue
+              expected.add(feature)
+              pending.extend(f for f in features.get(feature, []) if f in features)
+          assert set(root['features']) == expected, (root['features'], sorted(expected))
+          print('Production default features:', root['features'])
+          PY
+          python scripts/package-desktop.py --check-notices
+      - name: Check formatting, production code and unit contracts
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --lib --bins -- -D warnings
+          cargo test --locked
+      - name: Test POSIX package assembly contracts
+        if: runner.os != 'Windows'
+        run: python -m unittest discover -s packaging -p 'test_*.py' -v
+      - name: Build production binary with default features only
+        # Default update-check remains enabled; desktop-smoke is never built here.
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --release --locked
+          else
+            cargo build --release --locked
+          fi
+      - name: Package Linux or macOS
+        if: runner.os != 'Windows'
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            python scripts/package-desktop.py macos --binary target/release/eyeflow --version "$RELEASE_VERSION" --arch "$PACKAGE_ARCH" --macos-min-version 15.0
+          else
+            python scripts/package-desktop.py linux --binary target/release/eyeflow --version "$RELEASE_VERSION"
+            test "$(dpkg-deb -f "dist/eyeflow_${RELEASE_VERSION}_amd64.deb" Version)" = "$RELEASE_VERSION"
+            test "$(dpkg-deb -f "dist/eyeflow_${RELEASE_VERSION}_amd64.deb" Architecture)" = amd64
+          fi
+      - name: Inspect native package payload without installing
+        if: runner.os != 'Windows'
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
+        run: |
+          python - <<'PYTHON'
+          import os, pathlib, plistlib, subprocess, tempfile
+          version, arch = os.environ['RELEASE_VERSION'], os.environ['PACKAGE_ARCH']
+          def same(left, right):
+              assert pathlib.Path(left).read_bytes() == pathlib.Path(right).read_bytes(), (left, right)
+          with tempfile.TemporaryDirectory() as tmp:
+              root = pathlib.Path(tmp)
+              if os.environ['RUNNER_OS'] == 'Linux':
+                  subprocess.run(['dpkg-deb', '--extract', f'dist/eyeflow_{version}_amd64.deb', tmp], check=True)
+                  same(root / 'usr/bin/eyeflow', 'target/release/eyeflow')
+                  doc = root / 'usr/share/doc/eyeflow'
+                  same(doc / 'copyright', 'LICENSE')
+                  same(doc / 'THIRD_PARTY_NOTICES.txt', 'packaging/notices/THIRD_PARTY_NOTICES.x86_64-unknown-linux-gnu.txt')
+              else:
+                  mount = root / 'mounted'
+                  mount.mkdir()
+                  subprocess.run(['hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', str(mount), f'dist/EyeFlow-{version}-macos-{arch}-unsigned.dmg'], check=True)
+                  try:
+                      app = mount / 'EyeFlow.app/Contents'
+                      with (app / 'Info.plist').open('rb') as stream:
+                          info = plistlib.load(stream)
+                      assert info['CFBundleVersion'] == info['CFBundleShortVersionString'] == info['EyeFlowBuildVersion'] == version
+                      assert info['LSMinimumSystemVersion'] == '15.0'
+                      same(app / 'MacOS/eyeflow', 'target/release/eyeflow')
+                      same(app / 'Resources/LICENSE.txt', 'LICENSE')
+                      target = 'aarch64-apple-darwin' if arch == 'arm64' else 'x86_64-apple-darwin'
+                      same(app / 'Resources/THIRD_PARTY_NOTICES.txt', f'packaging/notices/THIRD_PARTY_NOTICES.{target}.txt')
+                  finally:
+                      subprocess.run(['hdiutil', 'detach', str(mount)], check=True)
+          PYTHON
       - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: choco install nsis -y --no-progress
-
-      # installer.nsi 内的 Icon/File/OutFile 相对路径以脚本所在目录(installer\)解析,
-      # dist\ 须预先存在;PRODUCT_VERSION 由 /D 注入(不带 v 前缀)。
-      # 产物: dist\EyeFlow-<ver>-Setup.exe
-      # choco 安装 NSIS 后当前任务的 PATH 不会刷新,优先用绝对路径,回退到 shim。
-      - name: Build installer
-        shell: cmd
-        run: |
-          if not exist dist mkdir dist
-          set "NSIS_EXE=C:\Program Files (x86)\NSIS\makensis.exe"
-          if not exist "%NSIS_EXE%" set "NSIS_EXE=makensis"
-          "%NSIS_EXE%" /DPRODUCT_VERSION=${{ steps.ver.outputs.version }} installer\installer.nsi
-
-      - name: Package portable zip and SHA256
+      - name: Build and inspect Windows installer and portable package
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $v = "${{ steps.ver.outputs.version }}"
-          Copy-Item target/release/eyeflow.exe "eyeflow-$v-x86_64-portable.exe"
-          Compress-Archive -Path "eyeflow-$v-x86_64-portable.exe" -DestinationPath "dist/eyeflow-$v-x86_64-portable.zip" -Force
-          Remove-Item "eyeflow-$v-x86_64-portable.exe"
-          foreach ($name in @("EyeFlow-$v-Setup.exe", "eyeflow-$v-x86_64-portable.zip")) {
-            (Get-FileHash "dist/$name" -Algorithm SHA256).Hash |
-              Out-File "dist/$name.sha256" -Encoding ascii
+          $bytes = [System.IO.File]::ReadAllBytes('installer/installer.nsi')
+          if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) { throw 'NSIS UTF-8 BOM missing' }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DPRODUCT_VERSION=$env:RELEASE_VERSION" installer/installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS build failed' }
+          $unpack = Join-Path $env:RUNNER_TEMP 'installer-inspection'
+          & 7z x "dist/EyeFlow-$env:RELEASE_VERSION-Setup.exe" "-o$unpack" -y
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS extraction failed' }
+          $expected = @{
+            'eyeflow.exe' = 'target/release/eyeflow.exe';
+            'LICENSE.txt' = 'LICENSE';
+            'THIRD_PARTY_NOTICES.txt' = 'packaging/notices/THIRD_PARTY_NOTICES.windows.txt'
           }
-          Get-ChildItem dist | Select-Object Name, Length
-
-      - name: Upload build artifacts (debug/diagnostics)
-        uses: actions/upload-artifact@v4
+          foreach ($name in $expected.Keys) {
+            $files = @(Get-ChildItem $unpack -Recurse -File -Filter $name)
+            if ($files.Count -ne 1) { throw "Expected one $name" }
+            if ((Get-FileHash $files[0].FullName).Hash -ne (Get-FileHash $expected[$name]).Hash) { throw "Payload mismatch: $name" }
+          }
+          $portable = Join-Path $env:RUNNER_TEMP 'portable'
+          New-Item -ItemType Directory $portable | Out-Null
+          foreach ($name in $expected.Keys) { Copy-Item $expected[$name] (Join-Path $portable $name) }
+          Compress-Archive -Path "$portable/*" -DestinationPath "dist/eyeflow-$env:RELEASE_VERSION-x86_64-portable.zip"
+      - name: Hash exact output set and record provenance
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, zipfile
+          v, target = os.environ['RELEASE_VERSION'], os.environ['BUILD_TARGET']
+          names = {
+              'x86_64-pc-windows-msvc': [f'EyeFlow-{v}-Setup.exe', f'eyeflow-{v}-x86_64-portable.zip'],
+              'x86_64-unknown-linux-gnu': [f'eyeflow_{v}_amd64.deb'],
+              'aarch64-apple-darwin': [f'EyeFlow-{v}-macos-arm64-unsigned.dmg'],
+              'x86_64-apple-darwin': [f'EyeFlow-{v}-macos-x86_64-unsigned.dmg'],
+          }[target]
+          dist = pathlib.Path('dist')
+          allowed = set(names) | {n + '.sha256' for n in names}
+          assert {p.name for p in dist.iterdir()} <= allowed
+          if target == 'x86_64-pc-windows-msvc':
+              with zipfile.ZipFile(dist / names[1]) as archive:
+                  expected = {'eyeflow.exe': 'target/release/eyeflow.exe', 'LICENSE.txt': 'LICENSE', 'THIRD_PARTY_NOTICES.txt': 'packaging/notices/THIRD_PARTY_NOTICES.windows.txt'}
+                  assert sorted(archive.namelist()) == sorted(expected)
+                  for name, source in expected.items():
+                      assert archive.read(name) == pathlib.Path(source).read_bytes()
+          assets = {}
+          for name in names:
+              content = (dist / name).read_bytes()
+              assert content
+              digest = hashlib.sha256(content).hexdigest()
+              assets[name] = {'sha256': digest, 'size': len(content)}
+              (dist / (name + '.sha256')).write_text(digest + '  ' + name + '\n', encoding='utf-8')
+          manifest = {'sha': os.environ['RELEASE_SHA'], 'version': v, 'target': target, 'default_features_only': True, 'assets': assets}
+          (dist / (target + '.json')).write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
         with:
-          name: eyeflow-${{ steps.ver.outputs.version }}
-          path: |
-            dist/*.exe
-            dist/*.zip
-            dist/*.sha256
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Create GitHub Release (auto-published)
-        uses: softprops/action-gh-release@v2
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
         with:
-          draft: false
-          generate_release_notes: true
-          files: |
-            dist/*.exe
-            dist/*.zip
-            dist/*.sha256
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: false
+      - name: Verify all four builds, upload draft, verify remote bytes, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess, tempfile, tomllib
+          tag, sha = os.environ['RELEASE_TAG'], os.environ['RELEASE_SHA']
+          v = tomllib.loads(pathlib.Path('Cargo.toml').read_text(encoding='utf-8'))['package']['version']
+          assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag) and tag == 'v' + v
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == sha
+          expected = {
+              'x86_64-pc-windows-msvc': [f'EyeFlow-{v}-Setup.exe', f'eyeflow-{v}-x86_64-portable.zip'],
+              'x86_64-unknown-linux-gnu': [f'eyeflow_{v}_amd64.deb'],
+              'aarch64-apple-darwin': [f'EyeFlow-{v}-macos-arm64-unsigned.dmg'],
+              'x86_64-apple-darwin': [f'EyeFlow-{v}-macos-x86_64-unsigned.dmg'],
+          }
+          root = pathlib.Path('release-assets')
+          assert {p.name for p in root.iterdir()} == {'release-' + t for t in expected}
+          uploads, published = [], {}
+          for target, names in expected.items():
+              folder = root / ('release-' + target)
+              manifest = json.loads((folder / (target + '.json')).read_text(encoding='utf-8'))
+              assert manifest['sha'] == sha and manifest['version'] == v and manifest['target'] == target
+              assert manifest['default_features_only'] is True and set(manifest['assets']) == set(names)
+              assert {p.name for p in folder.iterdir()} == set(names) | {n + '.sha256' for n in names} | {target + '.json'}
+              for name in names:
+                  p = folder / name
+                  content = p.read_bytes()
+                  digest = hashlib.sha256(content).hexdigest()
+                  assert manifest['assets'][name] == {'sha256': digest, 'size': len(content)} and content
+                  checksum = folder / (name + '.sha256')
+                  assert checksum.read_text(encoding='utf-8') == digest + '  ' + name + '\n'
+                  for asset in (p, checksum):
+                      uploads.append(str(asset))
+                      published[asset.name] = asset.read_bytes()
+          notes = pathlib.Path('docs/releases') / (tag + '.md')
+          note_text = notes.read_text(encoding='utf-8')
+          assert f'<!-- release-ready: {tag} -->' in note_text, 'Release notes not approved for this tag'
+          assert '- [ ]' not in note_text, 'Release notes contain unfinished acceptance items'
+          # Never replace an existing published release or silently resume an uncertain attempt.
+          probe = subprocess.run(['gh', 'api', f'repos/{os.environ["GH_REPO"]}/releases/tags/{tag}'], capture_output=True, text=True)
+          assert probe.returncode != 0 and '(HTTP 404)' in probe.stderr, 'Release exists or status is uncertain; inspect before retrying'
+          subprocess.run(['gh', 'release', 'create', tag, '--verify-tag', '--draft', '--title', 'EyeFlow ' + v, '--notes-file', str(notes), *uploads], check=True)
+          # Any failure from here leaves a draft, never a partially populated public release.
+          remote = json.loads(subprocess.check_output(['gh', 'release', 'view', tag, '--json', 'isDraft,assets'], text=True))
+          assert remote['isDraft'] is True
+          assert len(remote['assets']) == len(published)
+          assert {a['name']: a['size'] for a in remote['assets']} == {n: len(b) for n, b in published.items()}
+          with tempfile.TemporaryDirectory() as tmp:
+              subprocess.run(['gh', 'release', 'download', tag, '--dir', tmp], check=True)
+              assert {p.name for p in pathlib.Path(tmp).iterdir()} == set(published)
+              for name, content in published.items():
+                  assert (pathlib.Path(tmp) / name).read_bytes() == content, name
+          subprocess.run(['gh', 'release', 'edit', tag, '--draft=false'], check=True)
+          PY

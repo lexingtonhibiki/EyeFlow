@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "cargo_lock_sha256": "13c38e41b335416f1ff65c2bc25c4cb9ff868f3b892faeb0c2f3beac4f03c208",
+  "cargo_lock_sha256": "b3010214c1b14921a7d377fea49a6354d4e516ac0a3016a0fd408b0f4b3827d9",
   "manifest_dependency_configuration_sha256": "7e071b1de3252cbc90214d33c175f78368d85e310f7e8e61ccd612ce59b6c265",
   "feature_selection": {
     "default_features": true,

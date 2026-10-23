@@ -69,9 +69,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="eyeflow-quit-") as temp:
         config = Path(temp) / "eyeflow"
         config.mkdir()
-        (config / "config.toml").write_text(
-            'language = "en-US"\nsound_enabled = false\nupdate_check_enabled = false\n'
-            'short_break_secs = 120\n', encoding="utf-8")
+        fixture = Path(__file__).resolve().parent / "fixtures" / "desktop-smoke.toml"
+        (config / "config.toml").write_bytes(fixture.read_bytes())
         env = os.environ.copy()
         env["APPDATA"] = temp
         env["RUST_LOG"] = "debug"

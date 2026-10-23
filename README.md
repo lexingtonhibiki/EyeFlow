@@ -2,7 +2,7 @@
 
 **English** ｜ [简体中文](#eyeflow-chinese) ｜ [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) ｜ [Changelog](CHANGELOG.md)
 
-**A context-aware eye-care break reminder for Windows.** It knows whether you are deep in a typing flow, stuck in a full-screen game, or away from the desk — so a due reminder is **postponed to a better moment in a lighter form, and never silently dropped**.
+**A native eye-care break reminder for Windows, Linux and macOS.** With supported context detection (see platform limits below), it knows whether you are deep in a typing flow, stuck in a full-screen game, or away from the desk — so a due reminder is **postponed to a better moment in a lighter form, and never silently dropped**.
 
 One Rust process, no Electron, no WebView, no account, no telemetry.
 
@@ -10,7 +10,7 @@ One Rust process, no Electron, no WebView, no account, no telemetry.
 [![Release](https://img.shields.io/github/v/release/lexingtonhibiki/EyeFlow?include_prereleases)](https://github.com/lexingtonhibiki/EyeFlow/releases)
 [![Stars](https://img.shields.io/github/stars/lexingtonhibiki/EyeFlow?style=flat)](https://github.com/lexingtonhibiki/EyeFlow/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64-0078d6)](#install)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078d6)](#install)
 
 > **If EyeFlow saves your eyes a little, a star helps more people find it** — it is the cheapest and most useful way to support a one-person project.
 > **如果这个小工具帮你少熬了几次眼睛，一个 Star 就是最好的支持。**
@@ -23,7 +23,7 @@ Reminders are not scarce; reminders that fire *at the right moment* are. Competi
 
 | | EyeFlow | Stretchly | Workrave | LookAway |
 |---|---|---|---|---|
-| Platform | Windows 10/11 x64 | Win/Mac/Linux (Electron) | Win/Linux | macOS only |
+| Platform | Windows; Linux/macOS with limits below | Win/Mac/Linux (Electron) | Win/Linux | macOS only |
 | Price | Free, open source (MIT) | Free, open source | Free, open source | Paid, one-off |
 | Full-screen / gaming | Degrades to a sound cue, then catches up when you exit | Needs hand-written process exclusions | None | Yes |
 | Typing flow | Deferred until 8 s after typing stops | None | None | Deep-focus detection |
@@ -48,6 +48,8 @@ A heads-up window (bottom right, never steals focus), then the break panel with 
 
 ## Features
 
+The context-detection details and historical footprint measurements below describe Windows. The platforms share reminder logic, not identical OS capabilities.
+
 - **Context aware**: desktop / typing flow / gaming / away are detected automatically; a reminder only appears at a sensible moment and in a sensible form.
 - **Deferred, never dropped**: in flow it is delivered in full 8 s after typing pauses; in a game only a cue plays and the heads-up is sent when you exit ([ADR-0002](docs/adr/0002-reminders-are-deferred-never-dropped.md)).
 - **Two-tier breaks**: short breaks (15–25 min, triangular, peaking at 20 min) plus a long break (15 min after 2 h of continuous screen time) ([ADR-0001](docs/adr/0001-aoa-20-20-20-two-tier-breaks.md)).
@@ -60,7 +62,7 @@ A heads-up window (bottom right, never steals focus), then the break panel with 
 - **Tray + hotkey**: left click or double click opens settings; `Ctrl+Shift+E` rests now; the tooltip shows the current state and the next break time.
 - **Lightweight**: one Rust process, no Electron, no WebView. Around 9.8 MB on disk, and a measured **3.13 MB private / 15.60 MB working set** while idle with no window ever opened (v0.7.0). A UI session with a GL context exists only while a panel or the settings window is on screen — that is why the settings window is not kept alive in the background ([ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md)).
 - **Update check** (optional, off by default): reads the GitHub Releases API at most once every 24 h, only compares version numbers and offers a download link — it never downloads or installs anything by itself.
-- **Privacy friendly**: fully local. Two files (`config.toml`, `stats.toml`) under `%APPDATA%\eyeflow\`.
+- **Privacy friendly**: fully local. Local config and statistics, plus a diagnostic log; see platform-specific data paths below.
 - **Single instance**: a second launch simply exits.
 
 ## How it decides when to remind you
@@ -74,9 +76,24 @@ A heads-up window (bottom right, never steals focus), then the break panel with 
 
 The rule underneath: **context may change when and how a reminder is delivered, but never cancels it.** Deferral is the system pushing back by itself; postpone is you pushing it back.
 
+## Desktop platform support
+
+Available published packages are listed on the [GitHub Releases page](https://github.com/lexingtonhibiki/EyeFlow/releases). See the [v0.7.4 support and validation scope](docs/releases/v0.7.4.md); a source branch or CI artifact is not itself a published release.
+
+| Platform / package target | Automatic reminders and limitations |
+|---|---|
+| Windows 10/11 x64, installer and portable ZIP | Windows context detection, tray, global hotkey and optional autostart. |
+| Ubuntu 24.04 amd64, DEB | GNOME/KDE **X11** idle, lock and fullscreen observations support enhanced reminders when all required observations are confirmed. Unknown or stale observations pause automatic reminders. Other distributions/desktops are not covered by this package claim. |
+| Linux Wayland | Basic settings/manual-rest/quit UI; automatic idle monitoring and native Wayland global hotkeys are not implemented. |
+| macOS 15+, separate Apple Silicon and Intel DMGs | Real idle observations; reliable lock/fullscreen detection is unsupported. Automatic reminders pause by default. Explicitly enable **compatibility reminders** only if you accept possible interruption during lock/fullscreen. |
+
+Compatibility mode (`compatibility_reminders`, off by default) relaxes only explicitly unsupported macOS lock/fullscreen checks. It never invents idle data or ignores failed, missing, permission-required or stale readings. Changing mode cancels a pending heads-up and starts a fresh interval without catch-up reminders. Manual rest remains available. Linux/macOS autostart is not implemented; its setting is disabled. The visible main window provides controls even when a desktop has no usable tray.
+
+These are shared-core native builds, **not a claim of full feature parity or acceptance on every platform**. See [platform details](docs/portability-notes.md) and [packaging notes](packaging/PLATFORM-NOTES.txt).
+
 ## Install
 
-Requirements: Windows 10 / 11, x64. Everything is on the [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) page.
+Windows packages require Windows 10 / 11 x64. Download published versions from [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases); the platform table above describes the v0.7.4 candidate, not an already published asset set.
 
 ### Installer
 
@@ -84,11 +101,15 @@ Requirements: Windows 10 / 11, x64. Everything is on the [Releases](https://gith
 2. Autostart is enabled by default (turn it off in Settings → System). The settings window does **not** open by itself on first launch — the language was already chosen during install, so the tray icon is the only entry point (right-click → *Open settings…*).
 3. Uninstall from Windows *Settings → Apps*, or *Uninstall EyeFlow* in the Start menu. Nothing is left behind: program, config, stats, log, shortcut and registry entries are all removed.
 
-> **About SmartScreen**: the installer and the exe are not code-signed, so Windows may show "Windows protected your PC" on first run. Click **More info → Run anyway**.
+> **Signing**: the Windows installer and executable are unsigned. Windows may warn or block launch; do not disable system security protections. Verify the release source and published SHA256 before deciding whether to install.
 
 ### Portable
 
 Download `eyeflow-<version>-x86_64-portable.zip`, unzip and run. No registry writes, and autostart stays off by default.
+
+### Linux and macOS
+
+The Ubuntu 24.04 amd64 DEB uses the system package manager and declared runtime dependencies. macOS DMGs contain EyeFlow.app and an Applications link; choose the matching CPU architecture. macOS apps are **not Developer ID signed or notarized** and Gatekeeper may block launch. No security bypass is provided. See [packaging](packaging/README.md) for exact requirements and limitations.
 
 ### winget (planned)
 
@@ -163,7 +184,7 @@ language = "zh-CN"             # interface language: zh-CN / en-US (any "en" pre
 | `%APPDATA%\eyeflow\stats.toml` | completed short / long / natural breaks, skips, postpones, streak days |
 | `%APPDATA%\eyeflow\eyeflow.log` | diagnostic log, overwritten on each start |
 
-Nothing else is written anywhere, and uninstalling removes all three.
+On Linux these files live in `$XDG_CONFIG_HOME/eyeflow` or `~/.config/eyeflow`; on macOS, `~/Library/Application Support/eyeflow`. Removing a DEB or macOS app preserves user data. Windows installer uninstall removes its user-data directory; corrupted-config backups may also exist there.
 
 ## The science behind the defaults
 
@@ -177,13 +198,15 @@ The defaults are not guesses; they come from institutional guidance and peer-rev
 
 ## Privacy
 
-EyeFlow **makes no network requests by default**: no telemetry, no accounts, no automatic downloads. All data is two local files under `%APPDATA%\eyeflow\`.
+EyeFlow **makes no network requests by default**: no telemetry, no accounts, no automatic downloads. Configuration, statistics and the diagnostic log stay local; their paths vary by platform (see “Files and where they live”).
 
 Keyboard monitoring only records key **timestamps** inside this process, for flow detection — never key contents, never written to disk, never uploaded.
 
 The only optional network feature is the **update check** (About → *Check for updates at startup*, off by default): when enabled it queries `api.github.com/repos/lexingtonhibiki/EyeFlow/releases/latest` at most once every 24 hours, compares version numbers and shows the result in the About tab. **Nothing is downloaded or installed automatically** — if a newer version exists you get a link to the Releases page and decide for yourself.
 
 ## Building from source
+
+The commands below are Windows-specific. Native Linux/macOS prerequisites and packaging commands are in [packaging/README.md](packaging/README.md); the shared core can be tested with `cargo test --locked --lib --no-default-features`.
 
 Requirements:
 
@@ -208,7 +231,7 @@ build-release.cmd
 set EYEFLOW_DEMO=1 && target\release\eyeflow.exe
 ```
 
-`cargo test` covers the scheduling core (deferral, catch-up, postpone, long break, away, do-not-disturb), config migration, statistics, audio synthesis, the i18n data layer, glyph coverage and — unusual for a desktop app — the **layout width gates**: the test suite renders the real settings window with the real fonts and asserts that no row overflows. CI runs `cargo test --locked` and `cargo build --release --locked`; pushing a `v*.*.*` tag builds the installer, the portable zip and SHA256 checksums and publishes them to Releases.
+`cargo test` covers the scheduling core (deferral, catch-up, postpone, long break, away, do-not-disturb), config migration, statistics, audio synthesis, the i18n data layer, glyph coverage and — unusual for a desktop app — the **Windows layout width gates**: the test suite renders the real settings window with the real fonts and asserts that no row overflows. CI checks shared-core and native targets separately. The three-desktop release pipeline requires all four target builds, notices and checksums before publication; see the [release validation scope](docs/releases/v0.7.4.md).
 
 ## Uninstall and data cleanup
 
@@ -248,6 +271,8 @@ The default rhythm follows the [American Optometric Association](https://www.aoa
 
 ## License
 
+Distributed packages include target-specific third-party notices. System CJK fonts are loaded locally, not copied into the package; egui embedded fonts are bundled and covered by the included notices.
+
 [MIT](LICENSE) © 2026 lexingtonhibiki
 
 [↑ Back to top](#eyeflow) ｜ [切换到中文 →](#eyeflow-chinese)
@@ -258,7 +283,7 @@ The default rhythm follows the [American Optometric Association](https://www.aoa
 
 [English](#eyeflow) ｜ **简体中文** ｜ [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) ｜ [更新日志](CHANGELOG.md)
 
-**会看情况的 Windows 护眼提醒。** 它知道你正打字进入心流、在全屏游戏、还是已经离开座位——到点的提醒只会**顺延**到更合适的时机、换一种更轻的形态，而**不会悄悄消失**。
+**面向 Windows、Linux 和 macOS 的原生护眼提醒。** 在支持完整上下文检测的平台上（限制见下），它知道你正打字进入心流、在全屏游戏、还是已经离开座位——到点的提醒只会**顺延**到更合适的时机、换一种更轻的形态，而**不会悄悄消失**。
 
 Rust 单进程，没有 Electron、没有 WebView、没有账号、没有遥测。
 
@@ -266,7 +291,7 @@ Rust 单进程，没有 Electron、没有 WebView、没有账号、没有遥测�
 [![Release](https://img.shields.io/github/v/release/lexingtonhibiki/EyeFlow?include_prereleases)](https://github.com/lexingtonhibiki/EyeFlow/releases)
 [![Stars](https://img.shields.io/github/stars/lexingtonhibiki/EyeFlow?style=flat)](https://github.com/lexingtonhibiki/EyeFlow/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64-0078d6)](#eyeflow-chinese)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078d6)](#eyeflow-chinese)
 
 > **如果这个小工具帮你少熬了几次眼睛，一个 Star 就是最好的支持** —— 它也是让更多人找到 EyeFlow 最有效的方式。
 > **If EyeFlow saves your eyes a little, a star helps more people find it.**
@@ -279,7 +304,7 @@ Rust 单进程，没有 Electron、没有 WebView、没有账号、没有遥测�
 
 | | EyeFlow | Stretchly | Workrave | LookAway |
 |---|---|---|---|---|
-| 平台 | Windows 10/11 x64 | Win/Mac/Linux（Electron） | Win/Linux | 仅 macOS |
+| 平台 | Windows；Linux/macOS 能力限制见下 | Win/Mac/Linux（Electron） | Win/Linux | 仅 macOS |
 | 价格 | 免费开源（MIT） | 免费开源 | 免费开源 | 买断收费 |
 | 全屏 / 游戏 | 降级为一声提示音，退出后补发预告 | 需手写进程排除 | 无 | 有 |
 | 打字心流 | 顺延到停歇 8 秒后投递 | 无 | 无 | 有深度专注检测 |
@@ -308,6 +333,8 @@ EyeFlow 要填的正是免费市场里空着的那一格：**Windows + 免费 + 
 
 ## 功能特性
 
+下列完整上下文检测与历史内存测量描述的是 Windows；三个平台共享提醒逻辑，不代表系统能力完全对等。
+
 - **上下文感知**：桌面 / 心流 / 游戏 / 离开四态自动切换，提醒只在合适的时机、以合适的形态出现。
 - **只顺延、不消失**：心流中顺延到输入停歇 8 秒后完整投递；游戏中只响提示音，退出全屏后补发预告（[ADR-0002](docs/adr/0002-reminders-are-deferred-never-dropped.md)）。
 - **双层休息**：短休息（15~25 分钟三角随机、峰值 20 分钟）+ 长休息（连续用屏 2 小时 → 15 分钟）（[ADR-0001](docs/adr/0001-aoa-20-20-20-two-tier-breaks.md)）。
@@ -320,7 +347,7 @@ EyeFlow 要填的正是免费市场里空着的那一格：**Windows + 免费 + 
 - **托盘 + 热键**：左键单击 / 双击打开设置；`Ctrl+Shift+E` 立即休息；悬停 tooltip 显示当前状态与下次休息时间。
 - **轻量**：Rust 单进程，无 Electron / WebView；磁盘上约 9.8 MB，从未打开过窗口时实测**私有内存 3.13 MB / 工作集 15.60 MB**（v0.7.0）。只有在显示浮窗 / 设置窗时才有一次带 GL 上下文的 UI 会话——这也是设置窗不常驻后台的原因（[ADR-0006](docs/adr/0006-eframe-on-demand-ui-session.md)）。
 - **更新检查**（可选，默认关）：每 24 小时至多访问一次 GitHub Releases API，只比对版本号并给出下载链接——**不自动下载、不自动安装**。
-- **隐私友好**：纯本地运行，全部数据就是 `%APPDATA%\eyeflow\` 下的两个文件。
+- **隐私友好**：纯本地运行，配置、统计及诊断日志保存在本地，平台对应路径见下文。
 - **单实例**：重复启动直接退出。
 
 ## 什么时候提醒、怎么提醒
@@ -334,9 +361,24 @@ EyeFlow 要填的正是免费市场里空着的那一格：**Windows + 免费 + 
 
 底层原则：**上下文只能改变提醒的投递时机与形态，不能取消提醒**（顺延是系统自动推后，延后是你主动推迟）。
 
+## 桌面平台支持
+
+实际已发布的安装包以 [GitHub Releases 页面](https://github.com/lexingtonhibiki/EyeFlow/releases)为准；源分支或 CI 产物本身不等于正式发布。支持与验收范围见 [v0.7.4 版本说明](docs/releases/v0.7.4.md)。
+
+| 平台 / 打包目标 | 自动提醒及限制 |
+|---|---|
+| Windows 10/11 x64，安装版与便携 ZIP | Windows 上下文检测、托盘、全局热键与可选开机自启。 |
+| Ubuntu 24.04 amd64，DEB | GNOME/KDE **X11** 的空闲、锁屏、全屏观测可支持增强提醒；必要观测确认有效才自动计时，未知或过期则暂停。此包不承诺其他发行版/桌面。 |
+| Linux Wayland | 可使用基础设置、手动休息和退出界面；尚无自动空闲监测及原生 Wayland 全局热键。 |
+| macOS 15+，Apple Silicon 与 Intel 独立 DMG | 使用真实空闲数据；可靠锁屏/全屏检测尚不支持，默认暂停自动提醒。只有明确接受锁屏/全屏时可能被打扰，才应开启兼容提醒。 |
+
+兼容提醒（`compatibility_reminders`，默认关闭）只放宽明确标为不支持的 macOS 锁屏/全屏检测；不会伪造空闲数据，也不会绕过失败、缺失、权限不足或过期读数。切换模式会取消待发预告，重新开始间隔，不补发积压提醒；仍可手动休息。Linux/macOS 尚未实现开机自启，设置项已禁用；没有可用托盘时仍可通过可见主窗口操作。
+
+三个桌面共享核心逻辑，**不等于功能完全对等或已经全平台验收**。详见[平台说明](docs/portability-notes.md)与[随包说明](packaging/PLATFORM-NOTES.txt)。
+
 ## 下载安装
 
-系统要求：Windows 10 / 11，x64。全部产物都在 [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) 页面。
+Windows 包要求 Windows 10 / 11 x64。已发布版本在 [Releases](https://github.com/lexingtonhibiki/EyeFlow/releases) 页面；上方平台表描述的是 v0.7.4 候选，并非已经发布的产物。
 
 ### 安装版
 
@@ -344,11 +386,15 @@ EyeFlow 要填的正是免费市场里空着的那一格：**Windows + 免费 + 
 2. 安装默认写入开机自启（可在 设置 → 系统 里关闭）。首次运行**不会**自动打开设置窗——语言已经在安装器里问过，托盘图标是唯一入口（右键托盘图标 →「打开设置…」）。
 3. 卸载：系统「设置 → 应用」或开始菜单的 Uninstall EyeFlow。无残留：程序、配置、统计、日志、快捷方式、注册表项全部清理。
 
-> **关于 SmartScreen**：安装包与 exe 目前未做代码签名，首次运行时 Windows 可能提示「Windows 已保护你的电脑」。请点击 **更多信息 → 仍要运行**。
+> **签名状态**：Windows 安装包与 exe 未做代码签名，系统可能警告或阻止运行。不要关闭系统安全保护；安装前应核对发布来源和公布的 SHA256。
 
 ### 便携版
 
 下载 `eyeflow-<版本>-x86_64-portable.zip`，解压即用；不写注册表，也默认不写开机自启。
+
+### Linux 与 macOS
+
+Ubuntu 24.04 amd64 DEB 通过系统包管理器安装并使用声明的运行依赖。macOS DMG 内含 EyeFlow.app 与 Applications 链接，请选对应 CPU 架构。macOS 应用**未做 Developer ID 签名或公证**，Gatekeeper 可能阻止运行；不提供绕过安全保护的操作。具体要求与限制见[打包说明](packaging/README.md)。
 
 ### winget（计划中）
 
@@ -423,7 +469,7 @@ language = "zh-CN"             # 界面语言：zh-CN / en-US（凡以 "en" 开�
 | `%APPDATA%\eyeflow\stats.toml` | 今日完成（短 / 长 / 自然）、跳过、延后、连续坚持天数 |
 | `%APPDATA%\eyeflow\eyeflow.log` | 诊断日志，每次启动覆盖 |
 
-除这三个文件之外不写任何位置；卸载会把它们一并清理。
+Linux 使用 `$XDG_CONFIG_HOME/eyeflow` 或 `~/.config/eyeflow`，macOS 使用 `~/Library/Application Support/eyeflow`。卸载 DEB 或删除 macOS 应用保留用户数据；Windows 安装版卸载会删除用户数据目录。配置损坏时该目录还可能有备份文件。
 
 ## 默认参数的科学依据
 
@@ -437,13 +483,15 @@ language = "zh-CN"             # 界面语言：zh-CN / en-US（凡以 "en" 开�
 
 ## 隐私
 
-EyeFlow **默认不发起任何网络请求**：无遥测、无账号、无自动下载。全部数据就是 `%APPDATA%\eyeflow\` 下的两个本地文件。
+EyeFlow **默认不发起任何网络请求**：无遥测、无账号、无自动下载。配置、统计及诊断日志保存在本地，路径因平台而异（见「文件与位置」）。
 
 键盘监测仅在本进程内记录按键**时间戳**用于心流判定——不记录按键内容、不写盘、不上传。
 
 唯一的可选联网功能是**更新检查**（关于页 →「启动时检查更新」，默认关闭）：开启后每 24 小时至多访问一次 `api.github.com/repos/lexingtonhibiki/EyeFlow/releases/latest`，只比对版本号并把结果显示在关于页。**不自动下载、不自动安装**——发现新版本时给出一个 Releases 链接，下不下、下哪个包，由你自己决定。
 
 ## 从源码构建
+
+下列命令面向 Windows；Linux/macOS 原生依赖与打包命令见 [packaging/README.md](packaging/README.md)。共享核心可独立运行 `cargo test --locked --lib --no-default-features`。
 
 前置要求：
 
@@ -468,7 +516,7 @@ build-release.cmd
 set EYEFLOW_DEMO=1 && target\release\eyeflow.exe
 ```
 
-`cargo test` 覆盖调度核心（顺延 / 补发 / 延后 / 长休息 / 离开 / 免打扰）、配置迁移、统计、音频合成、i18n 数据层、字形覆盖，外加一套桌面应用里少见的**宽度闸门**：测试会真的用产品字体渲染设置窗的每一行，断言没有任何一行溢出。CI 跑 `cargo test --locked` 与 `cargo build --release --locked`；推送 `v*.*.*` 标签时自动构建安装包、便携 zip 与 SHA256 并发布到 Releases。
+`cargo test` 覆盖调度核心（顺延 / 补发 / 延后 / 长休息 / 离开 / 免打扰）、配置迁移、统计、音频合成、i18n 数据层、字形覆盖，外加一套桌面应用里少见的 **Windows 宽度闸门**：测试会真的用产品字体渲染设置窗的每一行，断言没有任何一行溢出。CI 分别检查共享核心与原生目标。三桌面发布流程要求四个目标构建、声明及校验和齐备后才公开；见[发布验收范围](docs/releases/v0.7.4.md)。
 
 ## 卸载与数据清理
 
@@ -507,6 +555,8 @@ EyeFlow 由 **[lexingtonhibiki](https://github.com/lexingtonhibiki)** 设计与�
 **如果 EyeFlow 对你有用，请给它一个 Star**；发现 bug 或有想要的功能，欢迎[提 issue](https://github.com/lexingtonhibiki/EyeFlow/issues)。这两件事的帮助都比你以为的大。
 
 ## License (Chinese)
+
+发行包携带目标平台的第三方许可证与声明。系统 CJK 字体仅本地读取，不复制入包；egui 内嵌字体确实随程序分发，其许可已纳入随包声明。
 
 [MIT](LICENSE) © 2026 lexingtonhibiki
 

@@ -25,6 +25,13 @@ regenerate/review coverage before updating this manifest. Even a harmless root
 version-only lockfile change requires deliberate manifest reconciliation. Do not
 update hashes automatically just to make CI pass.
 
+For the 0.7.4 candidate, the lockfile hash was deliberately reconciled after
+changing only the root `eyeflow` package version from `0.7.4-test.2` to `0.7.4`.
+A structured lockfile comparison found no other package changes; all four target
+default-feature runtime dependency graphs matched after excluding the root line.
+The license dependency audit baseline remains `719bd5e`; the dependency/features
+digest and all four notice texts are unchanged. This is not a new dependency audit.
+
 This guard checks source inputs and files, not binary provenance. Build default
 features from this exact checkout with `cargo build --locked --release` and
 package that output. Additional features, copied native libraries or altered
@@ -35,9 +42,9 @@ Package locations:
 - Windows NSIS: `$INSTDIR/LICENSE.txt`, `$INSTDIR/THIRD_PARTY_NOTICES.txt`.
 - macOS: `EyeFlow.app/Contents/Resources/LICENSE.txt` and `THIRD_PARTY_NOTICES.txt`.
 - Linux: `/usr/share/doc/eyeflow/copyright` and `THIRD_PARTY_NOTICES.txt`.
-- Windows portable ZIP: release assembly must add LICENSE.txt and the Windows
-  target notice beside eyeflow.exe. The tag/release workflow is not changed by
-  this integration; the release owner must wire and verify that step.
+- Windows portable ZIP: the release workflow adds LICENSE.txt and the Windows
+  target notice beside eyeflow.exe, and verifies the archived payload before
+  publication. NSIS payloads are independently extracted and checked as well.
 
 System fonts are not redistributed. The texts do cover the separately embedded
 egui font notices and exact MPL dependency source download URLs. Do not remove
