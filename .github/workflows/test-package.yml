@@ -32,12 +32,15 @@ jobs:
           "version=$cargoVer" >> $env:GITHUB_OUTPUT
 
       - name: Test candidate
+        id: tests
         run: cargo test --locked
 
       - name: Build release binary
+        id: build
         run: cargo build --release --locked
 
       - name: Native tray quit with reminder and settings open
+        id: native_quit
         run: python scripts/test-tray-quit.py target/release/eyeflow.exe
 
       # 守卫:installer.nsi 必须带 UTF-8 BOM。丢了 BOM 时 makensis 在英文 CI
@@ -86,3 +89,27 @@ jobs:
           path: |
             dist/*.exe
             dist/*.sha256
+
+      # Keep native failures visible while making the compiled candidate available
+      # for the owner's explicitly requested manual test on their Windows desktop.
+      - name: Prepare portable candidate for manual GUI verification
+        if: ${{ always() && steps.tests.outcome == 'success' && steps.build.outcome == 'success' && steps.native_quit.outcome == 'failure' }}
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          New-Item -ItemType Directory -Force manual-test | Out-Null
+          $name = "eyeflow-$v-x86_64-portable.exe"
+          Copy-Item target/release/eyeflow.exe "manual-test/$name"
+          (Get-FileHash "manual-test/$name" -Algorithm SHA256).Hash |
+            Out-File "manual-test/$name.sha256" -Encoding ascii
+          "Manual GUI verification required. Unit tests and compilation passed; native GUI smoke FAILED. This is not a Release and is not GUI-validated. See this run's failed native test logs before testing." |
+            Out-File manual-test/VERIFICATION.txt -Encoding utf8
+
+      - name: Upload manual-test candidate (native failure remains failure)
+        if: ${{ always() && steps.tests.outcome == 'success' && steps.build.outcome == 'success' && steps.native_quit.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: eyeflow-${{ steps.ver.outputs.version }}-manual-gui-test
+          retention-days: 7
+          path: manual-test/*
+          if-no-files-found: error
