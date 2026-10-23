@@ -102,7 +102,7 @@
 "ui.weak_visual" = "右下角预告浮窗 + 居中休息面板（不抢焦点）"
 "ui.weak_strict" = "休息面板改为全屏遮罩（可自选背景图片）"
 "ui.sound" = "提示音"
-"ui.no_audio_device" = "（未检测到音频输出设备）"
+"ui.no_audio_device" = "（音频输出不可用，可点击试听重试）"
 "ui.start_cue_checkbox" = "点击『现在开始』/『立即休息』时播放提示音"
 "ui.heads_up_cue_checkbox" = "预告浮窗弹出时播放提示音"
 "ui.weak_heads_up_cue" = "预告只是说『马上要休息了』；这一声让你不必盯着屏幕右下角。它与休息结束音、全屏时的唯一通道音是三回事，互不影响。"
@@ -250,6 +250,7 @@
 "audio.too_long" = "时长 {min} 分 {sec} 秒,超过 {limit} 分钟上限"
 "audio.not_found" = "文件不存在"
 "audio.decode_error" = "无法解码:格式不支持或文件损坏"
+"audio.output_unavailable" = "音频输出不可用。请重新连接输出设备后重试。"
 
 # ── 开机自启（autostart.rs）─────────────────────────────────────────────
 "autostart.open_key_failed" = "打开 Run 键失败: {err}"

@@ -37,7 +37,7 @@ SetCompressor /SOLID lzma
 ; ⚠️ 这个兜底值只在「不经 CI 直接敲 makensis」时才生效,但它就是本地跑出来的
 ;    安装包上的版本号 —— 下次发版记得同步改这里(当前 v0.7.2)。
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.7.3"
+  !define PRODUCT_VERSION "0.7.4-test.1"
 !endif
 !define PRODUCT_PUBLISHER "lexingtonhibiki"
 !define PRODUCT_DIR "$LOCALAPPDATA\${PRODUCT_NAME}"

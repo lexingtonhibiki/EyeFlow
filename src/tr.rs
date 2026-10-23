@@ -30,6 +30,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::i18n::{EN_US, KEYS, ZH_CN};
 
+/// Shared by tests that change language and tests that render multi-frame UI.
+/// Production language handling remains lock-free.
+#[cfg(test)]
+pub(crate) static TEST_LANGUAGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 界面语言。`as u8` 就是 `AtomicU8` 里的编码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
