@@ -33,26 +33,8 @@ impl ContextState {
     }
 }
 
-/// 传感器线程每秒采样一次的快照
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Sensors {
-    /// 自上次任何输入（键鼠）以来的秒数
-    pub idle_secs: u64,
-    /// 前台窗口是否全屏且无标题栏
-    pub fullscreen: bool,
-    /// 系统认为此刻可以打扰用户（SHQueryUserNotificationState == ACCEPTS）
-    pub interruptible: bool,
-}
-
-impl Default for Sensors {
-    fn default() -> Self {
-        Self {
-            idle_secs: 0,
-            fullscreen: false,
-            interruptible: true,
-        }
-    }
-}
+use crate::platform::sensors::Reading;
+pub use crate::platform::sensors::SensorSnapshot as Sensors;
 
 /// 提醒周期的阶段
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +100,7 @@ pub struct Core {
     /// 最近一次 `tick` 传入的免打扰状态（`ui_warmup_in` 要用：免打扰里
     /// 到点会被顺延，此时预热出的会话 5 秒后就得退出，纯属白开）。
     last_quiet: bool,
+    monitoring_ready: bool,
     keys: VecDeque<Instant>,
     last_key: Option<Instant>,
     postponed_this_round: bool,
@@ -133,7 +116,7 @@ impl Core {
             stats,
             state: ContextState::Desktop,
             phase: Phase::Idle,
-            sensors: Sensors::default(),
+            sensors: Sensors::unavailable(now, "Waiting for the first native sensor sample"),
             paused_until: None,
             screen_accum: Duration::ZERO,
             tip_index: 0,
@@ -141,6 +124,7 @@ impl Core {
             due: now,
             last_tick: now,
             last_quiet: false,
+            monitoring_ready: false,
             keys: VecDeque::with_capacity(256),
             last_key: None,
             postponed_this_round: false,
@@ -158,6 +142,11 @@ impl Core {
         self.keys.push_back(at);
         self.last_key = Some(at);
         self.prune_keys(at);
+    }
+
+    /// Display this reason rather than representing unavailable native data as Desktop.
+    pub fn automatic_pause_reason(&self, now: Instant) -> Option<&'static str> {
+        self.sensors.automatic_pause_reason(now)
     }
 
     pub fn set_sensors(&mut self, s: Sensors) {
@@ -268,6 +257,9 @@ impl Core {
     /// 立刻回到 `None`，会话随之退出、GL 上下文释放——**不能为了预热让
     /// 上下文常驻**。手动触发（热键 / 托盘）没有提前量，仍然走冷启动路径。
     pub fn ui_warmup_in(&self, now: Instant) -> Option<Duration> {
+        if self.automatic_pause_reason(now).is_some() {
+            return None;
+        }
         if !self.cfg.enabled || !self.cfg.visual_enabled || self.is_paused(now) {
             return None;
         }
@@ -307,6 +299,53 @@ impl Core {
         self.last_quiet = quiet;
         self.prune_keys(now);
 
+        // A break already started by the user/scheduler owns its countdown.
+        // Resolve it before sensor recovery/Away handling, otherwise a legitimate
+        // idle reading can strand a manual break forever or miscount it as natural.
+        if let Phase::Break { ends, is_long, .. } = self.phase {
+            let observed = self.automatic_pause_reason(now).is_none();
+            if observed
+                && self.monitoring_ready
+                && dt <= SLEEP_GAP
+                && matches!(self.sensors.idle, Reading::Known(idle) if idle < Duration::from_secs(self.cfg.away_secs))
+            {
+                // Preserve active-use accounting while a user keeps working
+                // through a break; unknown/idle periods are never added.
+                self.screen_accum += dt;
+            }
+            self.monitoring_ready = observed;
+            if !self.cfg.enabled || quiet || self.is_paused(now) {
+                self.phase = Phase::Idle;
+            } else if now >= ends {
+                self.complete_break(now, is_long);
+                actions.push(Action::PlayCue);
+            }
+            return actions;
+        }
+
+        // Unknown or stale native state cannot establish continuous screen use.
+        // Cancel an automatic pre-warning, but allow an already-started (including
+        // manually requested) break to finish. Do not invent a natural break credit.
+        if self.automatic_pause_reason(now).is_some() {
+            self.monitoring_ready = false;
+            self.due += dt;
+            if matches!(self.phase, Phase::HeadsUp { .. }) {
+                self.phase = Phase::Idle;
+            }
+            if !self.cfg.enabled || quiet || self.is_paused(now) {
+                self.phase = Phase::Idle;
+                return actions;
+            }
+            return actions;
+        }
+        if !self.monitoring_ready {
+            // The interval before recovery was unobserved. Never count it as active
+            // use or immediately deliver an overdue automatic reminder.
+            self.monitoring_ready = true;
+            self.due += dt;
+            return actions;
+        }
+
         // 0. 睡眠 / 挂起会把整段时长算进 dt（Windows 计时含睡眠时间）。
         //    超过 10 分钟视为“离席归来”：当作一次自然休息，清零用屏累计并顺延，
         //    避免醒来瞬间被轰炸预告、或误升 15 分钟长休息。
@@ -319,10 +358,14 @@ impl Core {
         }
 
         // 1. 上下文状态
-        let idle = Duration::from_secs(self.sensors.idle_secs);
+        let Reading::Known(idle) = self.sensors.idle else {
+            unreachable!("unknown readings are handled above")
+        };
         self.state = if idle >= Duration::from_secs(self.cfg.away_secs) {
             ContextState::Away
-        } else if self.sensors.fullscreen || !self.sensors.interruptible {
+        } else if self.sensors.fullscreen == Reading::Known(true)
+            || self.sensors.interruptible == Reading::Known(false)
+        {
             ContextState::Gaming
         } else if self.flow_active(now) {
             ContextState::Flow
@@ -472,6 +515,10 @@ impl Core {
     }
 
     fn complete_break(&mut self, now: Instant, is_long: bool) {
+        // An immediate Away reading can describe the same rest just completed.
+        // Do not credit it again as natural until active use has been observed.
+        self.away_since = Some(now);
+        self.natural_counted = true;
         self.stats.record_completed(if is_long {
             Completed::Long
         } else {
@@ -524,6 +571,27 @@ mod tests {
 
     const S: fn(u64) -> Duration = Duration::from_secs;
 
+    fn known_sensors(now: Instant) -> Sensors {
+        Sensors {
+            sampled_at: now,
+            idle: Reading::Known(Duration::ZERO),
+            fullscreen: Reading::Known(false),
+            interruptible: Reading::Known(true),
+        }
+    }
+
+    // Existing scheduler scenarios assume the detector continues sampling between
+    // assertions. Freshness and unknown-data tests below call tick directly.
+    fn sampled_warmup(c: &mut Core, now: Instant) -> Option<Duration> {
+        c.sensors.sampled_at = now;
+        c.ui_warmup_in(now)
+    }
+
+    fn sampled_tick(c: &mut Core, now: Instant, quiet: bool) -> Vec<Action> {
+        c.sensors.sampled_at = now;
+        c.tick(now, quiet)
+    }
+
     fn cfg(interval: u64) -> Config {
         Config {
             short_break_min_secs: interval,
@@ -536,7 +604,12 @@ mod tests {
     }
 
     fn core(interval: u64, t0: Instant) -> Core {
-        Core::new(cfg(interval), Stats::default(), t0)
+        {
+            let mut c = Core::new(cfg(interval), Stats::default(), t0);
+            c.set_sensors(known_sensors(t0));
+            sampled_tick(&mut c, t0, false);
+            c
+        }
     }
 
     #[test]
@@ -544,18 +617,18 @@ mod tests {
         let t0 = Instant::now();
         let mut c = core(1200, t0);
         // 相邻 tick 间隔都保持在 10 分钟内（否则被判定为睡眠 / 挂起）
-        assert!(c.tick(t0 + S(100), false).is_empty());
-        assert!(c.tick(t0 + S(500), false).is_empty());
-        assert!(c.tick(t0 + S(1000), false).is_empty());
+        assert!(sampled_tick(&mut c, t0 + S(100), false).is_empty());
+        assert!(sampled_tick(&mut c, t0 + S(500), false).is_empty());
+        assert!(sampled_tick(&mut c, t0 + S(1000), false).is_empty());
         assert_eq!(c.phase, Phase::Idle);
 
-        c.tick(t0 + S(1185), false);
+        sampled_tick(&mut c, t0 + S(1185), false);
         assert!(matches!(c.phase, Phase::HeadsUp { is_long: false, .. }));
 
-        c.tick(t0 + S(1201), false);
+        sampled_tick(&mut c, t0 + S(1201), false);
         assert!(matches!(c.phase, Phase::Break { is_long: false, .. }));
 
-        let actions = c.tick(t0 + S(1232), false);
+        let actions = sampled_tick(&mut c, t0 + S(1232), false);
         assert_eq!(c.phase, Phase::Idle);
         assert_eq!(actions, vec![Action::PlayCue]);
         assert_eq!(c.stats.completed_short, 1);
@@ -573,14 +646,14 @@ mod tests {
         }
         // 到点时仍在打字（最后一键 ~15s 前... 用 3s 前再补一键）
         c.on_key(t_due - S(3));
-        c.tick(t_due, false);
+        sampled_tick(&mut c, t_due, false);
         assert_eq!(c.state, ContextState::Flow);
         assert_eq!(c.phase, Phase::Idle, "心流中不投递");
 
         // 最后一键在 due-3s：停歇不足 8 秒时继续等待，满 8 秒后投递，而不是丢弃
-        c.tick(t_due + S(4), false);
+        sampled_tick(&mut c, t_due + S(4), false);
         assert_eq!(c.phase, Phase::Idle);
-        c.tick(t_due + S(9), false);
+        sampled_tick(&mut c, t_due + S(9), false);
         assert!(matches!(c.phase, Phase::HeadsUp { .. }), "停歇后必须补发");
     }
 
@@ -589,18 +662,24 @@ mod tests {
         let t0 = Instant::now();
         let mut c = core(600, t0);
         c.set_sensors(Sensors {
-            fullscreen: true,
-            ..Default::default()
+            fullscreen: Reading::Known(true),
+            ..known_sensors(t0)
         });
-        assert!(c.tick(t0 + S(590), false).is_empty(), "预告点不出声");
-        let a1 = c.tick(t0 + S(600), false);
+        assert!(
+            sampled_tick(&mut c, t0 + S(590), false).is_empty(),
+            "预告点不出声"
+        );
+        let a1 = sampled_tick(&mut c, t0 + S(600), false);
         assert_eq!(a1, vec![Action::PlayCue]);
         assert_eq!(c.state, ContextState::Gaming);
         assert_eq!(c.phase, Phase::Idle);
-        assert!(c.tick(t0 + S(700), false).is_empty(), "不重复出声");
+        assert!(
+            sampled_tick(&mut c, t0 + S(700), false).is_empty(),
+            "不重复出声"
+        );
 
-        c.set_sensors(Sensors::default());
-        let a2 = c.tick(t0 + S(701), false);
+        c.set_sensors(known_sensors(t0));
+        let a2 = sampled_tick(&mut c, t0 + S(701), false);
         // 补发预告**不再出声**：这一回合的那一声已经在全屏里响过（v0.7.0 的
         // `heads_up_cue_enabled` 用 `cue_played_this_round` 兜住这条，别把这里
         // 改成允许第二声——用户会听到同一个提醒响两遍）。
@@ -616,10 +695,10 @@ mod tests {
         let t0 = Instant::now();
         let mut c = core(600, t0);
         c.set_sensors(Sensors {
-            interruptible: false,
-            ..Default::default()
+            interruptible: Reading::Known(false),
+            ..known_sensors(t0)
         });
-        c.tick(t0 + S(600), false);
+        sampled_tick(&mut c, t0 + S(600), false);
         assert_eq!(c.state, ContextState::Gaming);
         assert_eq!(c.phase, Phase::Idle);
     }
@@ -628,19 +707,19 @@ mod tests {
     fn away_pauses_timer_and_counts_natural_rest() {
         let t0 = Instant::now();
         let mut c = core(600, t0);
-        c.tick(t0 + S(100), false);
+        sampled_tick(&mut c, t0 + S(100), false);
         c.set_sensors(Sensors {
-            idle_secs: 200,
-            ..Default::default()
+            idle: Reading::Known(S(200)),
+            ..known_sensors(t0)
         });
-        c.tick(t0 + S(300), false);
+        sampled_tick(&mut c, t0 + S(300), false);
         assert_eq!(c.state, ContextState::Away);
         assert_eq!(c.stats.completed_natural, 1);
         // 计时器已重新排期到 600 秒后
         assert!(c.next_break_in(t0 + S(300)) >= S(599));
 
-        c.set_sensors(Sensors::default());
-        c.tick(t0 + S(301), false);
+        c.set_sensors(known_sensors(t0));
+        sampled_tick(&mut c, t0 + S(301), false);
         assert_eq!(c.state, ContextState::Desktop);
         assert_eq!(c.stats.completed_natural, 1, "同一段离开只计一次");
     }
@@ -650,14 +729,14 @@ mod tests {
         let t0 = Instant::now();
         let mut c = core(600, t0);
         for i in 1..=30 {
-            c.tick(t0 + S(i * 60), false);
+            sampled_tick(&mut c, t0 + S(i * 60), false);
         }
         assert!(c.screen_accum >= S(1700));
         c.set_sensors(Sensors {
-            idle_secs: 16 * 60,
-            ..Default::default()
+            idle: Reading::Known(S(16 * 60)),
+            ..known_sensors(t0)
         });
-        c.tick(t0 + S(31 * 60), false);
+        sampled_tick(&mut c, t0 + S(31 * 60), false);
         assert_eq!(c.screen_accum, Duration::ZERO);
     }
 
@@ -665,7 +744,7 @@ mod tests {
     fn postpone_allowed_once_per_round() {
         let t0 = Instant::now();
         let mut c = core(600, t0);
-        c.tick(t0 + S(586), false);
+        sampled_tick(&mut c, t0 + S(586), false);
         assert!(c.can_postpone());
         assert!(c.postpone(t0 + S(590)));
         assert_eq!(c.phase, Phase::Idle);
@@ -673,7 +752,7 @@ mod tests {
         let due_in = c.next_break_in(t0 + S(590));
         assert!(due_in <= S(300) && due_in >= S(299));
 
-        c.tick(t0 + S(590 + 286), false);
+        sampled_tick(&mut c, t0 + S(590 + 286), false);
         assert!(matches!(c.phase, Phase::HeadsUp { .. }));
         assert!(!c.can_postpone());
         assert!(!c.postpone(t0 + S(880)));
@@ -683,8 +762,8 @@ mod tests {
     fn skip_during_break_counts_as_skipped_and_reschedules() {
         let t0 = Instant::now();
         let mut c = core(600, t0);
-        c.tick(t0 + S(586), false);
-        c.tick(t0 + S(601), false);
+        sampled_tick(&mut c, t0 + S(586), false);
+        sampled_tick(&mut c, t0 + S(601), false);
         assert!(matches!(c.phase, Phase::Break { .. }));
         c.skip(t0 + S(610));
         assert_eq!(c.phase, Phase::Idle);
@@ -704,23 +783,23 @@ mod tests {
         let mut t = t0;
         for _ in 0..2 {
             t += S(586);
-            c.tick(t, false);
+            sampled_tick(&mut c, t, false);
             t += S(15);
-            c.tick(t, false);
+            sampled_tick(&mut c, t, false);
             t += S(30);
-            c.tick(t, false);
+            sampled_tick(&mut c, t, false);
         }
         assert_eq!(c.stats.completed_short, 2);
         assert!(!c.long_break_due(), "accum={:?}", c.screen_accum);
         // 下一次到点在 1862s；累计在此之前越过 1800s，因此预告应升级为长休息（提前 30s = 1832s）
-        c.tick(t0 + S(1831), false);
+        sampled_tick(&mut c, t0 + S(1831), false);
         assert!(c.long_break_due());
         assert_eq!(
             c.phase,
             Phase::Idle,
             "长休息预告提前 30 秒，1831 时还差 1 秒"
         );
-        c.tick(t0 + S(1833), false);
+        sampled_tick(&mut c, t0 + S(1833), false);
         assert!(matches!(c.phase, Phase::HeadsUp { is_long: true, .. }));
         let t = t0 + S(1833);
 
@@ -732,7 +811,7 @@ mod tests {
         let wait = c.next_break_in(t);
         assert!(wait <= S(300) && wait >= S(299));
         let t2 = t + S(271);
-        c.tick(t2, false);
+        sampled_tick(&mut c, t2, false);
         assert!(matches!(c.phase, Phase::HeadsUp { is_long: true, .. }));
         // 同一回合不能再延后
         assert!(!c.can_postpone());
@@ -743,14 +822,14 @@ mod tests {
         assert_eq!(c.stats.skipped, 1);
         let again = c.next_break_in(t2);
         assert!(again <= S(600) && again >= S(599));
-        c.tick(t2 + again - S(29), false);
+        sampled_tick(&mut c, t2 + again - S(29), false);
         assert!(matches!(c.phase, Phase::HeadsUp { is_long: true, .. }));
 
         // 完成长休息 → 累计清零（中途补一次 tick，避免间隔超过 10 分钟被判睡眠）
-        c.tick(t2 + again + S(1), false);
+        sampled_tick(&mut c, t2 + again + S(1), false);
         assert!(matches!(c.phase, Phase::Break { is_long: true, .. }));
-        c.tick(t2 + again + S(451), false);
-        c.tick(t2 + again + S(901), false);
+        sampled_tick(&mut c, t2 + again + S(451), false);
+        sampled_tick(&mut c, t2 + again + S(901), false);
         assert_eq!(c.stats.completed_long, 1);
         assert_eq!(c.screen_accum, Duration::ZERO);
     }
@@ -759,16 +838,16 @@ mod tests {
     fn quiet_hours_and_pause_block_delivery_then_grace_after() {
         let t0 = Instant::now();
         let mut c = core(600, t0);
-        c.tick(t0 + S(700), true);
+        sampled_tick(&mut c, t0 + S(700), true);
         assert_eq!(c.phase, Phase::Idle);
         assert!(c.next_break_in(t0 + S(700)) >= S(74));
 
         let mut c2 = core(600, t0);
         c2.pause_for(t0, S(3600));
-        c2.tick(t0 + S(700), false);
+        sampled_tick(&mut c2, t0 + S(700), false);
         assert_eq!(c2.phase, Phase::Idle);
         assert!(c2.is_paused(t0 + S(700)));
-        c2.tick(t0 + S(3601), false);
+        sampled_tick(&mut c2, t0 + S(3601), false);
         assert!(!c2.is_paused(t0 + S(3601)));
     }
 
@@ -776,9 +855,9 @@ mod tests {
     fn sleep_gap_treated_as_natural_rest_and_reschedules() {
         let t0 = Instant::now();
         let mut c = core(600, t0);
-        c.tick(t0 + S(100), false);
+        sampled_tick(&mut c, t0 + S(100), false);
         // 相邻 tick 间隔 900 秒 => 睡眠 / 挂起
-        c.tick(t0 + S(100) + S(900), false);
+        sampled_tick(&mut c, t0 + S(100) + S(900), false);
         assert_eq!(c.phase, Phase::Idle);
         assert_eq!(c.stats.completed_natural, 1);
         assert_eq!(c.screen_accum, Duration::ZERO);
@@ -791,10 +870,10 @@ mod tests {
     fn completed_break_flashes_welcome_back() {
         let t0 = Instant::now();
         let mut c = core(600, t0);
-        c.tick(t0 + S(586), false);
-        c.tick(t0 + S(601), false);
+        sampled_tick(&mut c, t0 + S(586), false);
+        sampled_tick(&mut c, t0 + S(601), false);
         assert!(matches!(c.phase, Phase::Break { .. }));
-        c.tick(t0 + S(632), false);
+        sampled_tick(&mut c, t0 + S(632), false);
         assert!(c.flash_active(t0 + S(633)), "完成后 3 秒内显示欢迎回来");
         assert!(!c.flash_active(t0 + S(663)), "3 秒后自动消失");
     }
@@ -804,7 +883,7 @@ mod tests {
         let t0 = Instant::now();
         let mut c = core(600, t0);
         c.cfg.visual_enabled = false;
-        let a = c.tick(t0 + S(586), false);
+        let a = sampled_tick(&mut c, t0 + S(586), false);
         assert_eq!(a, vec![Action::PlayCue]);
         assert_eq!(c.phase, Phase::Idle);
         assert_eq!(c.stats.completed_short, 1);
@@ -816,7 +895,7 @@ mod tests {
         let mut c = core(600, t0);
         c.start_break_now(t0 + S(10));
         assert!(matches!(c.phase, Phase::Break { is_long: false, .. }));
-        c.tick(t0 + S(41), false);
+        sampled_tick(&mut c, t0 + S(41), false);
         assert_eq!(c.stats.completed_short, 1);
     }
 
@@ -825,7 +904,7 @@ mod tests {
         let t0 = Instant::now();
         // 默认开：预告浮窗弹出的那一 tick 必须带一声提示音
         let mut c = core(600, t0);
-        let a = c.tick(t0 + S(586), false);
+        let a = sampled_tick(&mut c, t0 + S(586), false);
         assert!(matches!(c.phase, Phase::HeadsUp { .. }));
         assert_eq!(
             a,
@@ -836,7 +915,7 @@ mod tests {
         // 关掉之后：同一 tick 不再出声，但预告阶段照常建立（视觉提醒不受影响）
         let mut c2 = core(600, t0);
         c2.cfg.heads_up_cue_enabled = false;
-        let a2 = c2.tick(t0 + S(586), false);
+        let a2 = sampled_tick(&mut c2, t0 + S(586), false);
         assert!(matches!(c2.phase, Phase::HeadsUp { .. }));
         assert!(a2.is_empty(), "关闭开关后预告不得再出声");
 
@@ -845,7 +924,10 @@ mod tests {
         let mut c3 = core(600, t0);
         c3.cfg.visual_enabled = false;
         c3.cfg.heads_up_cue_enabled = false;
-        assert_eq!(c3.tick(t0 + S(586), false), vec![Action::PlayCue]);
+        assert_eq!(
+            sampled_tick(&mut c3, t0 + S(586), false),
+            vec![Action::PlayCue]
+        );
     }
 
     #[test]
@@ -855,26 +937,32 @@ mod tests {
         let mut c = core(600, t0);
         c.set_due_in(t0, S(100));
 
-        assert!(c.ui_warmup_in(t0).is_none(), "离浮窗还有 85 秒，不该预热");
         assert!(
-            c.ui_warmup_in(t0 + S(79)).is_none(),
+            sampled_warmup(&mut c, t0).is_none(),
+            "离浮窗还有 85 秒，不该预热"
+        );
+        assert!(
+            sampled_warmup(&mut c, t0 + S(79)).is_none(),
             "差 6 秒仍差一点：预热窗口只有 5 秒"
         );
         assert!(
-            c.ui_warmup_in(t0 + S(80)).is_some(),
+            sampled_warmup(&mut c, t0 + S(80)).is_some(),
             "差 5 秒：预热窗口打开"
         );
-        assert!(c.ui_warmup_in(t0 + S(85)).is_some(), "正点仍应是 Some(0)");
         assert!(
-            c.ui_warmup_in(t0 + S(86)).is_none(),
+            sampled_warmup(&mut c, t0 + S(85)).is_some(),
+            "正点仍应是 Some(0)"
+        );
+        assert!(
+            sampled_warmup(&mut c, t0 + S(86)).is_none(),
             "已错过浮窗时刻（心流 / 全屏里暂不投递）应立即回到 None，释放会话"
         );
 
         // 到点且会投递：phase 转为 HeadsUp，此后由 needs_ui 的阶段分支接管
-        c.tick(t0 + S(85), false);
+        sampled_tick(&mut c, t0 + S(85), false);
         assert!(matches!(c.phase, Phase::HeadsUp { .. }));
         assert!(
-            c.ui_warmup_in(t0 + S(85)).is_none(),
+            sampled_warmup(&mut c, t0 + S(85)).is_none(),
             "已在预告阶段，预热判定必须让位给阶段分支"
         );
     }
@@ -888,32 +976,142 @@ mod tests {
         c.set_due_in(t0, S(100));
         c.cfg.visual_enabled = false;
         assert!(
-            c.ui_warmup_in(in_window).is_none(),
+            sampled_warmup(&mut c, in_window).is_none(),
             "仅声音模式没有浮窗可预热"
         );
 
         let mut c = core(600, t0);
         c.set_due_in(t0, S(100));
         c.cfg.enabled = false;
-        assert!(c.ui_warmup_in(in_window).is_none(), "提醒关掉后不必预热");
+        assert!(
+            sampled_warmup(&mut c, in_window).is_none(),
+            "提醒关掉后不必预热"
+        );
 
         let mut c = core(600, t0);
         c.set_due_in(t0, S(100));
         c.pause_for(t0, S(3600));
-        assert!(c.ui_warmup_in(in_window).is_none(), "暂停期间不预热");
+        assert!(
+            sampled_warmup(&mut c, in_window).is_none(),
+            "暂停期间不预热"
+        );
 
         // 免打扰：连预热都不该开——会话建好 5 秒后到点会被顺延，等于白开
         let mut c = core(600, t0);
         c.set_due_in(t0, S(100));
         assert!(
-            c.ui_warmup_in(t0 + S(80)).is_some(),
+            sampled_warmup(&mut c, t0 + S(80)).is_some(),
             "先确认这个时刻本来就在预热窗口里"
         );
-        c.tick(t0 + S(80), true);
+        sampled_tick(&mut c, t0 + S(80), true);
         assert!(
-            c.ui_warmup_in(t0 + S(80)).is_none(),
+            sampled_warmup(&mut c, t0 + S(80)).is_none(),
             "免打扰时段里不得预热：到点会被顺延，预热出的会话随即退出"
         );
+    }
+    #[test]
+    fn no_native_sample_never_creates_activity_or_natural_rest() {
+        let t0 = Instant::now();
+        let mut c = Core::new(cfg(60), Stats::default(), t0);
+        assert!(c.tick(t0 + S(900), false).is_empty());
+        assert_eq!(c.screen_accum, Duration::ZERO);
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.stats.completed_natural, 0);
+        assert!(c.automatic_pause_reason(t0 + S(900)).is_some());
+        assert!(c.ui_warmup_in(t0 + S(900)).is_none());
+    }
+
+    #[test]
+    fn every_missing_capability_blocks_automatic_delivery() {
+        let t0 = Instant::now();
+        let mut snapshots = [known_sensors(t0); 3];
+        snapshots[0].idle = Reading::Unavailable("No global idle API");
+        snapshots[1].fullscreen = Reading::PermissionRequired("Window metadata unavailable");
+        snapshots[2].interruptible = Reading::Failed("Session query failed");
+        for mut snapshot in snapshots {
+            let mut c = core(60, t0);
+            snapshot.sampled_at = t0 + S(60);
+            c.set_sensors(snapshot);
+            assert!(c.tick(t0 + S(60), false).is_empty());
+            assert_eq!(c.phase, Phase::Idle);
+            assert_eq!(c.screen_accum, Duration::ZERO);
+            assert!(c.automatic_pause_reason(t0 + S(60)).is_some());
+        }
+    }
+
+    #[test]
+    fn stale_sample_cancels_heads_up_without_credit() {
+        let t0 = Instant::now();
+        let mut c = core(60, t0);
+        c.set_sensors(known_sensors(t0 + S(45)));
+        c.tick(t0 + S(45), false);
+        assert!(matches!(c.phase, Phase::HeadsUp { .. }));
+        let accumulated = c.screen_accum;
+        assert!(c.tick(t0 + S(51), false).is_empty());
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.screen_accum, accumulated);
+        assert_eq!(c.stats.completed_natural, 0);
+    }
+
+    #[test]
+    fn recovery_does_not_count_unobserved_time_or_deliver_overdue_reminder() {
+        let t0 = Instant::now();
+        let mut c = Core::new(cfg(60), Stats::default(), t0);
+        c.tick(t0 + S(120), false);
+        c.set_sensors(known_sensors(t0 + S(240)));
+        assert!(c.tick(t0 + S(240), false).is_empty());
+        assert_eq!(c.screen_accum, Duration::ZERO);
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.next_break_in(t0 + S(240)), S(60));
+        c.set_sensors(known_sensors(t0 + S(241)));
+        c.tick(t0 + S(241), false);
+        assert_eq!(c.screen_accum, S(1));
+    }
+
+    #[test]
+    fn manual_break_completes_when_native_monitoring_is_unavailable() {
+        let t0 = Instant::now();
+        let mut c = Core::new(cfg(60), Stats::default(), t0);
+        c.start_break_now(t0);
+        assert!(matches!(c.phase, Phase::Break { .. }));
+        assert_eq!(c.tick(t0 + S(31), false), vec![Action::PlayCue]);
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.stats.completed_short, 1);
+        assert_eq!(c.screen_accum, Duration::ZERO);
+    }
+    #[test]
+    fn manual_break_settles_at_recovery_even_when_sensor_reports_away() {
+        let t0 = Instant::now();
+        for long in [false, true] {
+            let mut c = Core::new(cfg(60), Stats::default(), t0);
+            c.cfg.long_break_enabled = long;
+            if long {
+                c.screen_accum = S(c.cfg.long_break_after_secs);
+            }
+            c.start_break_now(t0);
+            let Phase::Break { ends, .. } = c.phase else {
+                panic!("break must start")
+            };
+            c.tick(ends - S(1), false);
+            c.set_sensors(Sensors {
+                idle: Reading::Known(S(200)),
+                ..known_sensors(ends)
+            });
+            assert_eq!(c.tick(ends, false), vec![Action::PlayCue]);
+            assert_eq!(c.phase, Phase::Idle);
+            assert_eq!(c.stats.completed_natural, 0);
+            assert_eq!(c.stats.completed_short, u32::from(!long));
+            assert_eq!(c.stats.completed_long, u32::from(long));
+            c.set_sensors(Sensors {
+                idle: Reading::Known(S(201)),
+                ..known_sensors(ends + S(1))
+            });
+            c.tick(ends + S(1), false);
+            assert_eq!(
+                c.stats.completed_natural, 0,
+                "same rest must not count twice"
+            );
+        }
     }
 }
 // 追加测试到 tests 模块（由集成脚本定位插入）

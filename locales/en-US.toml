@@ -275,3 +275,7 @@
 "tip.5" = "If your eyes feel dry, close them gently for a few seconds so the tear film can spread again."
 "tip.6" = "Eyes tire least when screen brightness matches the room — check the ambient light while you rest."
 "tip.7" = "After two hours of continuous screen time, it is worth standing up and leaving the screen for 15 minutes."
+
+"ui.monitoring_unavailable" = "Automatic monitoring is paused because native desktop state is unavailable. You can still start a break manually."
+"runtime.monitoring_paused" = "Automatic monitoring paused"
+"ui.autostart_unavailable" = "Automatic startup is not yet available on this platform."

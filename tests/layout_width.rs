@@ -2041,6 +2041,10 @@ fn measure_rows(which: &str, table: &Table, rs: &[Row]) -> (f32, Vec<f32>) {
 /// 这条**先于**所有宽度断言跑（名字排序 + 独立测试都保证它是最早暴露问题的）——
 /// 上限本身错了的话，后面每一条宽度断言都会用错分母。
 #[test]
+#[cfg_attr(
+    not(target_os = "windows"),
+    ignore = "Requires the Windows production font chain; native font/layout acceptance is separate"
+)]
 fn fixture_content_width_is_546() {
     let (w, _) = measure("EN_FONTS", |_ui| Vec::new());
     assert!(
@@ -2089,6 +2093,10 @@ fn fixture_parses_app_rs_style_and_fonts() {
 /// 竖直布局 / `horizontal_wrapped` 里的控件由 egui 自己折行（见文件头的口径
 /// 说明），不在本闸门管辖内。
 #[test]
+#[cfg_attr(
+    not(target_os = "windows"),
+    ignore = "Requires the Windows production font chain; native font/layout acceptance is separate"
+)]
 fn inline_text_fits_card_content_width() {
     let sites = inline_sites();
     let extend: Vec<&Site> = sites.iter().filter(|s| s.extend).collect();
@@ -2208,6 +2216,10 @@ fn inline_text_fits_card_content_width() {
 /// 一个 `ui.horizontal`，读 `ui.min_rect().width()`。任何新增的、解析器不认识的
 /// 控件都会让 `row_items` 里的两道同步核对当场 panic——宁可红，也不许静默漏测。
 #[test]
+#[cfg_attr(
+    not(target_os = "windows"),
+    ignore = "Requires the Windows production font chain; native font/layout acceptance is separate"
+)]
 fn ui_horizontal_rows_fit_card_content_width() {
     let rs = rows();
     let zh = load_locale("zh-CN");
@@ -2280,6 +2292,10 @@ fn ui_horizontal_rows_fit_card_content_width() {
 /// 最坏 fixture 断言 ≤ 546.0：本机真实路径短得多，但闸门不该只在「恰好短」的
 /// 机器上成立。
 #[test]
+#[cfg_attr(
+    not(target_os = "windows"),
+    ignore = "Requires the Windows production font chain; native font/layout acceptance is separate"
+)]
 fn worst_case_config_path_row_fits() {
     let zh = load_locale("zh-CN");
     let en = load_locale("en-US");

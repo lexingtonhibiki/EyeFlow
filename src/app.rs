@@ -45,6 +45,8 @@ pub struct UiSession<'a> {
     panel_noactivate_applied: bool,
     /// 会话结束条件满足后再多画几帧，避免阶段切换瞬间反复拆建 GL 上下文
     idle_frames: u32,
+    #[cfg(not(target_os = "windows"))]
+    desktop_initialized: bool,
     /// 严格模式背景图纹理（随会话生命周期）
     wallpaper: WallpaperCache,
     /// 演示模式（`EYEFLOW_DEMO_TABS=1`）里上一次自动翻页签的时刻
@@ -79,6 +81,8 @@ impl<'a> UiSession<'a> {
             panel_kind: PanelKind::None,
             panel_noactivate_applied: false,
             idle_frames: 0,
+            #[cfg(not(target_os = "windows"))]
+            desktop_initialized: false,
             wallpaper: WallpaperCache::new(),
             demo_tab_at: Instant::now(),
         }
@@ -243,6 +247,7 @@ impl<'a> UiSession<'a> {
 
         let view = SettingsView {
             state_label,
+            sensor_pause_reason: rt.core.automatic_pause_reason(now),
             reminder_line,
             hotkey_active,
             stats: &rt.core.stats,
@@ -289,6 +294,34 @@ fn close_ui_for_quit(ctx: &egui::Context, quitting: bool) -> bool {
 
 impl eframe::App for UiSession<'_> {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(not(target_os = "windows"))]
+        if !self.desktop_initialized {
+            self.desktop_initialized = true;
+            if let Err(e) = self
+                .rt
+                .tray
+                .initialize_on_event_loop(self.rt.core.cfg.enabled, self.rt.core.cfg.sound_enabled)
+            {
+                log::error!("Tray unavailable; desktop window remains accessible: {e}");
+            }
+            if let Some(manager) = crate::create_hotkey_manager() {
+                if let Err(e) = self.rt.attach_hotkeys(manager) {
+                    log::warn!("Hotkeys unavailable: {e}");
+                }
+            }
+            self.rt.tray.set_hotkey_hint(self.rt.hotkey_active());
+        }
+        #[cfg(target_os = "linux")]
+        for _ in 0..32 {
+            if !gtk::events_pending() {
+                break;
+            }
+            gtk::main_iteration_do(false);
+        }
+        #[cfg(not(target_os = "windows"))]
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.rt.quit = true;
+        }
         let now = Instant::now();
         self.rt.step(now);
 
@@ -306,8 +339,8 @@ impl eframe::App for UiSession<'_> {
         if self.rt.needs_ui(now) {
             self.idle_frames = 0;
         } else {
-            self.idle_frames += 1;
-            if self.idle_frames >= 3 {
+            self.idle_frames = self.idle_frames.saturating_add(1);
+            if cfg!(target_os = "windows") && self.idle_frames >= 3 {
                 ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
                 return;
             }
@@ -320,6 +353,8 @@ impl eframe::App for UiSession<'_> {
             .core
             .ui_warmup_in(now)
             .map_or(IDLE_REPAINT, |d| d.min(IDLE_REPAINT));
+        #[cfg(target_os = "linux")]
+        let wait = wait.min(Duration::from_millis(20));
         ctx.request_repaint_after(wait);
     }
 
@@ -330,6 +365,29 @@ impl eframe::App for UiSession<'_> {
             return;
         }
         let now = Instant::now();
+        #[cfg(not(target_os = "windows"))]
+        {
+            // Keep an accessible window even when the desktop has no tray host.
+            ui.heading("EyeFlow");
+            ui.label(self.rt.reminder_line(now));
+            if self.rt.core.automatic_pause_reason(now).is_some() {
+                ui.label(tr("ui.monitoring_unavailable"));
+            }
+            ui.horizontal(|ui| {
+                if ui.button(tr("tray.open_settings")).clicked() {
+                    self.rt.open_settings();
+                }
+                if ui.button(tr("tray.rest_now")).clicked() {
+                    self.rt.on_manual_break_start(now);
+                }
+                if ui.button(tr("tray.quit")).clicked() {
+                    self.rt.quit = true;
+                }
+            });
+            if close_ui_for_quit(&ctx, self.rt.quit) {
+                return;
+            }
+        }
         self.show_panel(&ctx, now);
         self.show_settings(&ctx, now);
     }
@@ -567,11 +625,13 @@ fn tune_style(style: &mut egui::Style) {
 }
 
 /// 一个待加载的字体文件：egui `FontDefinitions` 里的名字 + 磁盘路径。
+#[cfg(target_os = "windows")]
 struct FontFile {
     key: &'static str,
     path: &'static str,
 }
 
+#[cfg(target_os = "windows")]
 const fn font(key: &'static str, path: &'static str) -> FontFile {
     FontFile { key, path }
 }
@@ -611,6 +671,7 @@ const fn font(key: &'static str, path: &'static str) -> FontFile {
 /// `fs::read`（`build_font_defs`）+ 约 44 MB 的 `memcpy`，砍完各减半。
 /// 关闭设置窗之后那部分残渣里它们只占约 1.3 MB——**用户在任务管理器里看不出变化，
 /// 发布说明里也不许写「降低常驻内存」**。
+#[cfg(target_os = "windows")]
 const ZH_FONTS: &[FontFile] = &[
     font("cjk", "C:\\Windows\\Fonts\\msyh.ttc"),
     font("sym", "C:\\Windows\\Fonts\\seguisym.ttf"),
@@ -645,6 +706,7 @@ const ZH_FONTS: &[FontFile] = &[
 /// （`ui.rs` 的卡片标题曾是全项目唯一的 14.0，v0.6.1 归到 17.0）。
 ///
 /// 真正的字重阶梯需要 epaint 上游支持 `FontWeight`，属 v0.7 议题。
+#[cfg(target_os = "windows")]
 const EN_FONTS: &[FontFile] = &[
     font("latin", "C:\\Windows\\Fonts\\segoeui.ttf"),
     font("sym", "C:\\Windows\\Fonts\\seguisym.ttf"),
@@ -655,6 +717,7 @@ const EN_FONTS: &[FontFile] = &[
 /// 从 egui 默认字体（`default_fonts`）起步而不是清空：`app.rs:288` 的 👀 与
 /// `app.rs:347` 的 👏 靠默认字体里的 emoji 字形渲染，**不能关掉 default_fonts**。
 /// 实测这两个 emoji 在 `msyh` / `segoeui` / `seguisym` 里**都没有**。
+#[cfg(target_os = "windows")]
 fn build_font_defs(lang: Lang) -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     let chain = match lang {
@@ -663,6 +726,9 @@ fn build_font_defs(lang: Lang) -> egui::FontDefinitions {
     };
     let mut loaded = 0usize;
     for f in chain {
+        if fonts.font_data.contains_key(f.key) {
+            continue;
+        }
         match std::fs::read(f.path) {
             Ok(bytes) => {
                 fonts.font_data.insert(
@@ -685,6 +751,7 @@ fn build_font_defs(lang: Lang) -> egui::FontDefinitions {
         .filter(|f| fonts.font_data.contains_key(f.key))
         .map(|f| f.key.to_owned())
         .collect();
+    order.dedup();
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         let mut list = std::mem::take(&mut order);
         let entry = fonts.families.entry(family).or_default();
@@ -692,6 +759,80 @@ fn build_font_defs(lang: Lang) -> egui::FontDefinitions {
         *entry = list;
     }
     fonts
+}
+
+/// Resolve a family through CoreText/fontconfig instead of guessing font paths.
+/// Linux packages must depend on fonts-noto-cjk; macOS uses system PingFang SC.
+#[cfg(not(target_os = "windows"))]
+fn build_font_defs(_lang: Lang) -> egui::FontDefinitions {
+    use font_kit::{
+        family_name::FamilyName, handle::Handle, properties::Properties, source::SystemSource,
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    #[cfg(target_os = "macos")]
+    let family = "PingFang SC";
+    #[cfg(not(target_os = "macos"))]
+    let family = "Noto Sans CJK SC";
+    let result = (|| -> Result<egui::FontData, String> {
+        let handle = SystemSource::new()
+            .select_best_match(&[FamilyName::Title(family.to_owned())], &Properties::new())
+            .map_err(|e| format!("{family}: {e}"))?;
+        let (bytes, index) = match handle {
+            Handle::Path { path, font_index } => {
+                (std::fs::read(path).map_err(|e| e.to_string())?, font_index)
+            }
+            Handle::Memory { bytes, font_index } => (bytes.as_ref().clone(), font_index),
+        };
+        let mut data = egui::FontData::from_owned(bytes);
+        data.index = index;
+        Ok(data)
+    })();
+    match result {
+        Ok(data) => append_cjk_fallback(&mut fonts, data),
+        Err(e) => log::error!(
+            "Required CJK font unavailable: {e}. Linux packages require fonts-noto-cjk."
+        ),
+    }
+    fonts
+}
+
+#[cfg(not(target_os = "windows"))]
+fn append_cjk_fallback(fonts: &mut egui::FontDefinitions, data: egui::FontData) {
+    fonts
+        .font_data
+        .insert("system-cjk".to_owned(), std::sync::Arc::new(data));
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("system-cjk".to_owned());
+    }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod desktop_font_tests {
+    #[test]
+    fn native_cjk_font_is_resolved_for_both_languages() {
+        for lang in [crate::tr::Lang::ZhCn, crate::tr::Lang::EnUs] {
+            let fonts = super::build_font_defs(lang);
+            assert!(
+                fonts.font_data.contains_key("system-cjk"),
+                "Required native CJK font is missing"
+            );
+        }
+    }
+    #[test]
+    fn cjk_is_fallback_for_both_families_without_replacing_latin() {
+        let mut fonts = egui::FontDefinitions::default();
+        let before = fonts.families.clone();
+        super::append_cjk_fallback(&mut fonts, egui::FontData::from_owned(Vec::new()));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let chain = &fonts.families[&family];
+            assert_eq!(&chain[..chain.len() - 1], before[&family]);
+            assert_eq!(chain.last().unwrap(), "system-cjk");
+        }
+    }
 }
 
 /// 把当前语言的字体装进 egui；缺字体时退回 egui 默认字体并记录告警。
@@ -714,13 +855,19 @@ fn monitor_size(ctx: &egui::Context) -> egui::Vec2 {
             return size;
         }
     }
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-    let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-    let ppp = ctx.pixels_per_point().max(0.5);
-    egui::vec2(w as f32 / ppp, h as f32 / ppp)
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+        let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+        let ppp = ctx.pixels_per_point().max(0.5);
+        egui::vec2(w as f32 / ppp, h as f32 / ppp)
+    }
+    #[cfg(not(target_os = "windows"))]
+    egui::vec2(1280.0, 800.0)
 }
 
 /// 给浮窗加上 WS_EX_NOACTIVATE：点击按钮也不会把焦点从用户的应用抢走。
+#[cfg(target_os = "windows")]
 fn apply_noactivate(title: &str) -> bool {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -789,4 +936,11 @@ mod quit_tests {
             assert!(!viewport.commands.contains(&ViewportCommand::Visible(false)));
         }
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_noactivate(_title: &str) -> bool {
+    // with_active(false) is supported by winit; Windows' stronger click-through
+    // focus protection is not claimed on other desktops.
+    false
 }

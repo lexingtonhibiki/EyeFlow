@@ -475,6 +475,10 @@ fn font_chain(code: &str) -> Vec<&'static str> {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "windows"),
+    ignore = "Requires the Windows production font chain; native font/layout acceptance is separate"
+)]
 fn t11a_locale_non_ascii_chars_are_covered_by_that_languages_font() {
     for code in ["en-US", "zh-CN"] {
         let values = locale_values(code).unwrap_or_else(|e| {
@@ -517,6 +521,10 @@ fn t11a_locale_non_ascii_chars_are_covered_by_that_languages_font() {
 // 少了它这条会立刻变红，所以这里没有丢断言，是换了一个能判真假的判据。
 // ---------------------------------------------------------------------------
 #[test]
+#[cfg_attr(
+    not(target_os = "windows"),
+    ignore = "Requires the Windows production font chain; native font/layout acceptance is separate"
+)]
 fn t11b_known_risk_symbols_are_covered_by_each_languages_font() {
     for code in ["en-US", "zh-CN"] {
         let chain = font_chain(code);
@@ -543,6 +551,10 @@ fn t11b_known_risk_symbols_are_covered_by_each_languages_font() {
 // 所以 emoji 不在语言字体里是设计允许的；但系统里必须存在能画它的字体）
 // ---------------------------------------------------------------------------
 #[test]
+#[cfg_attr(
+    not(target_os = "windows"),
+    ignore = "Requires the Windows production font chain; native font/layout acceptance is separate"
+)]
 fn t11c_risk_emoji_are_covered_by_a_system_symbol_font() {
     let loaded = open_all(SYMBOL_FONTS);
     assert!(

@@ -11,3 +11,5 @@ pub mod duration_format;
 pub mod i18n;
 pub mod stats;
 pub mod tr;
+
+pub mod platform;

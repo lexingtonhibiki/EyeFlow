@@ -49,8 +49,10 @@ use crate::tr::Lang;
 /// **差 +0.243 个百分点，四轮里每一轮都是 `MsgWait` 更高**。折合约合每天多耗 3.5 分钟
 /// CPU，换来点击响应 p50 593 ms → 十几毫秒——这笔交易划算，但它不是免费的。
 /// 早醒来源未查明（`tray-icon` 那个 15 ms `SetTimer` 只在鼠标悬停托盘时才设，不是它）。
+#[cfg(target_os = "windows")]
 const LIGHT_LOOP_TICK: Duration = Duration::from_secs(1);
 /// UI 会话连续失败后的退避时间
+#[cfg(target_os = "windows")]
 const UI_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 
 /// 等消息队列上有输入，或等到兜底超时。返回后一律回到轻量循环顶部重新泵消息。
@@ -62,6 +64,7 @@ const UI_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 /// `WAIT_FAILED` 的处理是这里唯一容易写错的地方：它表示**等待本身失败**，
 /// 此时消息队列里到底有没有东西是未知的。它既不能当成「有消息」盲进泵，
 /// 也不能原地重试（会立刻返回，退化成 100% CPU 空转），所以退回等价的 `sleep`。
+#[cfg(target_os = "windows")]
 fn wait_for_input_or_fallback(timeout: Duration) {
     use windows::Win32::Foundation::{WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -115,13 +118,12 @@ fn wait_for_input_or_fallback(timeout: Duration) {
 }
 
 fn main() {
-    init_logging();
-    log::info!("EyeFlow {} 启动", env!("CARGO_PKG_VERSION"));
-
+    // A duplicate launch must not truncate the running instance's log.
     if !acquire_single_instance() {
-        log::info!("已有 EyeFlow 实例在运行，本次退出");
         return;
     }
+    init_logging();
+    log::info!("EyeFlow {} 启动", env!("CARGO_PKG_VERSION"));
 
     // 首次运行（还没有配置文件）：启动后自动打开设置窗做一次引导
     let first_run = !Config::path().exists();
@@ -162,6 +164,7 @@ fn main() {
     // 但它们只是建线程，很快。
     // 托盘与热键必须在运行 Win32 消息循环的线程上创建：就是主线程；
     // 轻量循环用 PeekMessage 泵，UI 会话期间由 winit 泵，二者都在这条线程上。
+    #[cfg(target_os = "windows")]
     let tray = match tray::Tray::new(cfg.enabled, cfg.sound_enabled) {
         Ok(t) => t,
         Err(e) => {
@@ -169,7 +172,10 @@ fn main() {
             return;
         }
     };
+    #[cfg(target_os = "windows")]
     let hotkeys = create_hotkey_manager();
+    #[cfg(not(target_os = "windows"))]
+    let (tray, hotkeys) = (tray::Tray::deferred(), None);
 
     detector::start_keyboard_hook(tx.clone());
     detector::start_sensor_thread(tx.clone());
@@ -198,7 +204,9 @@ fn main() {
 
     // 轻量循环：没有窗口、没有 GL 上下文。只在需要显示窗口时进入 eframe 会话，
     // 窗口全部关闭后回到这里（docs/adr/0006）。
+    #[cfg(target_os = "windows")]
     let mut ui_backoff_until: Option<Instant> = None;
+    #[cfg(target_os = "windows")]
     loop {
         pump_win32_messages();
         let now = Instant::now();
@@ -227,6 +235,11 @@ fn main() {
         wait_for_input_or_fallback(LIGHT_LOOP_TICK);
     }
 
+    #[cfg(not(target_os = "windows"))]
+    if let Err(e) = run_ui_session(&mut rt) {
+        log::error!("Desktop event loop failed: {e}");
+    }
+
     detector::stop_keyboard_hook();
     log::info!("EyeFlow 退出");
 }
@@ -236,15 +249,23 @@ fn main() {
 fn run_ui_session(rt: &mut Runtime) -> eframe::Result {
     log::debug!("UI 会话开始");
     // 根视口是屏幕外的 1×1 锚点窗口（见 app.rs 模块说明）。
+    #[cfg(target_os = "windows")]
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("EyeFlow")
+        .with_inner_size([1.0, 1.0])
+        .with_position([-30000.0, -30000.0])
+        .with_decorations(false)
+        .with_taskbar(false)
+        .with_active(false)
+        .with_resizable(false);
+    #[cfg(not(target_os = "windows"))]
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("EyeFlow")
+        .with_inner_size([520.0, 240.0]);
+    #[cfg(target_os = "linux")]
+    gtk::init().map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("EyeFlow")
-            .with_inner_size([1.0, 1.0])
-            .with_position([-30000.0, -30000.0])
-            .with_decorations(false)
-            .with_taskbar(false)
-            .with_active(false)
-            .with_resizable(false),
+        viewport,
         centered: false,
         persist_window: false,
         run_and_return: true,
@@ -261,6 +282,7 @@ fn run_ui_session(rt: &mut Runtime) -> eframe::Result {
 }
 
 /// 泵送主线程消息队列：托盘图标与全局热键的隐藏窗口都在这条线程上。
+#[cfg(target_os = "windows")]
 fn pump_win32_messages() {
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
@@ -276,6 +298,13 @@ fn pump_win32_messages() {
 
 /// 创建全局热键管理器；具体注册与否由 `Runtime::apply_hotkey_enabled` 按配置决定。
 fn create_hotkey_manager() -> Option<GlobalHotKeyManager> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|s| s.eq_ignore_ascii_case("wayland"))
+    {
+        log::warn!("Global shortcuts unavailable in a Wayland session");
+        return None;
+    }
     match GlobalHotKeyManager::new() {
         Ok(m) => Some(m),
         Err(e) => {
@@ -287,6 +316,7 @@ fn create_hotkey_manager() -> Option<GlobalHotKeyManager> {
 
 /// 系统的默认 UI 语言（`GetUserDefaultLocaleName`），例如 `en-US` / `zh-CN`。
 /// 拿不到就返回空串，调用方按「非 `en` 前缀即中文」处理。
+#[cfg(target_os = "windows")]
 fn system_locale() -> String {
     use windows::Win32::Globalization::GetUserDefaultLocaleName;
     // Win32 的 LOCALE_NAME_MAX_LENGTH = 85；windows 0.62 的 Globalization 里没有
@@ -301,6 +331,7 @@ fn system_locale() -> String {
 }
 
 /// 命名互斥量保证单实例；句柄有意不关闭，随进程存活。
+#[cfg(target_os = "windows")]
 fn acquire_single_instance() -> bool {
     use windows::core::w;
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
@@ -345,6 +376,7 @@ fn init_logging() {
 ///
 /// Win32 调用本身是 unsafe 且可能重入的（弹窗期间再 panic 会递归调 hook），
 /// 因此用静态标志挡住重入。
+#[cfg(target_os = "windows")]
 fn show_panic_message(info: &std::panic::PanicHookInfo<'_>) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -374,6 +406,66 @@ fn show_panic_message(info: &std::panic::PanicHookInfo<'_>) {
             PCWSTR(text.as_ptr()),
             PCWSTR(title.as_ptr()),
             MB_OK | MB_ICONERROR | MB_TOPMOST,
+        );
+    }
+}
+
+mod platform;
+
+#[cfg(not(target_os = "windows"))]
+fn system_locale() -> String {
+    sys_locale::get_locale().unwrap_or_default()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn acquire_single_instance() -> bool {
+    use fs2::FileExt;
+    // An advisory lock is released by the kernel on exit, including a crash.
+    // Keep the owning file alive; do not delete/recreate the lock inode.
+    let dir = config::config_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("Cannot create EyeFlow configuration directory: {e}");
+        return false;
+    }
+    let path = dir.join("instance.lock");
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+    {
+        Ok(file) => match file.try_lock_exclusive() {
+            Ok(()) => {
+                std::mem::forget(file);
+                true
+            }
+            Err(e) => {
+                eprintln!("Cannot acquire instance lock: {e}");
+                false
+            }
+        },
+        Err(e) => {
+            eprintln!("Cannot open instance lock: {e}");
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_panic_message(info: &std::panic::PanicHookInfo<'_>) {
+    // Never invoke GUI APIs from an arbitrary panicking worker thread.
+    eprintln!("EyeFlow: {info}");
+}
+
+#[cfg(test)]
+mod startup_order_tests {
+    #[test]
+    fn instance_lock_precedes_truncating_log_initialization() {
+        let source = include_str!("main.rs");
+        let main = source.split("fn main() {").nth(1).unwrap();
+        assert!(
+            main.find("acquire_single_instance()").unwrap() < main.find("init_logging()").unwrap()
         );
     }
 }

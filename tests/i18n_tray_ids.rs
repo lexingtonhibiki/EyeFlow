@@ -64,9 +64,9 @@ fn has_tray_method(src: &str, name: &str) -> bool {
 ///  `apply_language` 要改这两项必须先把它们提升为字段）
 fn stored_menu_item_fields(src: &str) -> usize {
     let start = src
-        .find("pub struct Tray {")
+        .find("struct NativeTray {")
         .unwrap_or_else(|| panic!("src/tray.rs 里找不到 `pub struct Tray`"));
-    let body = &src[start + "pub struct Tray {".len()..];
+    let body = &src[start + "struct NativeTray {".len()..];
     let end = body.find("\n}").unwrap_or(body.len());
     body[..end]
         .lines()

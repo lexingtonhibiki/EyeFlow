@@ -62,7 +62,7 @@ pub struct Runtime {
 /// - `phase` 只取判别式：`HeadsUp` / `Break` 的文案是常量，带上的时间载荷不影响输出；
 /// - `minute` → `Idle` 分支里 `%H:%M` 的钟点，**只会在分钟边界变**；
 /// - `completed` / `postponed` / `streak` → 第 3 行的计数。
-type TooltipFingerprint = (ContextState, bool, bool, u8, i64, u32, u32, u32);
+type TooltipFingerprint = (ContextState, bool, bool, u8, i64, u32, u32, u32, bool);
 
 impl Runtime {
     pub fn new(
@@ -96,6 +96,16 @@ impl Runtime {
             rt.spawn_update_check();
         }
         rt
+    }
+
+    /// Install the manager only once the native main-thread event loop is running.
+    #[cfg(not(target_os = "windows"))]
+    pub fn attach_hotkeys(&mut self, manager: GlobalHotKeyManager) -> Result<(), String> {
+        if self.hotkeys.is_some() {
+            return Err("Global hotkey manager is already initialized".to_owned());
+        }
+        self.hotkeys = Some(manager);
+        self.apply_hotkey_enabled(self.core.cfg.hotkey_enabled)
     }
 
     /// 在后台线程查询 GitHub Releases，结果经事件总线回到主线程。
@@ -324,6 +334,7 @@ impl Runtime {
             self.core.stats.completed_today(),
             self.core.stats.postponed,
             self.core.stats.streak_days,
+            self.core.automatic_pause_reason(now).is_some(),
         )
     }
 
@@ -547,8 +558,21 @@ impl Runtime {
             SettingsAction::SetLanguage(code) => self.apply_language(code),
             SettingsAction::OpenConfigDir => {
                 let dir = crate::config::config_dir();
-                let _ = std::fs::create_dir_all(&dir);
-                let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+                #[cfg(target_os = "windows")]
+                let opener = "explorer";
+                #[cfg(target_os = "macos")]
+                let opener = "open";
+                #[cfg(target_os = "linux")]
+                let opener = "xdg-open";
+                let result = std::fs::create_dir_all(&dir).and_then(|()| {
+                    std::process::Command::new(opener)
+                        .arg(&dir)
+                        .spawn()
+                        .map(|_| ())
+                });
+                if let Some(settings) = &mut self.settings {
+                    settings.config_open_error = result.err().map(|error| error.to_string());
+                }
             }
         }
     }
@@ -586,6 +610,10 @@ impl Runtime {
             tr("runtime.reminder_disabled").to_string()
         } else if self.core.is_paused(now) {
             tr("runtime.reminder_paused").to_string()
+        } else if self.core.automatic_pause_reason(now).is_some()
+            && !matches!(self.core.phase, Phase::Break { .. })
+        {
+            tr("runtime.monitoring_paused").to_string()
         } else {
             match self.core.phase {
                 // 具体钟点比“约 12 分钟后”更直观（快赢审计 #4）

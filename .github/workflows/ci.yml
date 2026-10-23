@@ -25,6 +25,48 @@ jobs:
       - name: Test shared core without native desktop dependencies
         run: cargo test --locked --no-default-features
 
+  native-desktop:
+    name: Native desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native architecture
+        shell: bash
+        run: test "$(uname -m)" = "${{ matrix.arch }}"
+      - name: Install Linux native development libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libasound2-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev fonts-noto-cjk
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Check native desktop
+        run: cargo check --locked --all-targets
+      - name: Clippy native production code
+        run: cargo clippy --locked --lib --bins -- -D warnings
+      # Seven hardware-font tests remain Windows-specific and explicitly report
+      # ignored here. Portable parser/contracts and all runtime unit tests still run.
+      # These are build/unit checks, not proof of native GUI, lock or audio behavior.
+      - name: Test native desktop and portable contracts
+        run: cargo test --locked
+      - name: Build native release executable (not a published release)
+        run: cargo build --locked --release
+
   ci:
     name: Check / Test / Build (windows-latest)
     runs-on: windows-latest

@@ -29,7 +29,7 @@ mod id {
     pub const QUIT: &str = "quit";
 }
 
-pub struct Tray {
+struct NativeTray {
     icon: TrayIcon,
     menu_events: Receiver<MenuEvent>,
     // 7 个菜单项**全部**是字段。`open_item` / `quit_item` 在 v0.5.2 里还是
@@ -50,7 +50,7 @@ pub struct Tray {
     hotkey_shown: Cell<bool>,
 }
 
-impl Tray {
+impl NativeTray {
     pub fn new(enabled: bool, sound_on: bool) -> Result<Self, Box<dyn std::error::Error>> {
         // A menu event is not a winit repaint event. Wake the active UI session
         // immediately instead of waiting for its periodic maintenance repaint.
@@ -114,6 +114,7 @@ impl Tray {
         menu.append(&quit_item)?;
 
         // 按 DPI 动态渲染托盘图标（16/24/32/48…），避免固定 32×32 被 Shell 拉伸发糊
+        #[cfg(target_os = "windows")]
         #[allow(clippy::missing_safety_doc)]
         let icon_size = unsafe {
             windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
@@ -121,6 +122,8 @@ impl Tray {
             )
             .clamp(16, 64) as u32
         };
+        #[cfg(not(target_os = "windows"))]
+        let icon_size = 32;
         let rgba = crate::icon::render_rgba(icon_size);
         let icon = Icon::from_rgba(rgba, icon_size, icon_size)?;
 
@@ -263,6 +266,73 @@ impl Tray {
             if self.icon.set_tooltip(Some(&clipped)).is_ok() {
                 self.tooltip = text.to_string();
             }
+        }
+    }
+}
+
+/// Deferred on Cocoa/GTK until the main event loop has begun dispatching.
+pub struct Tray {
+    native: Option<NativeTray>,
+}
+impl Tray {
+    #[cfg(target_os = "windows")]
+    pub fn new(enabled: bool, sound_on: bool) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            native: Some(NativeTray::new(enabled, sound_on)?),
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    pub fn deferred() -> Self {
+        Self { native: None }
+    }
+    #[cfg(not(target_os = "windows"))]
+    pub fn initialize_on_event_loop(
+        &mut self,
+        enabled: bool,
+        sound_on: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if self.native.is_none() {
+            self.native = Some(NativeTray::new(enabled, sound_on)?);
+        }
+        Ok(())
+    }
+    pub fn poll(&self) -> Vec<TrayCommand> {
+        self.native.as_ref().map_or_else(Vec::new, NativeTray::poll)
+    }
+    pub fn set_enabled(&self, enabled: bool) {
+        if let Some(t) = &self.native {
+            t.set_enabled(enabled);
+        }
+    }
+    pub fn set_sound(&self, on: bool) {
+        if let Some(t) = &self.native {
+            t.set_sound(on);
+        }
+    }
+    pub fn set_hotkey_hint(&self, enabled: bool) {
+        if let Some(t) = &self.native {
+            t.set_hotkey_hint(enabled);
+        }
+    }
+    pub fn set_stats_line(&self, text: &str) {
+        if let Some(t) = &self.native {
+            t.set_stats_line(text);
+        }
+    }
+    pub fn set_paused(&self, paused: bool) {
+        if let Some(t) = &self.native {
+            t.set_paused(paused);
+        }
+    }
+    pub fn apply_language(&mut self, lang: crate::tr::Lang) {
+        crate::tr::set_language(lang);
+        if let Some(t) = &mut self.native {
+            t.apply_language(lang);
+        }
+    }
+    pub fn set_tooltip(&mut self, text: &str) {
+        if let Some(t) = &mut self.native {
+            t.set_tooltip(text);
         }
     }
 }

@@ -447,10 +447,53 @@ impl Config {
 }
 
 pub fn config_dir() -> PathBuf {
-    std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("eyeflow")
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let base =
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"));
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let base = xdg_config_base(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    );
+    base.unwrap_or_else(|| PathBuf::from(".")).join("eyeflow")
+}
+
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
+fn xdg_config_base(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    xdg.map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".config")))
+}
+
+#[cfg(test)]
+mod platform_path_tests {
+    use super::*;
+    #[test]
+    fn xdg_uses_absolute_override() {
+        let root = std::env::temp_dir();
+        assert_eq!(
+            xdg_config_base(Some(root.clone().into_os_string()), Some("ignored".into())),
+            Some(root)
+        );
+    }
+    #[test]
+    fn xdg_rejects_empty_and_relative_override() {
+        for value in ["", "relative/path"] {
+            assert_eq!(
+                xdg_config_base(Some(value.into()), Some("home".into())),
+                Some(PathBuf::from("home/.config"))
+            );
+        }
+    }
+    #[test]
+    fn xdg_missing_environment_is_explicit() {
+        assert_eq!(xdg_config_base(None, None), None);
+    }
 }
 
 /// 原子写：先写同目录下的临时文件，再 `rename` 覆盖目标。写法照抄 `stats.rs`。

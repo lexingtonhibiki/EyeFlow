@@ -65,6 +65,7 @@ pub struct SettingsState {
     pub tab: SettingsTab,
     pub autostart: bool,
     pub autostart_error: Option<String>,
+    pub config_open_error: Option<String>,
     pub saved_at: Option<Instant>,
     /// 自定义提示音：选中文件的说明 / 校验错误
     pub custom_sound_info: Option<String>,
@@ -88,6 +89,7 @@ impl SettingsState {
             tab: SettingsTab::default(),
             autostart,
             autostart_error: None,
+            config_open_error: None,
             saved_at: None,
             custom_sound_info: None,
             custom_sound_error: None,
@@ -128,6 +130,7 @@ pub enum UpdateStatus {
 /// 设置窗口需要展示的只读运行状态
 pub struct SettingsView<'a> {
     pub state_label: &'a str,
+    pub sensor_pause_reason: Option<&'static str>,
     /// “下次休息约 12 分钟后 / 即将休息 / 休息中 / 已暂停 / 提醒已关闭”
     pub reminder_line: String,
     /// 全局热键当前是否已注册（显示用）
@@ -180,6 +183,10 @@ pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Ve
     let mut actions = Vec::new();
     ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
 
+    if let Some(reason) = view.sensor_pause_reason {
+        ui.colored_label(COLOR_ERR, tr("ui.monitoring_unavailable"));
+        ui.label(reason);
+    }
     tab_bar(ui, s);
 
     egui::ScrollArea::vertical()
@@ -894,7 +901,14 @@ fn system_card(
         });
 
         // 开机自启不是 Config 字段（注册表状态），单独即时生效
-        let autostart_resp = ui.checkbox(&mut s.autostart, tr("ui.autostart"));
+        let unavailable = crate::autostart::unavailable_reason();
+        let autostart_resp = ui.add_enabled(
+            unavailable.is_none(),
+            egui::Checkbox::new(&mut s.autostart, tr("ui.autostart")),
+        );
+        if let Some(reason) = unavailable {
+            ui.label(reason);
+        }
         if commit(&autostart_resp) {
             actions.push(SettingsAction::SetAutostart(s.autostart));
         }
@@ -938,6 +952,9 @@ fn system_card(
                 actions.push(SettingsAction::OpenConfigDir);
             }
         });
+        if let Some(error) = &s.config_open_error {
+            ui.colored_label(COLOR_ERR, error);
+        }
     });
 }
 
@@ -1083,6 +1100,7 @@ mod tests {
         let ctx = egui::Context::default();
         let stats = Stats::default();
         let view = SettingsView {
+            sensor_pause_reason: None,
             state_label: "",
             reminder_line: String::new(),
             hotkey_active: false,
