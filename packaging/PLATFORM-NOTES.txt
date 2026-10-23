@@ -1,0 +1,32 @@
+EyeFlow desktop platform preview
+
+Packaging is not proof of native GUI, audio, tray, or reminder correctness.
+These packages are not yet equivalent to the Windows release.
+
+Linux: Ubuntu 24.04 amd64 only. X11 automatic reminders depend on confirmed
+session lock/idle/fullscreen observations. Unknown observations pause automatic
+reminders. Wayland automatic monitoring is not implemented. The visible main
+window retains settings, manual rest, and quit even without a working tray.
+System Noto CJK fonts are a package dependency, not bundled font copies.
+
+macOS: separate Apple Silicon (arm64) and Intel (x86_64) builds. Automatic
+reminders are currently paused because lock/fullscreen state is unavailable.
+Manual rest/settings/quit still require native GUI validation. System PingFang
+is read on the user's Mac, never copied into this app or disk image.
+The app/DMG is NOT Developer ID signed or notarized. A compiler-generated
+ad-hoc binary signature is not Developer ID signing. Gatekeeper may prevent
+launch. Do not disable system security to install this preview.
+
+Linux/macOS automatic startup is not implemented. Packaging does not add a
+startup service or change any system permission. Audio device switching and
+exit while a popup is visible require platform-specific validation.
+
+Linux files: /usr/bin/eyeflow; /usr/share/applications/eyeflow.desktop;
+/usr/share/icons/hicolor/256x256/apps/eyeflow.png; /usr/share/doc/eyeflow/.
+Package-manager removal removes those files; user config is intentionally kept
+in $XDG_CONFIG_HOME/eyeflow or ~/.config/eyeflow.
+macOS: drag EyeFlow.app to Applications; removal of the app does not remove
+user settings in ~/Library/Application Support/eyeflow.
+
+EyeFlow code/icon: MIT; see the included LICENSE.txt or copyright file.
+Third-party dependency license/notice review remains a release prerequisite.

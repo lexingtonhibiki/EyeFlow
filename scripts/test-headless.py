@@ -35,7 +35,7 @@ def toml(value):
 
 def main():
     original = tomllib.loads((ROOT / "Cargo.toml").read_text())
-    modules = ["audio", "config", "core", "stats", "tr", "i18n", "ui", "wallpaper", "update", "tips"]
+    modules = ["audio", "autostart", "config", "core", "duration_format", "stats", "tr", "i18n", "ui", "wallpaper", "update", "tips"]
     dependencies = ["egui", "image", "rodio", "serde", "toml", "log", "chrono", "rand", "ureq", "serde_json"]
     with tempfile.TemporaryDirectory(prefix="eyeflow-headless-") as directory:
         work = Path(directory)
@@ -52,12 +52,20 @@ def main():
                     f'version = {toml(original["package"]["version"])}',
                     'edition = "2021"', 'autobins = false', 'autoexamples = false', 'build = "build.rs"',
                     '[lib]', 'path = "headless.rs"', '[dependencies]']
-        manifest += [f'{name} = {toml(original["dependencies"][name])}' for name in dependencies]
+        for name in dependencies:
+            dependency = original["dependencies"][name]
+            if isinstance(dependency, dict) and name not in ["ureq", "serde_json"]:
+                # This harness deliberately exercises headless GUI/audio modules,
+                # not the native desktop binary or its system-loop dependencies.
+                dependency = {key: value for key, value in dependency.items() if key != "optional"}
+            manifest.append(f"{name} = {toml(dependency)}")
         manifest += ['[build-dependencies]', 'winresource = "0.1"', '[features]']
-        manifest += [f'{name} = {toml(value)}' for name, value in original['features'].items()]
+        manifest += ['default = ["update-check"]', 'desktop = []',
+                     'update-check = ["dep:ureq", "dep:serde_json"]']
         (work / "Cargo.toml").write_text("\n".join(manifest) + "\n")
         (work / "headless.rs").write_text("#![allow(dead_code)]\n" + "\n".join(
-            f'#[path = "src/{name}.rs"]\nmod {name};' for name in modules))
+            f'#[path = "src/{name}.rs"]\nmod {name};' for name in modules)
+            + '\n#[path = "src/platform/mod.rs"]\nmod platform;\n')
         # Retain the product's dependency selections. Cargo only adjusts the
         # temporary root-package entry; it never edits the product lockfile.
         shutil.copyfile(ROOT / "Cargo.lock", work / "Cargo.lock")
@@ -84,8 +92,12 @@ def main():
                 (work / windows_path).symlink_to(font)
         env = os.environ.copy()
         env["APPDATA"] = str(work / "appdata")
+        env["XDG_CONFIG_HOME"] = str(work / "xdg-config")
         env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target" / "headless"))
-        subprocess.run(["cargo", "test", "--offline", "--manifest-path", str(work / "Cargo.toml")],
+        # Native CI reports Windows-font tests as ignored on Unix. This harness
+        # has explicitly required the real font files above, so run those tests.
+        subprocess.run(["cargo", "test", "--offline", "--manifest-path", str(work / "Cargo.toml"),
+                        "--", "--include-ignored"],
                        env=env, check=True)
 
 

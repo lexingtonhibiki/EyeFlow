@@ -682,6 +682,10 @@ fn t11e_font_chain_in_app_rs_equals_expected_files() {
 /// T11 变红时先跑它，就知道是「字体选错了」还是「文案里有画不出的字」。
 /// 断言部分只校验环境本身可用（字体能打开），覆盖结论由上面三条测试负责。
 #[test]
+#[cfg_attr(
+    not(target_os = "windows"),
+    ignore = "Requires the Windows production font files; native CJK fonts are tested separately"
+)]
 fn probe_coverage() {
     for n in EN_FONTS.iter().chain(ZH_FONTS).chain(SYMBOL_FONTS) {
         let p = PathBuf::from(FONT_DIR).join(n);

@@ -761,33 +761,69 @@ fn build_font_defs(lang: Lang) -> egui::FontDefinitions {
     fonts
 }
 
-/// Resolve a family through CoreText/fontconfig instead of guessing font paths.
-/// Linux packages must depend on fonts-noto-cjk; macOS uses system PingFang SC.
+/// Resolve installed CJK families through CoreText/fontconfig, without guessed paths.
+/// macOS versions/runners differ in installed fonts; never trigger font downloads.
 #[cfg(not(target_os = "windows"))]
-fn build_font_defs(_lang: Lang) -> egui::FontDefinitions {
+fn resolve_native_cjk_font() -> Result<egui::FontData, String> {
     use font_kit::{
         family_name::FamilyName, handle::Handle, properties::Properties, source::SystemSource,
     };
-    let mut fonts = egui::FontDefinitions::default();
     #[cfg(target_os = "macos")]
-    let family = "PingFang SC";
+    let candidates = [
+        "PingFang SC",
+        "Heiti SC",
+        "Songti SC",
+        "Hiragino Sans GB",
+        "Arial Unicode MS",
+    ];
     #[cfg(not(target_os = "macos"))]
-    let family = "Noto Sans CJK SC";
-    let result = (|| -> Result<egui::FontData, String> {
-        let handle = SystemSource::new()
-            .select_best_match(&[FamilyName::Title(family.to_owned())], &Properties::new())
-            .map_err(|e| format!("{family}: {e}"))?;
-        let (bytes, index) = match handle {
-            Handle::Path { path, font_index } => {
-                (std::fs::read(path).map_err(|e| e.to_string())?, font_index)
+    let candidates = ["Noto Sans CJK SC", "Noto Sans SC"];
+    let source = SystemSource::new();
+    let mut errors = Vec::new();
+    for family in candidates {
+        let attempt = (|| -> Result<egui::FontData, String> {
+            let handle = source
+                .select_best_match(&[FamilyName::Title(family.to_owned())], &Properties::new())
+                .map_err(|e| format!("select: {e}"))?;
+            let native = handle.load().map_err(|e| format!("load: {e}"))?;
+            for ch in ['护', '眼', '简', '体'] {
+                if native.glyph_for_char(ch).is_none() {
+                    return Err(format!("missing required glyph {ch}"));
+                }
             }
-            Handle::Memory { bytes, font_index } => (bytes.as_ref().clone(), font_index),
-        };
-        let mut data = egui::FontData::from_owned(bytes);
-        data.index = index;
-        Ok(data)
-    })();
-    match result {
+            let (bytes, index) = match handle {
+                Handle::Path { path, font_index } => (
+                    std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?,
+                    font_index,
+                ),
+                Handle::Memory { bytes, font_index } => (bytes.as_ref().clone(), font_index),
+            };
+            let mut data = egui::FontData::from_owned(bytes);
+            data.index = index;
+            Ok(data)
+        })();
+        match attempt {
+            Ok(data) => {
+                log::info!(
+                    "CJK font resolved: {family}, collection index {}",
+                    data.index
+                );
+                return Ok(data);
+            }
+            Err(error) => errors.push(format!("{family}: {error}")),
+        }
+    }
+    Err(format!(
+        "No usable installed CJK font. Attempts: {}. Available families: {:?}",
+        errors.join("; "),
+        source.all_families()
+    ))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn build_font_defs(_lang: Lang) -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    match resolve_native_cjk_font() {
         Ok(data) => append_cjk_fallback(&mut fonts, data),
         Err(e) => log::error!(
             "Required CJK font unavailable: {e}. Linux packages require fonts-noto-cjk."
@@ -814,6 +850,8 @@ fn append_cjk_fallback(fonts: &mut egui::FontDefinitions, data: egui::FontData) 
 mod desktop_font_tests {
     #[test]
     fn native_cjk_font_is_resolved_for_both_languages() {
+        // Fail with actual discovery/read/glyph diagnostics, even without a logger.
+        super::resolve_native_cjk_font().unwrap_or_else(|e| panic!("{e}"));
         for lang in [crate::tr::Lang::ZhCn, crate::tr::Lang::EnUs] {
             let fonts = super::build_font_defs(lang);
             assert!(
