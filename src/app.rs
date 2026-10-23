@@ -271,10 +271,30 @@ impl<'a> UiSession<'a> {
     }
 }
 
+/// Stop every viewport before returning to eframe. Closing only ROOT while
+/// still drawing immediate children lets the final frame recreate visible UI.
+fn close_ui_for_quit(ctx: &egui::Context, quitting: bool) -> bool {
+    if !quitting {
+        return false;
+    }
+    let ids: Vec<_> = ctx.input(|input| input.raw.viewports.keys().copied().collect());
+    for id in ids {
+        ctx.send_viewport_cmd_to(id, ViewportCommand::Visible(false));
+        ctx.send_viewport_cmd_to(id, ViewportCommand::Close);
+    }
+    // ROOT is also needed before the first complete viewport input arrives.
+    ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+    true
+}
+
 impl eframe::App for UiSession<'_> {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
         self.rt.step(now);
+
+        if close_ui_for_quit(ctx, self.rt.quit) {
+            return;
+        }
 
         // 语言切换：托盘由 `Runtime::apply_language` 立即重写，egui 侧只需重装字体
         if crate::tr::language() != self.font_lang {
@@ -282,10 +302,6 @@ impl eframe::App for UiSession<'_> {
             set_fonts(ctx);
         }
 
-        if self.rt.quit {
-            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
-            return;
-        }
         let now = Instant::now();
         if self.rt.needs_ui(now) {
             self.idle_frames = 0;
@@ -309,6 +325,10 @@ impl eframe::App for UiSession<'_> {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // eframe calls ui even after logic requested Close in the same frame.
+        if close_ui_for_quit(&ctx, self.rt.quit) {
+            return;
+        }
         let now = Instant::now();
         self.show_panel(&ctx, now);
         self.show_settings(&ctx, now);
@@ -721,5 +741,41 @@ fn apply_noactivate(title: &str) -> bool {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted);
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod quit_tests {
+    use super::*;
+
+    #[test]
+    fn quit_hides_and_closes_reminder_settings_and_root_in_one_pass() {
+        let ctx = egui::Context::default();
+        let reminder = ViewportId::from_hash_of(("eyeflow-panel", 7_u64));
+        let settings = ViewportId::from_hash_of("eyeflow-settings");
+        let mut input = egui::RawInput::default();
+        for id in [reminder, settings] {
+            input.viewports.insert(id, egui::ViewportInfo::default());
+        }
+        let output = ctx.run_ui(input, |ui| {
+            assert!(close_ui_for_quit(ui.ctx(), true));
+        });
+        for id in [ViewportId::ROOT, reminder, settings] {
+            let commands = &output.viewport_output[&id].commands;
+            assert!(commands.contains(&ViewportCommand::Visible(false)));
+            assert!(commands.contains(&ViewportCommand::Close));
+        }
+    }
+
+    #[test]
+    fn normal_frames_do_not_close_any_windows() {
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(!close_ui_for_quit(ui.ctx(), false));
+        });
+        for viewport in output.viewport_output.values() {
+            assert!(!viewport.commands.contains(&ViewportCommand::Close));
+            assert!(!viewport.commands.contains(&ViewportCommand::Visible(false)));
+        }
     }
 }

@@ -4,6 +4,7 @@
 //! 托盘图标必须在运行 Win32 消息循环的线程上创建——即 eframe 主线程、`run_native` 之前。
 
 use std::cell::Cell;
+use std::sync::mpsc::{self, Receiver};
 
 use crate::tr::tr;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
@@ -30,6 +31,7 @@ mod id {
 
 pub struct Tray {
     icon: TrayIcon,
+    menu_events: Receiver<MenuEvent>,
     // 7 个菜单项**全部**是字段。`open_item` / `quit_item` 在 v0.5.2 里还是
     // `Tray::new` 的局部变量，`apply_language` 改不到它们——ADR-0008 §落地前置
     // 点名的就是这一条：切语言后「打开设置」和「退出」两项会保持旧语言。
@@ -50,6 +52,15 @@ pub struct Tray {
 
 impl Tray {
     pub fn new(enabled: bool, sound_on: bool) -> Result<Self, Box<dyn std::error::Error>> {
+        // A menu event is not a winit repaint event. Wake the active UI session
+        // immediately instead of waiting for its periodic maintenance repaint.
+        // Installing a handler replaces muda's default receiver, so retain our
+        // own queue and drain it in poll(). Install before the first menu event.
+        let (menu_tx, menu_events) = mpsc::channel();
+        MenuEvent::set_event_handler(Some(move |event| {
+            let _ = menu_tx.send(event);
+            crate::event::wake_ui();
+        }));
         let open_item = MenuItem::with_id(
             MenuId(id::OPEN_SETTINGS.into()),
             tr("tray.open_settings"),
@@ -124,6 +135,7 @@ impl Tray {
 
         Ok(Self {
             icon: tray,
+            menu_events,
             open_item,
             enabled_item,
             rest_item,
@@ -142,7 +154,7 @@ impl Tray {
     /// 每帧调用：把 tray-icon / muda 的全局事件通道排空成命令。
     pub fn poll(&self) -> Vec<TrayCommand> {
         let mut out = Vec::new();
-        while let Ok(ev) = MenuEvent::receiver().try_recv() {
+        while let Ok(ev) = self.menu_events.try_recv() {
             let cmd = match ev.id.0.as_str() {
                 id::OPEN_SETTINGS => Some(TrayCommand::OpenSettings),
                 id::TOGGLE_ENABLED => Some(TrayCommand::ToggleEnabled),

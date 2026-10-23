@@ -222,6 +222,18 @@ impl Runtime {
 
     /// 处理所有待处理输入并推进调度核心一步。两种模式都调用它。
     pub fn step(&mut self, now: Instant) {
+        // Quit takes precedence over queued actions and scheduler work. In
+        // particular, do not open/reopen an audio device on the exit frame.
+        let commands = self.tray.poll();
+        if self.quit || commands.iter().any(|cmd| matches!(cmd, TrayCommand::Quit)) {
+            if !self.quit {
+                self.handle_tray(TrayCommand::Quit, now);
+            }
+            if self.core.stats.dirty {
+                self.core.stats.save();
+            }
+            return;
+        }
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
                 Event::KeyPress(t) => self.core.on_key(t),
@@ -229,7 +241,7 @@ impl Runtime {
                 Event::UpdateChecked(result) => self.on_update_checked(result),
             }
         }
-        for cmd in self.tray.poll() {
+        for cmd in commands {
             self.handle_tray(cmd, now);
         }
         self.sync_esc_hotkey();

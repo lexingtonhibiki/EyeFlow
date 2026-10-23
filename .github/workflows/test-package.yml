@@ -28,7 +28,7 @@ jobs:
         run: |
           $manifest = (Get-Content Cargo.toml -Raw) -match '(?m)^version\s*=\s*"([^"]+)"'
           $cargoVer = $Matches[1]
-          if ($cargoVer -ne "0.7.4-test.1") { throw "Unexpected test package version: $cargoVer" }
+          if ($cargoVer -ne "0.7.4-test.2") { throw "Unexpected test package version: $cargoVer" }
           "version=$cargoVer" >> $env:GITHUB_OUTPUT
 
       - name: Test candidate
@@ -36,6 +36,9 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --locked
+
+      - name: Native tray quit with reminder and settings open
+        run: python scripts/test-tray-quit.py target/release/eyeflow.exe
 
       # 守卫:installer.nsi 必须带 UTF-8 BOM。丢了 BOM 时 makensis 在英文 CI
       # 上(ACP=1252)不会报错,而是把中文按 CP1252 逐字节解成乱码写进安装包——
