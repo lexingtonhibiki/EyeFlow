@@ -2,7 +2,8 @@
 //!
 //! Fullscreen and screen-lock detection are intentionally unavailable: window bounds,
 //! display sleep and fast user switching do not establish those states reliably.
-//! The caller must surface these limitations and pause automatic reminders.
+//! The caller must surface these limitations. Strict mode pauses automatic
+//! reminders; an explicit compatibility policy may accept unsupported capabilities.
 
 use super::sensors::{Reading, SensorSnapshot};
 use std::time::{Duration, Instant};
@@ -24,8 +25,8 @@ fn snapshot(now: Instant, idle: Reading<Duration>) -> SensorSnapshot {
     SensorSnapshot {
         sampled_at: now,
         idle,
-        fullscreen: Reading::Unavailable("macOS fullscreen detection is not supported yet"),
-        interruptible: Reading::Unavailable("macOS screen-lock detection is not supported yet"),
+        fullscreen: Reading::Unsupported("macOS fullscreen detection is not supported yet"),
+        interruptible: Reading::Unsupported("macOS screen-lock detection is not supported yet"),
     }
 }
 
@@ -124,8 +125,8 @@ mod tests {
         let result = snapshot(now, Reading::Known(Duration::from_secs(20)));
         assert_eq!(result.sampled_at, now);
         assert_eq!(result.idle, Reading::Known(Duration::from_secs(20)));
-        assert!(matches!(result.fullscreen, Reading::Unavailable(_)));
-        assert!(matches!(result.interruptible, Reading::Unavailable(_)));
+        assert!(matches!(result.fullscreen, Reading::Unsupported(_)));
+        assert!(matches!(result.interruptible, Reading::Unsupported(_)));
         assert!(result.automatic_pause_reason(now).is_some());
     }
 

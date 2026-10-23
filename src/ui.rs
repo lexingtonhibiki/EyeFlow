@@ -390,6 +390,17 @@ fn rhythm_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<Setti
             push_save(s, actions);
         }
 
+        if commit(&ui.checkbox(
+            &mut s.draft.compatibility_reminders,
+            tr("ui.compatibility_reminders"),
+        )) {
+            push_save(s, actions);
+        }
+        ui.label(egui::RichText::new(tr("ui.compatibility_warning")).small());
+        if s.draft.compatibility_reminders {
+            ui.label(egui::RichText::new(tr("ui.compatibility_limits")).small());
+        }
+
         let mut min_m = (s.draft.short_break_min_secs / 60) as u32;
         let mut max_m = (s.draft.short_break_max_secs / 60) as u32;
         let mut committed = false;

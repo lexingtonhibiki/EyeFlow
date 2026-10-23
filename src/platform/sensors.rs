@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reading<T> {
     Known(T),
+    /// The backend explicitly does not implement this capability.
+    Unsupported(&'static str),
     Unavailable(&'static str),
     // Some OS backends do not request permissions, but the shared contract must
     // distinguish refusal/pending permission from unavailable APIs.
@@ -19,9 +21,10 @@ impl<T> Reading<T> {
     pub fn reason(&self) -> Option<&'static str> {
         match self {
             Self::Known(_) => None,
-            Self::Unavailable(reason) | Self::PermissionRequired(reason) | Self::Failed(reason) => {
-                Some(reason)
-            }
+            Self::Unsupported(reason)
+            | Self::Unavailable(reason)
+            | Self::PermissionRequired(reason)
+            | Self::Failed(reason) => Some(reason),
         }
     }
 }

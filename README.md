@@ -122,6 +122,7 @@ The settings window is the recommended way, but hand-editing works just as well:
 
 ```toml
 enabled = true                 # master switch (same as "Enable reminders" in the tray)
+compatibility_reminders = false # opt in to reminders without macOS lock/fullscreen avoidance; real idle is still required
 short_break_min_secs = 900     # short break interval, lower bound (15 min)
 short_break_max_secs = 1500    # short break interval, upper bound (25 min; triangular, peak 20 min)
 short_break_secs = 30          # short break length (s)
@@ -381,6 +382,7 @@ EyeFlow 要填的正是免费市场里空着的那一格：**Windows + 免费 + 
 
 ```toml
 enabled = true                 # 提醒总开关（与托盘"启用提醒"一致）
+compatibility_reminders = false # 显式接受 macOS 锁屏/全屏时可能被打扰；仍须真实空闲数据
 short_break_min_secs = 900     # 短休息间隔下限（15 分钟）
 short_break_max_secs = 1500    # 短休息间隔上限（25 分钟；三角分布，峰值 20 分钟）
 short_break_secs = 30          # 短休息时长（秒）

@@ -279,3 +279,7 @@
 "ui.monitoring_unavailable" = "Automatic monitoring is paused because native desktop state is unavailable. You can still start a break manually."
 "runtime.monitoring_paused" = "Automatic monitoring paused"
 "ui.autostart_unavailable" = "Automatic startup is not yet available on this platform."
+
+"ui.compatibility_reminders" = "Allow compatibility automatic reminders (off by default)"
+"ui.compatibility_warning" = "Opt in only if you accept possible interruptions: on macOS, screen-lock and fullscreen detection are unsupported, so reminders may appear while locked or fullscreen. This does not grant system permissions."
+"ui.compatibility_limits" = "Compatibility mode: macOS lock/fullscreen state remains unknown. Only fresh, real idle data counts; sensor errors, permission requirements and detected inactive sessions still pause reminders. Wayland without global idle data remains manual-only."

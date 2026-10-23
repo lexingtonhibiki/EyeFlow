@@ -146,7 +146,30 @@ impl Core {
 
     /// Display this reason rather than representing unavailable native data as Desktop.
     pub fn automatic_pause_reason(&self, now: Instant) -> Option<&'static str> {
-        self.sensors.automatic_pause_reason(now)
+        if !self.cfg.compatibility_reminders {
+            return self.sensors.automatic_pause_reason(now);
+        }
+        if !self.sensors.is_fresh(now) {
+            return Some("Sensor reading is stale or has an invalid timestamp");
+        }
+        if let Some(reason) = self.sensors.idle.reason() {
+            return Some(reason);
+        }
+        if self.sensors.interruptible == Reading::Known(false) {
+            return Some("The desktop session is not interruptible");
+        }
+        // Only explicitly unsupported capabilities, not a blanket Unknown bypass.
+        // Other Unavailable readings may mean a disconnected session or malformed
+        // native data. Failed and PermissionRequired always remain blockers.
+        let fullscreen_reason = match self.sensors.fullscreen {
+            Reading::Unsupported(_) => None,
+            other => other.reason(),
+        };
+        let session_reason = match self.sensors.interruptible {
+            Reading::Unsupported(_) => None,
+            other => other.reason(),
+        };
+        fullscreen_reason.or(session_reason)
     }
 
     pub fn set_sensors(&mut self, s: Sensors) {
@@ -157,8 +180,21 @@ impl Core {
     pub fn apply_config(&mut self, cfg: Config, now: Instant) {
         let interval_changed = (cfg.short_break_min_secs, cfg.short_break_max_secs)
             != (self.cfg.short_break_min_secs, self.cfg.short_break_max_secs);
+        let policy_changed = cfg.compatibility_reminders != self.cfg.compatibility_reminders;
         self.cfg = cfg;
-        if interval_changed {
+        if policy_changed {
+            // Changing trust policy cannot retroactively establish observed use.
+            self.monitoring_ready = false;
+            self.last_tick = now;
+            // A policy change is not evidence that the user returned. Preserve
+            // the existing Away episode and its credit until actual active input.
+            self.keys.clear();
+            self.last_key = None;
+            if matches!(self.phase, Phase::HeadsUp { .. }) {
+                self.phase = Phase::Idle;
+            }
+        }
+        if interval_changed || policy_changed {
             self.schedule_next(now);
         }
     }
@@ -1009,6 +1045,189 @@ mod tests {
             "免打扰时段里不得预热：到点会被顺延，预热出的会话随即退出"
         );
     }
+    fn unsupported_sensors(now: Instant) -> Sensors {
+        Sensors {
+            fullscreen: Reading::Unsupported("Fullscreen unsupported"),
+            interruptible: Reading::Unsupported("Lock unsupported"),
+            ..known_sensors(now)
+        }
+    }
+
+    #[test]
+    fn compatibility_is_opt_in_and_keeps_sensor_evidence_unknown() {
+        let t0 = Instant::now();
+        let mut c = core(60, t0);
+        c.set_sensors(unsupported_sensors(t0));
+        assert!(c.automatic_pause_reason(t0).is_some());
+        let mut config = c.cfg.clone();
+        config.compatibility_reminders = true;
+        c.apply_config(config, t0);
+        assert!(c.automatic_pause_reason(t0).is_none());
+        sampled_tick(&mut c, t0, false);
+        sampled_tick(&mut c, t0 + S(1), false);
+        assert_eq!(c.screen_accum, S(1));
+        sampled_tick(&mut c, t0 + S(45), false);
+        assert!(matches!(c.phase, Phase::HeadsUp { .. }));
+        assert!(matches!(c.sensors.interruptible, Reading::Unsupported(_)));
+    }
+
+    #[test]
+    fn compatibility_rejects_failures_permissions_and_unavailable_state() {
+        let t0 = Instant::now();
+        for blocked in [
+            Reading::Failed("failed"),
+            Reading::PermissionRequired("permission"),
+            Reading::Unavailable("no session"),
+        ] {
+            for session in [false, true] {
+                let mut c = core(60, t0);
+                c.cfg.compatibility_reminders = true;
+                let mut sensors = unsupported_sensors(t0);
+                if session {
+                    sensors.interruptible = blocked;
+                } else {
+                    sensors.fullscreen = blocked;
+                }
+                c.set_sensors(sensors);
+                assert!(c.automatic_pause_reason(t0).is_some());
+                assert!(sampled_tick(&mut c, t0 + S(90), false).is_empty());
+                assert_eq!(c.screen_accum, Duration::ZERO);
+                assert_eq!(c.phase, Phase::Idle);
+            }
+        }
+    }
+
+    #[test]
+    fn compatibility_never_overrides_idle_freshness_or_detected_inactive_session() {
+        let t0 = Instant::now();
+        let mut c = core(60, t0);
+        c.cfg.compatibility_reminders = true;
+        let valid = unsupported_sensors(t0);
+        for idle in [
+            Reading::Unavailable("Wayland idle"),
+            Reading::Unsupported("idle"),
+            Reading::Failed("invalid idle"),
+            Reading::PermissionRequired("idle permission"),
+        ] {
+            c.set_sensors(Sensors { idle, ..valid });
+            assert!(c.automatic_pause_reason(t0).is_some());
+        }
+        c.set_sensors(Sensors {
+            interruptible: Reading::Known(false),
+            ..valid
+        });
+        assert!(c.automatic_pause_reason(t0).is_some());
+        assert!(sampled_tick(&mut c, t0 + S(60), false).is_empty());
+        assert_eq!(c.screen_accum, Duration::ZERO);
+        c.set_sensors(valid);
+        assert!(c.automatic_pause_reason(t0 + S(6)).is_some());
+        assert!(c.automatic_pause_reason(t0 - S(1)).is_some());
+    }
+
+    #[test]
+    fn compatibility_preserves_detected_fullscreen_visual_avoidance() {
+        let t0 = Instant::now();
+        let mut c = core(60, t0);
+        c.cfg.compatibility_reminders = true;
+        c.set_sensors(Sensors {
+            fullscreen: Reading::Known(true),
+            ..unsupported_sensors(t0)
+        });
+        assert!(sampled_tick(&mut c, t0 + S(45), false).is_empty());
+        assert_eq!(c.state, ContextState::Gaming);
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(
+            sampled_tick(&mut c, t0 + S(60), false),
+            vec![Action::PlayCue]
+        );
+        assert_eq!(c.phase, Phase::Idle);
+        assert!(sampled_tick(&mut c, t0 + S(61), false).is_empty());
+    }
+
+    #[test]
+    fn compatibility_toggle_does_not_recount_an_existing_away_episode() {
+        let t0 = Instant::now();
+        for already_counted in [false, true] {
+            let mut c = core(60, t0);
+            c.set_sensors(Sensors {
+                idle: Reading::Known(S(200)),
+                ..known_sensors(t0)
+            });
+            if already_counted {
+                sampled_tick(&mut c, t0, false);
+                assert_eq!(c.stats.completed_natural, 1);
+            }
+            // Both policy directions, while the same continuous Away episode
+            // persists. The uncounted control may earn its first credit, not two.
+            for (i, enabled) in [true, false].into_iter().enumerate() {
+                let now = t0 + S(1 + i as u64 * 3);
+                let mut config = c.cfg.clone();
+                config.compatibility_reminders = enabled;
+                c.apply_config(config, now);
+                sampled_tick(&mut c, now, false);
+                sampled_tick(&mut c, now + S(1), false);
+                assert_eq!(c.stats.completed_natural, 1);
+            }
+            // A real return and a later Away episode may earn another credit.
+            c.set_sensors(known_sensors(t0 + S(8)));
+            c.tick(t0 + S(8), false);
+            c.set_sensors(Sensors {
+                idle: Reading::Known(S(200)),
+                ..known_sensors(t0 + S(208))
+            });
+            c.tick(t0 + S(208), false);
+            assert_eq!(c.stats.completed_natural, 2);
+        }
+    }
+
+    #[test]
+    fn compatibility_changes_preserve_an_already_started_manual_break() {
+        let t0 = Instant::now();
+        let mut c = core(60, t0);
+        c.set_sensors(unsupported_sensors(t0));
+        c.start_break_now(t0);
+        let original = c.phase;
+        for enabled in [true, false] {
+            let mut config = c.cfg.clone();
+            config.compatibility_reminders = enabled;
+            c.apply_config(config, t0 + S(1));
+            assert_eq!(c.phase, original);
+        }
+        assert_eq!(c.tick(t0 + S(31), false), vec![Action::PlayCue]);
+        assert_eq!(c.stats.completed_short, 1);
+    }
+
+    #[test]
+    fn compatibility_toggle_and_recovery_never_catch_up() {
+        let t0 = Instant::now();
+        let mut c = core(60, t0);
+        c.set_sensors(unsupported_sensors(t0));
+        sampled_tick(&mut c, t0 + S(120), false);
+        let mut config = c.cfg.clone();
+        config.compatibility_reminders = true;
+        c.apply_config(config.clone(), t0 + S(240));
+        assert!(sampled_tick(&mut c, t0 + S(250), false).is_empty());
+        assert_eq!(c.screen_accum, Duration::ZERO);
+        assert_eq!(c.next_break_in(t0 + S(250)), S(60));
+        sampled_tick(&mut c, t0 + S(251), false);
+        assert_eq!(c.screen_accum, S(1));
+        c.tick(t0 + S(260), false); // stale
+        assert!(sampled_tick(&mut c, t0 + S(300), false).is_empty());
+        assert_eq!(c.screen_accum, S(1));
+        c.phase = Phase::HeadsUp {
+            started: t0 + S(300),
+            ends: t0 + S(320),
+            is_long: false,
+        };
+        config.compatibility_reminders = false;
+        c.apply_config(config, t0 + S(301));
+        assert_eq!(c.phase, Phase::Idle);
+        assert!(sampled_tick(&mut c, t0 + S(400), false).is_empty());
+        assert_eq!(c.screen_accum, S(1));
+        c.start_break_now(t0 + S(400));
+        assert_eq!(c.tick(t0 + S(431), false), vec![Action::PlayCue]);
+    }
+
     #[test]
     fn no_native_sample_never_creates_activity_or_natural_rest() {
         let t0 = Instant::now();

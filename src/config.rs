@@ -147,6 +147,10 @@ pub struct Config {
     /// 总开关（托盘“启用提醒”）
     #[serde(default = "d_true")]
     pub enabled: bool,
+    /// Explicit opt-in to reminders without supported lock/fullscreen detection.
+    /// This never permits missing idle data or failed/permission-blocked sensors.
+    #[serde(default)]
+    pub compatibility_reminders: bool,
     /// 短休息间隔下限（秒）
     #[serde(default = "d_short_min")]
     pub short_break_min_secs: u64,
@@ -300,6 +304,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
+            compatibility_reminders: false,
             short_break_min_secs: d_short_min(),
             short_break_max_secs: d_short_max(),
             short_break_secs: d_short_break(),
@@ -964,5 +969,20 @@ global_mute_hotkey = "Ctrl+Shift+E"
             assert_eq!(zh, "· 连续坚持 1 天", "中文状态条输出成 {zh:?}");
             set_language(orig);
         }
+    }
+}
+
+#[cfg(test)]
+mod compatibility_config_tests {
+    use super::Config;
+    #[test]
+    fn compatibility_requires_explicit_opt_in_and_roundtrips() {
+        assert!(!Config::default().compatibility_reminders);
+        let old: Config = toml::from_str("enabled = true").unwrap();
+        assert!(!old.compatibility_reminders);
+        let opted_in: Config = toml::from_str("compatibility_reminders = true").unwrap();
+        assert!(opted_in.compatibility_reminders);
+        let roundtrip: Config = toml::from_str(&toml::to_string(&opted_in).unwrap()).unwrap();
+        assert!(roundtrip.compatibility_reminders);
     }
 }

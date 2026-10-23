@@ -281,3 +281,7 @@
 "ui.monitoring_unavailable" = "无法确认当前桌面状态，自动连续使用提醒已暂停。仍可手动开始休息。"
 "runtime.monitoring_paused" = "自动监测已暂停"
 "ui.autostart_unavailable" = "此平台暂未实现自动启动。"
+
+"ui.compatibility_reminders" = "允许兼容自动提醒（默认关闭）"
+"ui.compatibility_warning" = "仅在接受可能被打扰时勾选：macOS 尚不支持锁屏和全屏检测，因此锁屏或全屏时也可能弹出提醒。此选项不会授予系统权限。"
+"ui.compatibility_limits" = "兼容模式：macOS 锁屏/全屏状态仍然未知。仅依据新鲜、真实的空闲数据计时；传感器失败、缺少权限及已检测到的非活跃会话仍暂停提醒。Wayland 缺少全局空闲数据时仍只能手动休息。"
