@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 pub enum Reading<T> {
     Known(T),
     /// The backend explicitly does not implement this capability.
+    // Currently constructed by the macOS backend, but matched by shared policy.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Unsupported(&'static str),
     Unavailable(&'static str),
     // Some OS backends do not request permissions, but the shared contract must

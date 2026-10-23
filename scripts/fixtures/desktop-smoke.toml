@@ -1,0 +1,12 @@
+# Dedicated temporary smoke profile, never the user's configuration.
+language = "en-US"
+sound_enabled = false
+update_check_enabled = false
+hotkey_enabled = true
+short_break_min_secs = 600
+short_break_max_secs = 1080
+short_break_secs = 120
+strict_mode = false
+# Equal bounds disable quiet hours, independent of the runner's wall clock.
+quiet_start = "00:00"
+quiet_end = "00:00"

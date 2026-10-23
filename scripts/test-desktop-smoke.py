@@ -167,7 +167,9 @@ def mac_probe(temp):
 import CoreGraphics
 let pid = Int(CommandLine.arguments[1])!
 let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-let owned = windows.filter { ($0[kCGWindowOwnerPID as String] as? Int) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 }
+// The reminder is always-on-top, unlike the normal root/settings windows.
+let levels = [Int(CGWindowLevelForKey(.normalWindow)), Int(CGWindowLevelForKey(.floatingWindow))]
+let owned = windows.filter { ($0[kCGWindowOwnerPID as String] as? Int) == pid && levels.contains(($0[kCGWindowLayer as String] as? Int) ?? -1) }
 let data = try JSONSerialization.data(withJSONObject: owned, options: [.sortedKeys])
 print(String(data: data, encoding: .utf8)!)
 ''', encoding="utf-8")
@@ -189,17 +191,23 @@ def mac_controlled_smoke(proc, probe, args, report):
         proc.stdin.write((value + "\n").encode("ascii"))
         proc.stdin.flush()
 
-    wait_for(proc, lambda: mac_windows(probe, proc.pid), args.timeout)
+    report["stage"] = "waiting for root window"
+    report["root_windows"] = wait_for(proc, lambda: mac_windows(probe, proc.pid), args.timeout)
+    report["stage"] = "waiting for settings window"
     send("open-settings")
     before = wait_for(proc, lambda: (w if len(w := mac_windows(probe, proc.pid)) >= 2 else None), args.timeout)
+    report["settings_windows"] = before
     before_ids = {w["kCGWindowNumber"] for w in before}
+    report["stage"] = "waiting for manual rest popup"
     send("rest-now")
 
     def popup_created():
         windows = mac_windows(probe, proc.pid)
+        report["last_popup_probe"] = windows
         return windows if len(windows) >= 3 and any(w["kCGWindowNumber"] not in before_ids for w in windows) else None
 
     report["simultaneous_windows"] = wait_for(proc, popup_created, args.timeout)
+    report["stage"] = "waiting for shared-menu quit"
     started = time.monotonic()
     send("quit")
     try:
@@ -214,7 +222,7 @@ def mac_controlled_smoke(proc, probe, args, report):
         if time.monotonic() >= deadline:
             raise SmokeFailure("Owned visible windows remain after normal quit")
         time.sleep(0.05)
-    report.update(shared_menu_quit_exit=True, exit_code=code, exit_seconds=elapsed,
+    report.update(stage="completed", shared_menu_quit_exit=True, exit_code=code, exit_seconds=elapsed,
                   actual_tray_mouse_click="not tested; test-only private pipe supplies menu actions")
 
 
@@ -256,9 +264,8 @@ def main():
         config = (home / "Library/Application Support/eyeflow" if system == "darwin"
                   else xdg / "eyeflow")
         config.mkdir(parents=True)
-        (config / "config.toml").write_text(
-            'language = "en-US"\nsound_enabled = false\nupdate_check_enabled = false\n'
-            'hotkey_enabled = true\nshort_break_secs = 120\nstrict_mode = false\n', encoding="utf-8")
+        fixture = Path(__file__).resolve().parent / "fixtures" / "desktop-smoke.toml"
+        (config / "config.toml").write_bytes(fixture.read_bytes())
         env = os.environ.copy()
         for key in list(env):
             if key.startswith("EYEFLOW_"):
