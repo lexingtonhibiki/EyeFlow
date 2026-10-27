@@ -449,6 +449,14 @@ impl Core {
             self.paused_until = None;
         }
 
+        // A newly busy/full-screen context can arrive after the pre-warning
+        // opened. Hide it without settling the round or resetting its deadline;
+        // the Idle policy below keeps the due cue and visual catch-up behavior.
+        // Already-started breaks retain their explicit countdown above.
+        if self.state == ContextState::Gaming && matches!(self.phase, Phase::HeadsUp { .. }) {
+            self.phase = Phase::Idle;
+        }
+
         // 4. 阶段机
         match self.phase {
             Phase::Idle => {
@@ -1331,6 +1339,66 @@ mod tests {
                 "same rest must not count twice"
             );
         }
+    }
+    fn check_heads_up_defers_after_context_change(fullscreen: bool, is_long: bool) {
+        let t0 = Instant::now();
+        let mut c = core(60, t0);
+        if is_long {
+            c.cfg.long_break_enabled = true;
+            c.screen_accum = Duration::from_secs(c.cfg.long_break_after_secs);
+        }
+        sampled_tick(&mut c, t0 + S(45), false);
+        assert!(matches!(c.phase, Phase::HeadsUp { is_long: actual, .. } if actual == is_long));
+        let before = c.stats.clone();
+        c.set_sensors(Sensors {
+            fullscreen: Reading::Known(fullscreen),
+            interruptible: Reading::Known(false),
+            ..known_sensors(t0 + S(50))
+        });
+        assert!(sampled_tick(&mut c, t0 + S(50), false).is_empty());
+        assert_eq!(
+            c.phase,
+            Phase::Idle,
+            "hide an existing heads-up as soon as context becomes busy"
+        );
+        assert_eq!(
+            sampled_tick(&mut c, t0 + S(80), false),
+            vec![Action::PlayCue]
+        );
+        assert_eq!(
+            c.phase,
+            Phase::Idle,
+            "never start an automatic break while busy"
+        );
+        assert!(sampled_tick(&mut c, t0 + S(81), false).is_empty());
+        assert_eq!(c.stats.completed_short, before.completed_short);
+        assert_eq!(c.stats.completed_long, before.completed_long);
+        assert_eq!(c.stats.completed_natural, before.completed_natural);
+        assert_eq!(c.stats.skipped, before.skipped);
+        c.set_sensors(known_sensors(t0 + S(82)));
+        assert!(sampled_tick(&mut c, t0 + S(82), false).is_empty());
+        assert!(
+            matches!(c.phase, Phase::HeadsUp { started, ends, is_long: actual }
+            if started == t0 + S(82) && ends == t0 + S(82) + c.heads_up_len(is_long) && actual == is_long)
+        );
+        let end = t0 + S(82) + c.heads_up_len(is_long);
+        sampled_tick(&mut c, end, false);
+        assert!(matches!(c.phase, Phase::Break { is_long: actual, .. } if actual == is_long));
+    }
+
+    #[test]
+    fn existing_heads_up_defers_when_entering_fullscreen() {
+        check_heads_up_defers_after_context_change(true, false);
+    }
+
+    #[test]
+    fn existing_heads_up_defers_when_session_becomes_busy() {
+        check_heads_up_defers_after_context_change(false, false);
+    }
+
+    #[test]
+    fn existing_heads_up_preserves_long_break_after_fullscreen() {
+        check_heads_up_defers_after_context_change(true, true);
     }
 }
 // 追加测试到 tests 模块（由集成脚本定位插入）
