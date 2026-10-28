@@ -363,6 +363,15 @@ impl Core {
         // Cancel an automatic pre-warning, but allow an already-started (including
         // manually requested) break to finish. Do not invent a natural break credit.
         if self.automatic_pause_reason(now).is_some() {
+            // Other capabilities may be unavailable while a locked session still
+            // reports a fresh, known idle duration. That independent observation
+            // can end continuous use, but does not establish a natural-break credit
+            // or permission to deliver reminders.
+            if self.sensors.is_fresh(now)
+                && matches!(self.sensors.idle, Reading::Known(idle) if idle >= AWAY_RESETS_ACCUM)
+            {
+                self.screen_accum = Duration::ZERO;
+            }
             self.monitoring_ready = false;
             self.due += dt;
             if matches!(self.phase, Phase::HeadsUp { .. }) {
