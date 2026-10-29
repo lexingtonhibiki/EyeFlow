@@ -4,6 +4,14 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [Unreleased]
+
+### Fixed
+
+- 配置和统计保存时直接以同目录临时文件替换目标，不再提前删除旧文件，
+  避免替换失败或替换前中断时丢失原有配置与记录。保留失败返回和临时文件清理；
+  不增加断电持久性或多进程并发写入保证。
+
 ## [0.7.4-test.1] - 2026-10-23
 
 ### Preview status

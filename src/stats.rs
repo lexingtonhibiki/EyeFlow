@@ -123,17 +123,23 @@ pub enum Completed {
 ///
 /// `fs::write` 是「打开 → 截断 → 逐块写」，断电或进程被杀会留下半截 toml；
 /// 统计文件被截断后 `Stats::load` 会静默回落到全零，用户的坚持记录就没了。
-/// `rename` 在同一卷上是原子的，读者要么看到旧文件、要么看到新文件。
+/// 同目录替换不先删除旧文件；未执行 fsync，不提供断电持久性保证。
 fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_atomic_with_replace(path, bytes, |from, to| std::fs::rename(from, to))
+}
+
+// Injectable replacement operation keeps failure preservation testable without
+// changing filesystem permissions or depending on a timing race.
+fn write_atomic_with_replace(
+    path: &std::path::Path,
+    bytes: &[u8],
+    replace: impl FnOnce(&std::path::Path, &std::path::Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, bytes)?;
-    // rename 在 Windows 上不能覆盖已存在的目标，必须先删。
-    // 这留下一个「旧文件已删、新文件未就位」的极窄窗口，
-    // 窗口内崩溃最多丢一次统计——远好于永久丢失。
-    if path.exists() {
-        let _ = std::fs::remove_file(path);
-    }
-    match std::fs::rename(&tmp, path) {
+    // rename replaces an existing file on supported Unix and Windows filesystems.
+    // Keep the old destination until replacement succeeds; never delete it first.
+    match replace(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
@@ -182,5 +188,53 @@ mod tests {
         assert_eq!(s.streak_days, 2);
         s.bump_streak("2026-09-12", "2026-09-11"); // gap: reset
         assert_eq!(s.streak_days, 1);
+    }
+}
+
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_path() -> std::path::PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "eyeflow_stats_atomic_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("stats.toml")
+    }
+
+    #[test]
+    fn replacement_failure_preserves_existing_file() {
+        let path = temp_path();
+        std::fs::write(&path, b"old complete data").unwrap();
+        let err = write_atomic_with_replace(&path, b"new complete data", |tmp, target| {
+            assert_eq!(std::fs::read(tmp).unwrap(), b"new complete data");
+            assert_eq!(std::fs::read(target).unwrap(), b"old complete data");
+            Err(std::io::Error::other("injected replacement failure"))
+        })
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+        assert_eq!(std::fs::read(&path).unwrap(), b"old complete data");
+        assert!(!path.with_extension("toml.tmp").exists());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn repeated_replacement_and_initial_creation_work() {
+        let path = temp_path();
+        for contents in [
+            b"first".as_slice(),
+            b"second longer".as_slice(),
+            b"third".as_slice(),
+        ] {
+            write_atomic(&path, contents).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), contents);
+            assert!(!path.with_extension("toml.tmp").exists());
+        }
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }
