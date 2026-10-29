@@ -247,6 +247,10 @@ fn main() {
         log::error!("Desktop event loop failed: {e}");
     }
 
+    // Every normal application exit converges here, including a non-Windows
+    // UI quit after the frame's runtime step, or an event-loop error. Windows
+    // temporary UI-session returns stay inside the loop and do not flush.
+    rt.core.stats.flush_if_dirty();
     detector::stop_keyboard_hook();
     log::info!("EyeFlow 退出");
 }

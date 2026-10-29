@@ -53,6 +53,7 @@ pub struct Runtime {
     last_tooltip: Option<(TooltipFingerprint, String)>,
     /// 同理，托盘菜单里的今日统计行：只由三个计数器决定。
     last_stats_line: Option<(u32, u32, u32)>,
+    stats_save_retry: crate::stats::StatsSaveRetry,
 }
 
 /// `tooltip_text()` 所有输入的廉价指纹。
@@ -88,6 +89,7 @@ impl Runtime {
             esc_registered: false,
             last_tooltip: None,
             last_stats_line: None,
+            stats_save_retry: crate::stats::StatsSaveRetry::default(),
         };
         if let Err(e) = rt.apply_hotkey_enabled(rt.core.cfg.hotkey_enabled) {
             log::warn!("全局热键注册失败: {e}");
@@ -239,9 +241,6 @@ impl Runtime {
             if !self.quit {
                 self.handle_tray(TrayCommand::Quit, now);
             }
-            if self.core.stats.dirty {
-                self.core.stats.save();
-            }
             return;
         }
         while let Ok(ev) = self.rx.try_recv() {
@@ -252,9 +251,6 @@ impl Runtime {
                     // path; never substitute process termination for a quit.
                     self.handle_tray(command, now);
                     if self.quit {
-                        if self.core.stats.dirty {
-                            self.core.stats.save();
-                        }
                         return;
                     }
                 }
@@ -295,9 +291,7 @@ impl Runtime {
                 }
             }
         }
-        if self.core.stats.dirty {
-            self.core.stats.save();
-        }
+        self.stats_save_retry.save_if_due(&mut self.core.stats, now);
         self.sync_tooltip(now);
         self.tray.set_paused(self.core.is_paused(now));
         self.sync_stats_line();
