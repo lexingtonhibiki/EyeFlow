@@ -43,16 +43,30 @@ impl Stats {
     }
 
     pub fn save(&mut self) {
-        let path = Self::path();
+        self.save_to(&Self::path());
+    }
+
+    /// Make one final attempt for pending statistics, without automatic retry delay.
+    pub fn flush_if_dirty(&mut self) {
+        self.flush_if_dirty_with(Self::save);
+    }
+
+    fn flush_if_dirty_with(&mut self, save: impl FnOnce(&mut Self)) {
+        if self.dirty {
+            save(self);
+        }
+    }
+
+    fn save_to(&mut self, path: &std::path::Path) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(s) = toml::to_string_pretty(self) {
-            if let Err(e) = write_atomic(&path, s.as_bytes()) {
-                log::warn!("统计落盘失败: {e}");
+            match write_atomic(path, s.as_bytes()) {
+                Ok(()) => self.dirty = false,
+                Err(e) => log::warn!("统计落盘失败: {e}"),
             }
         }
-        self.dirty = false;
     }
 
     fn path() -> std::path::PathBuf {
@@ -112,6 +126,37 @@ impl Stats {
     }
 }
 
+/// Host-owned retry state; never serialized with the statistics.
+/// Only failed automatic saves are delayed. Explicit `Stats::save` bypasses this
+/// gate so shutdown can make a final attempt without waiting for another frame.
+#[derive(Debug, Default)]
+pub struct StatsSaveRetry {
+    retry_after: Option<std::time::Instant>,
+}
+
+impl StatsSaveRetry {
+    pub fn save_if_due(&mut self, stats: &mut Stats, now: std::time::Instant) {
+        self.save_if_due_with(stats, now, Stats::save);
+    }
+
+    fn save_if_due_with(
+        &mut self,
+        stats: &mut Stats,
+        now: std::time::Instant,
+        save: impl FnOnce(&mut Stats),
+    ) {
+        if !stats.dirty {
+            self.retry_after = None;
+            return;
+        }
+        if self.retry_after.is_some_and(|deadline| now < deadline) {
+            return;
+        }
+        save(stats);
+        self.retry_after = stats.dirty.then(|| now + std::time::Duration::from_secs(5));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Completed {
     Short,
@@ -160,6 +205,210 @@ fn yesterday() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "eyeflow-stats-dirty-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn dirty_save_retries_after_temporary_file_obstruction_is_removed() {
+        let dir = TempDir::new();
+        let path = dir.0.join("stats.toml");
+        let tmp = path.with_extension("toml.tmp");
+        let mut stats = Stats::default();
+        stats.record_skipped();
+        // A directory at the temporary-file path fails even for privileged users.
+        std::fs::create_dir(&tmp).unwrap();
+        stats.save_to(&path);
+        assert!(stats.dirty, "failed persistence must remain pending");
+        assert!(!path.exists());
+        std::fs::remove_dir(&tmp).unwrap();
+        // Match the host's dirty-gated next save, with no new recorded event.
+        if stats.dirty {
+            stats.save_to(&path);
+        }
+        assert!(!stats.dirty);
+        let saved: Stats = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(saved.skipped, 1);
+    }
+
+    #[test]
+    fn dirty_survives_repeated_save_failures_and_keeps_latest_counts() {
+        let dir = TempDir::new();
+        let path = dir.0.join("stats.toml");
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::create_dir(&tmp).unwrap();
+        let mut stats = Stats::default();
+        stats.record_skipped();
+        for _ in 0..3 {
+            stats.save_to(&path);
+            assert!(stats.dirty);
+        }
+        stats.record_postponed();
+        stats.save_to(&path);
+        assert!(stats.dirty);
+        std::fs::remove_dir(tmp).unwrap();
+        stats.save_to(&path);
+        assert!(!stats.dirty);
+        let saved: Stats = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!((saved.skipped, saved.postponed), (1, 1));
+    }
+
+    #[test]
+    fn clean_host_guard_does_not_write_and_explicit_save_still_works() {
+        let dir = TempDir::new();
+        let path = dir.0.join("stats.toml");
+        let mut stats = Stats::default();
+        if stats.dirty {
+            stats.save_to(&path);
+        }
+        assert!(!path.exists());
+        // save itself has historically been unconditional; retain that API.
+        stats.save_to(&path);
+        assert!(path.exists());
+        assert!(!stats.dirty);
+    }
+
+    #[test]
+    fn failed_save_does_not_mark_clean_stats_dirty() {
+        let dir = TempDir::new();
+        let path = dir.0.join("stats.toml");
+        std::fs::create_dir(path.with_extension("toml.tmp")).unwrap();
+        let mut stats = Stats::default();
+        stats.save_to(&path);
+        assert!(!stats.dirty);
+    }
+
+    #[test]
+    fn automatic_retry_is_throttled_and_recovers_without_a_new_event() {
+        use std::time::{Duration, Instant};
+        let dir = TempDir::new();
+        let path = dir.0.join("stats.toml");
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::create_dir(&tmp).unwrap();
+        let mut stats = Stats::default();
+        stats.record_skipped();
+        let mut retry = StatsSaveRetry::default();
+        let start = Instant::now();
+        let mut attempts = 0;
+        let mut save = |s: &mut Stats| {
+            attempts += 1;
+            s.save_to(&path);
+        };
+        retry.save_if_due_with(&mut stats, start, &mut save);
+        for frame in 1..250 {
+            retry.save_if_due_with(
+                &mut stats,
+                start + Duration::from_millis(frame * 20),
+                &mut save,
+            );
+        }
+        // An earlier supplied timestamp neither panics nor bypasses the gate.
+        retry.save_if_due_with(&mut stats, start - Duration::from_secs(1), &mut save);
+        assert!(stats.dirty);
+        std::fs::remove_dir(tmp).unwrap();
+        retry.save_if_due_with(&mut stats, start + Duration::from_secs(5), &mut save);
+        assert!(!stats.dirty);
+        // A new event following a successful save is not artificially delayed.
+        stats.record_postponed();
+        retry.save_if_due_with(&mut stats, start + Duration::from_millis(5020), &mut save);
+        assert!(!stats.dirty);
+        assert_eq!(attempts, 3);
+        let saved: Stats = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!((saved.skipped, saved.postponed), (1, 1));
+    }
+
+    #[test]
+    fn repeated_failures_get_new_cooldown_and_explicit_exit_save_bypasses_it() {
+        use std::time::{Duration, Instant};
+        let dir = TempDir::new();
+        let path = dir.0.join("stats.toml");
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::create_dir(&tmp).unwrap();
+        let mut stats = Stats::default();
+        stats.record_skipped();
+        let mut retry = StatsSaveRetry::default();
+        let start = Instant::now();
+        let mut attempts = 0;
+        for millis in [0, 20, 5000, 5020, 9980] {
+            retry.save_if_due_with(&mut stats, start + Duration::from_millis(millis), |s| {
+                attempts += 1;
+                s.save_to(&path);
+            });
+        }
+        assert_eq!(attempts, 2);
+        assert!(stats.dirty);
+        std::fs::remove_dir(tmp).unwrap();
+        // The application shutdown hook runs without another runtime step.
+        stats.flush_if_dirty_with(|s| s.save_to(&path));
+        assert!(!stats.dirty);
+        stats.flush_if_dirty_with(|_| panic!("successful final save must not repeat"));
+        retry.save_if_due_with(&mut stats, start + Duration::from_millis(9990), |_| {
+            panic!("clean statistics must not be written");
+        });
+        assert!(retry.retry_after.is_none());
+    }
+
+    #[test]
+    fn any_unsaved_result_including_serialization_failure_is_throttled() {
+        use std::time::{Duration, Instant};
+        let mut stats = Stats {
+            dirty: true,
+            ..Default::default()
+        };
+        let mut retry = StatsSaveRetry::default();
+        let start = Instant::now();
+        // Stats currently contains only TOML-compatible strings/u32 fields.
+        // Model a save that cannot serialize and leaves pending data unchanged.
+        retry.save_if_due_with(&mut stats, start, |_| {});
+        retry.save_if_due_with(&mut stats, start + Duration::from_secs(1), |_| {
+            panic!("an unsuccessful save must be throttled");
+        });
+        assert!(stats.dirty);
+        retry.save_if_due_with(&mut stats, start + Duration::from_secs(5), |s| {
+            s.dirty = false;
+        });
+        assert!(retry.retry_after.is_none());
+    }
+
+    #[test]
+    fn final_flush_failure_keeps_pending_data_without_looping() {
+        let dir = TempDir::new();
+        let path = dir.0.join("stats.toml");
+        std::fs::create_dir(path.with_extension("toml.tmp")).unwrap();
+        let mut stats = Stats::default();
+        stats.record_skipped();
+        let mut attempts = 0;
+        stats.flush_if_dirty_with(|s| {
+            attempts += 1;
+            s.save_to(&path);
+        });
+        assert_eq!(attempts, 1);
+        assert!(stats.dirty);
+    }
+
+    #[test]
+    fn final_flush_of_clean_stats_never_calls_writer() {
+        Stats::default().flush_if_dirty_with(|_| panic!("no pending data"));
+    }
 
     #[test]
     fn day_roll_resets_counters_but_keeps_streak() {
