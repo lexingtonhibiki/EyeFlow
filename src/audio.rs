@@ -96,6 +96,7 @@ pub struct AudioPlayer {
 struct AudioOutput {
     sink: MixerDeviceSink,
     health: StreamHealth,
+    playback: Playback,
 }
 
 /// Each opened stream gets its own flag. A late callback from a dropped stream
@@ -132,6 +133,30 @@ fn replace_output<T, E>(
     drop(slot.take());
     *slot = Some(open()?);
     Ok(())
+}
+
+/// Own the player so mute can stop both custom and synthesized cues without
+/// closing a healthy device or falsely reporting it unavailable.
+#[derive(Default)]
+struct Playback {
+    player: Option<Player>,
+}
+
+impl Playback {
+    fn play<S>(&mut self, mixer: &rodio::mixer::Mixer, source: S, volume: f32)
+    where
+        S: Source<Item = f32> + Send + 'static,
+    {
+        let player = Player::connect_new(mixer);
+        player.set_volume(volume);
+        player.append(source);
+        self.player = Some(player);
+    }
+
+    fn stop(&mut self) {
+        // An owned Player stops its queue on drop; detached players do not.
+        drop(self.player.take());
+    }
 }
 
 impl AudioOutput {
@@ -185,7 +210,11 @@ impl AudioOutput {
         // still possible: accepting a source is not proof of audible output.
         health.check()?;
         log::info!("Opened current default audio output");
-        Ok(Self { sink, health })
+        Ok(Self {
+            sink,
+            health,
+            playback: Playback::default(),
+        })
     }
 }
 
@@ -197,14 +226,23 @@ impl AudioPlayer {
         let source = source.take_duration(Duration::from_secs(CUSTOM_MAX_SECS));
         let mut output = self.output.borrow_mut();
         replace_output(&mut output, AudioOutput::open)?;
-        if let Some(output) = output.as_ref() {
-            let player = Player::connect_new(output.sink.mixer());
-            player.set_volume(volume_pct.clamp(50, 200) as f32 / 100.0);
-            player.append(source);
-            player.detach();
+        if let Some(output) = output.as_mut() {
+            output.playback.play(
+                output.sink.mixer(),
+                source,
+                volume_pct.clamp(50, 200) as f32 / 100.0,
+            );
             output.health.check()?;
         }
         Ok(())
+    }
+
+    /// Stop the current cue without changing the device's last known health.
+    /// A subsequent playback still opens the current default device as usual.
+    pub fn stop(&self) {
+        if let Some(output) = self.output.borrow_mut().as_mut() {
+            output.playback.stop();
+        }
     }
 
     pub fn new() -> Self {
@@ -226,8 +264,8 @@ impl AudioPlayer {
         let source = VecSource::new(render(preset, volume_pct, duration_secs));
         let mut output = self.output.borrow_mut();
         if replace_output(&mut output, AudioOutput::open).is_ok() {
-            if let Some(output) = output.as_ref() {
-                output.sink.mixer().add(source);
+            if let Some(output) = output.as_mut() {
+                output.playback.play(output.sink.mixer(), source, 1.0);
             }
         }
     }
@@ -412,6 +450,34 @@ fn triple_beep() -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mute_stops_real_player_samples_and_allows_a_new_cue() {
+        let (mixer, mut samples) =
+            rodio::mixer::mixer(NonZero::new(1).unwrap(), NonZero::new(SAMPLE_RATE).unwrap());
+        let mut playback = Playback::default();
+        let cue = || {
+            rodio::buffer::SamplesBuffer::new(
+                NonZero::new(1).unwrap(),
+                NonZero::new(SAMPLE_RATE).unwrap(),
+                vec![0.5; SAMPLE_RATE as usize],
+            )
+        };
+        playback.play(&mixer, cue(), 1.0);
+        assert!(samples.by_ref().take(10).any(|sample| sample != 0.0));
+        playback.stop();
+        // Repeated mute remains harmless.
+        playback.stop();
+        // Rodio checks stop every 5 ms. Allow 10 ms of source consumption,
+        // not a claim about a physical device's already-buffered samples.
+        assert!(samples
+            .by_ref()
+            .take(SAMPLE_RATE as usize)
+            .skip(480)
+            .all(|sample| sample == 0.0));
+        playback.play(&mixer, cue(), 1.0);
+        assert!(samples.by_ref().take(480).any(|sample| sample != 0.0));
+    }
 
     #[test]
     fn stream_failure_during_open_is_not_success() {
