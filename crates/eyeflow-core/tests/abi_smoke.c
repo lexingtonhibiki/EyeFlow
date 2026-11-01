@@ -7,9 +7,10 @@ int main(void) {
     EyeFlow *h = eyeflow_create();
     assert(h);
     assert(eyeflow_configure(h, 60, 30, 0, 900) == 0);
-    assert(eyeflow_tick(h, 45000, 0, 0) == 1);
-    eyeflow_command(h, 2);
-    assert(eyeflow_postponed_count(h) == 1);
+    /* Legacy ABI lacks session/fullscreen evidence: automatic reminders pause. */
+    assert(eyeflow_tick(h, 45000, 0, 0) == 0);
+    eyeflow_command(h, 1); /* Explicit manual break remains available. */
+    assert(eyeflow_postponed_count(h) == 0);
     size_t n = eyeflow_export_state(h, NULL, 0);
     assert(n > 0);
     uint8_t *bytes = malloc(n);
@@ -17,10 +18,10 @@ int main(void) {
     assert(eyeflow_export_state(h, bytes, n) == n);
     EyeFlow *restored = eyeflow_create();
     assert(eyeflow_import_state(restored, bytes, n) == 0);
-    assert(eyeflow_remaining_seconds(restored) == 300);
-    assert(eyeflow_tick(restored, 285000, 0, 0) == 1);
+    assert(eyeflow_remaining_seconds(restored) == 30);
+    assert(eyeflow_tick(restored, 0, 0, 0) == 2);
     eyeflow_command(restored, 1);
-    assert(eyeflow_tick(restored, 315000, 0, 0) == 0);
+    assert(eyeflow_tick(restored, 30000, 0, 0) == 0);
     assert(eyeflow_completed_count(restored) == 1);
     assert(eyeflow_tick(restored, 0, 0, 0) == -1);
     free(bytes);
