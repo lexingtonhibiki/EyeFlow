@@ -106,14 +106,19 @@ impl eframe::App for EyeFlow {
             ui.heading(egui::RichText::new("EyeFlow").size(34.0).color(egui::Color32::from_rgb(121, 222, 187)));
             ui.label("A gentler rhythm for your eyes");
             ui.add_space(24.0);
-            let (label, remaining) = match self.core.phase {
-                Phase::Idle => ("Next break", self.core.next_break_in(now)),
-                Phase::HeadsUp { ends, is_long, .. } => (if is_long {"Long break soon"} else {"Break soon"}, ends.saturating_duration_since(now)),
-                Phase::Break { ends, is_long, .. } => (if is_long {"Long break"} else {"Look into the distance"}, ends.saturating_duration_since(now)),
-            };
-            ui.label(label);
-            let seconds = remaining.as_secs();
-            ui.label(egui::RichText::new(format!("{:02}:{:02}", seconds / 60, seconds % 60)).size(54.0));
+            // This preview has no native lock/fullscreen evidence. Do not show
+            // a frozen automatic schedule as if it were an active countdown.
+            if let Phase::Break { ends, is_long, .. } = self.core.phase {
+                ui.label(if is_long { "Long break" } else { "Look into the distance" });
+                let seconds = ends.saturating_duration_since(now).as_secs();
+                ui.label(egui::RichText::new(format!("{:02}:{:02}", seconds / 60, seconds % 60)).size(54.0));
+            } else {
+                ui.label("Automatic reminders paused");
+                ui.label(self.core.automatic_pause_reason(now).unwrap_or(
+                    "This preview does not provide native monitoring evidence.",
+                ));
+                ui.label("Use Rest now to start a manual break.");
+            }
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if ui.button(if self.running { "Pause session" } else { "Start session" }).clicked() { self.running = !self.running; }
@@ -123,12 +128,12 @@ impl eframe::App for EyeFlow {
                 if ui.add_enabled(self.core.can_postpone() && !matches!(self.core.phase, Phase::Idle), egui::Button::new("Postpone 5 min")).clicked() { self.core.postpone(now); }
                 if ui.add_enabled(!matches!(self.core.phase, Phase::Idle), egui::Button::new("Skip")).clicked() { self.core.skip(now); }
             });
-            ui.checkbox(&mut self.focus, "Focus mode · defer reminders until I turn this off");
+            ui.checkbox(&mut self.focus, "Do not disturb · cancel an active break");
             ui.add_space(20.0);
             ui.label(format!("Completed today: {}     Postponed: {}", self.core.stats.completed_short + self.core.stats.completed_long, self.core.stats.postponed));
             ui.separator();
-            ui.label("Portable preview: time advances only while this window is active. Switching apps, minimizing or locking suspends this session. Automatic global typing/full-screen sensing and tray integration are still Windows-only.");
-            ui.label("Short breaks use the original 15–25 minute rhythm. Long breaks follow 2 hours of active session time. No account or telemetry.");
+            ui.label("Manual-only portable preview: the break timer advances only while this window is reported focused and not minimized. This is not native lock detection. Native idle, fullscreen and session evidence is unavailable, so automatic reminders stay paused.");
+            ui.label("Manual break state and local statistics are saved. Unobserved time is not credited as screen use or natural rest. No account or telemetry.");
             if !self.notice.is_empty() { ui.label(&self.notice); }
         });
         ctx.request_repaint_after(Duration::from_millis(250));
