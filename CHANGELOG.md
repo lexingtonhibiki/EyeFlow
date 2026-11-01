@@ -4,6 +4,14 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [Unreleased]
+
+### Fixed
+
+- 通过托盘或设置关闭提示音时，停止正在播放的合成提示音和自定义音频试听，
+  不再等待长音频播放结束。保留当前输出设备及其健康状态，重新启用后的下一次
+  提示仍按原流程获取默认输出；不改变系统音量和设备设置。
+
 ## [0.7.4-test.1] - 2026-10-23
 
 ### Preview status
