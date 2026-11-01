@@ -14,7 +14,10 @@ void eyeflow_destroy(EyeFlow *handle);
 void eyeflow_command(EyeFlow *handle, uint32_t command);
 /* Caller-owned monotonic ACTIVE time since create. Stop advancing while locked.
  * focus != 0 suppresses interruptions. 0 idle, 1 heads-up, 2 break, -1 error.
- * Backward time is rejected without changing state. */
+ * Backward time is rejected without changing state.
+ * Legacy ABI has no fullscreen/session evidence: automatic reminders are PAUSED.
+ * Idle/focus alone never prove an unlocked session. Explicit manual breaks still
+ * complete using caller-owned active time. Use eyeflow_mobile_* on mobile. */
 int32_t eyeflow_tick(EyeFlow *handle, uint64_t elapsed_ms, uint64_t idle_secs, uint8_t focus);
 uint64_t eyeflow_remaining_seconds(const EyeFlow *handle);
 uint32_t eyeflow_completed_count(const EyeFlow *handle);
