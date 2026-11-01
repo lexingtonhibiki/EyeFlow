@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "cargo_lock_sha256": "b3010214c1b14921a7d377fea49a6354d4e516ac0a3016a0fd408b0f4b3827d9",
-  "manifest_dependency_configuration_sha256": "7e071b1de3252cbc90214d33c175f78368d85e310f7e8e61ccd612ce59b6c265",
+  "manifest_dependency_configuration_sha256": "57f019cd4149c0c14d60e7932b6e611d63b82904af4516992c8870aa30ff33f0",
   "feature_selection": {
     "default_features": true,
     "extra_features": []
@@ -26,5 +26,5 @@
     }
   },
   "license_dependency_audit_baseline_revision": "719bd5ef3ceec726f8f1eebfe57513d35a1ff4f4",
-  "configuration_reconciliation": "2026-10-23: added non-default desktop-smoke=[desktop], no dependencies changed; all four default normal,no-proc-macro trees exactly matched original audited trees (excluding root path line). Smoke-feature binaries are not distribution inputs."
+  "configuration_reconciliation": "2026-10-23: added non-default desktop-smoke=[desktop], no dependencies changed; all four default normal,no-proc-macro trees exactly matched original audited trees (excluding root path line). Smoke-feature binaries are not distribution inputs. 2026-11-01: added non-default empty portable-state=[] for the separate portable adapter. Structured Cargo comparison against dev 6b0be65f751bdd28f8948402ca3e8901d66e65c8 found no other dependency/feature/target changes; Cargo.lock and all four notice texts are unchanged. All four audited default normal,no-proc-macro dependency trees, including resolved package features, exactly match dev after excluding only the root path line. This does not audit extra-feature or mobile distribution artifacts."
 }

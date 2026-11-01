@@ -32,6 +32,15 @@ default-feature runtime dependency graphs matched after excluding the root line.
 The license dependency audit baseline remains `719bd5e`; the dependency/features
 digest and all four notice texts are unchanged. This is not a new dependency audit.
 
+For the mobile preview integration, the only Cargo configuration addition is the
+non-default empty `portable-state = []` feature. On 2026-11-01, all four audited
+default `normal,no-proc-macro` dependency trees **and resolved package features**
+were compared with dev `6b0be65`; they are identical after excluding only the
+root path line. Cargo.lock and all notice texts are byte-identical. The manifest
+configuration digest was explicitly reconciled; the original audit baseline and
+strict fail-closed guard remain unchanged. This comparison does not cover mobile
+packages or binaries built with additional features.
+
 This guard checks source inputs and files, not binary provenance. Build default
 features from this exact checkout with `cargo build --locked --release` and
 package that output. Additional features, copied native libraries or altered
