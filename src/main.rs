@@ -13,6 +13,7 @@ mod i18n;
 #[allow(dead_code)]
 mod icon;
 mod runtime;
+mod session_log;
 #[cfg(feature = "desktop-smoke")]
 mod smoke_control;
 mod stats;
@@ -354,7 +355,7 @@ fn acquire_single_instance() -> bool {
     }
 }
 
-/// 无控制台的托盘程序把日志写到 %APPDATA%\eyeflow\eyeflow.log（每次启动覆盖）。
+/// 无控制台的托盘程序写当前日志，并保留上一非空会话末尾至多 1 MiB。
 fn init_logging() {
     let dir = config::config_dir();
     let _ = std::fs::create_dir_all(&dir);
@@ -363,8 +364,11 @@ fn init_logging() {
     );
     // 毫秒时间戳：排查「提示音先响、窗口后出现」这类时序问题时，秒级精度不够用
     builder.format_timestamp_millis();
-    if let Ok(file) = std::fs::File::create(dir.join("eyeflow.log")) {
-        builder.target(env_logger::Target::Pipe(Box::new(file)));
+    match session_log::open(&dir) {
+        Ok(file) => {
+            builder.target(env_logger::Target::Pipe(Box::new(file)));
+        }
+        Err(error) => eprintln!("Cannot preserve/open EyeFlow diagnostic log: {error}"),
     }
     let _ = builder.try_init();
 
@@ -378,8 +382,8 @@ fn init_logging() {
 ///
 /// `panic = "abort"` 只取消 unwind，panic hook 仍由 panic runtime 在 abort
 /// 之前调用，所以这里不是死代码。真正的问题是本程序是 `#![windows_subsystem]`
-/// 的无控制台托盘应用：只写日志的话崩溃时用户在屏幕上什么都看不到，而日志
-/// 每次启动就被覆盖一次。护眼工具崩溃在用户眼里等于「这软件有问题」。
+/// 的无控制台托盘应用：只写日志的话崩溃时用户在屏幕上什么都看不到。上一
+/// 非空会话的日志末尾现在会保留，但仍需要及时提示用户发生了崩溃。
 ///
 /// Win32 调用本身是 unsafe 且可能重入的（弹窗期间再 panic 会递归调 hook），
 /// 因此用静态标志挡住重入。
@@ -468,7 +472,21 @@ fn show_panic_message(info: &std::panic::PanicHookInfo<'_>) {
 #[cfg(test)]
 mod startup_order_tests {
     #[test]
-    fn instance_lock_precedes_truncating_log_initialization() {
+    fn log_initialization_uses_session_retention_without_truncation_bypass() {
+        let source = include_str!("main.rs");
+        let initialization = source
+            .split("fn init_logging() {")
+            .nth(1)
+            .unwrap()
+            .split("/// 崩溃时弹一个消息框。")
+            .next()
+            .unwrap();
+        assert!(initialization.contains("session_log::open(&dir)"));
+        assert!(!initialization.contains("File::create"));
+    }
+
+    #[test]
+    fn instance_lock_precedes_log_rotation_and_initialization() {
         let source = include_str!("main.rs");
         let main = source.split("fn main() {").nth(1).unwrap();
         assert!(
