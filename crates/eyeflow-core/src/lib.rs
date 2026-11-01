@@ -9,8 +9,15 @@ pub mod core;
 pub mod mobile;
 mod mobile_ffi;
 pub mod stats;
+// Share the pure sensor contract, never the platform-specific desktop backends.
+#[path = "../../../src/platform/sensors.rs"]
+pub mod sensor_contract;
+pub mod platform {
+    pub use crate::sensor_contract as sensors;
+}
 use config::Config;
 use core::{Core, CoreSnapshot, Phase, Sensors};
+use sensor_contract::Reading;
 use stats::Stats;
 use std::time::{Duration, Instant};
 
@@ -85,9 +92,10 @@ pub unsafe extern "C" fn eyeflow_tick(
         .stats
         .roll_day(&chrono::Local::now().format("%Y-%m-%d").to_string());
     h.core.set_sensors(Sensors {
-        idle_secs,
-        fullscreen: false,
-        interruptible: true,
+        sampled_at: now,
+        idle: Reading::Known(Duration::from_secs(idle_secs)),
+        fullscreen: Reading::Unavailable("Legacy host has no fullscreen evidence"),
+        interruptible: Reading::Unavailable("Legacy host has no unlocked-session evidence"),
     });
     h.core.tick(now, focus != 0);
     match h.core.phase {
@@ -221,7 +229,8 @@ mod tests {
         unsafe {
             let h = eyeflow_create();
             assert_eq!(eyeflow_configure(h, 60, 30, 0, 900), 0);
-            assert_eq!(eyeflow_tick(h, 45000, 0, 0), 1);
+            assert_eq!(eyeflow_tick(h, 45000, 0, 0), 0);
+            assert!((*h).core.automatic_pause_reason((*h).now).is_some());
             assert_eq!(eyeflow_tick(h, 44000, 0, 0), -1);
             assert_eq!(eyeflow_tick(h, u64::MAX, 0, 0), -1);
             eyeflow_command(h, 1);
@@ -234,23 +243,48 @@ mod tests {
         }
     }
     #[test]
-    fn restore_preserves_postponement_and_remaining_active_time() {
+    fn legacy_checkpoint_preserves_postponement_without_automatic_catchup() {
         unsafe {
             let h = eyeflow_create();
             eyeflow_configure(h, 60, 30, 0, 900);
-            eyeflow_tick(h, 45000, 0, 0);
-            eyeflow_command(h, 2);
             let n = eyeflow_export_state(h, std::ptr::null_mut(), 0);
             let mut bytes = vec![0; n];
-            assert_eq!(eyeflow_export_state(h, bytes.as_mut_ptr(), n), n);
+            eyeflow_export_state(h, bytes.as_mut_ptr(), n);
+            // A previous host had legitimately postponed a round. Restoring its
+            // checkpoint is not evidence that the current session is observable.
+            let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            old["scheduler"]["due_ms"] = 300000.into();
+            old["scheduler"]["postponed_this_round"] = true.into();
+            old["stats"]["postponed"] = 1.into();
+            old["stats"]["day"] = chrono::Local::now().format("%Y-%m-%d").to_string().into();
+            // Older checkpoints have no desktop compatibility policy field.
+            old["config"]
+                .as_object_mut()
+                .unwrap()
+                .remove("compatibility_reminders");
+            bytes = serde_json::to_vec(&old).unwrap();
             let restored = eyeflow_create();
-            assert_eq!(eyeflow_import_state(restored, bytes.as_ptr(), n), 0);
+            assert_eq!(
+                eyeflow_import_state(restored, bytes.as_ptr(), bytes.len()),
+                0
+            );
             assert_eq!(eyeflow_remaining_seconds(restored), 300);
             assert_eq!(eyeflow_postponed_count(restored), 1);
-            assert_eq!(eyeflow_tick(restored, 285000, 0, 0), 1);
-            eyeflow_command(restored, 2); // Already postponed this round: unchanged.
+            assert!(!(*restored).core.cfg.compatibility_reminders);
+            assert_eq!(eyeflow_tick(restored, 285000, 0, 0), 0);
+            eyeflow_command(restored, 2); // Already postponed, no new automatic round.
             assert_eq!(eyeflow_postponed_count(restored), 1);
-            assert_eq!(eyeflow_tick(restored, 285000, 0, 0), 1);
+            assert_eq!(eyeflow_remaining_seconds(restored), 300);
+            assert_eq!(eyeflow_tick(restored, 900000, 900, 0), 0);
+            assert_eq!((*restored).core.stats.completed_natural, 0);
+            assert_eq!((*restored).core.screen_accum, Duration::ZERO);
+            (*restored).core.cfg.compatibility_reminders = true;
+            assert_eq!(eyeflow_tick(restored, 1800000, 0, 0), 0);
+            assert!((*restored)
+                .core
+                .automatic_pause_reason((*restored).now)
+                .is_some());
+            assert_eq!((*restored).core.stats.completed_natural, 0);
             eyeflow_destroy(h);
             eyeflow_destroy(restored);
         }

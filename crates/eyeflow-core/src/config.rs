@@ -22,6 +22,8 @@ impl FlowSensitivity {
 #[serde(default)]
 pub struct Config {
     pub enabled: bool,
+    /// Desktop compatibility policy remains opt-in; missing host evidence is not safe.
+    pub compatibility_reminders: bool,
     pub short_break_min_secs: u64,
     pub short_break_max_secs: u64,
     pub short_break_secs: u64,
@@ -39,6 +41,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
+            compatibility_reminders: false,
             short_break_min_secs: 900,
             short_break_max_secs: 1500,
             short_break_secs: 30,
