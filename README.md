@@ -182,7 +182,15 @@ language = "zh-CN"             # interface language: zh-CN / en-US (any "en" pre
 |---|---|
 | `%APPDATA%\eyeflow\config.toml` | every setting above |
 | `%APPDATA%\eyeflow\stats.toml` | completed short / long / natural breaks, skips, postpones, streak days |
-| `%APPDATA%\eyeflow\eyeflow.log` | diagnostic log, overwritten on each start |
+| `%APPDATA%\eyeflow\eyeflow.log` | current session diagnostic log |
+| `%APPDATA%\eyeflow\eyeflow.log.previous` | last non-empty session, final 1 MiB at most |
+
+A restart preserves the previous non-empty log before starting a fresh one. Only one
+backup is kept; its first line or UTF-8 character may be partial when a larger log
+is trimmed. Copy both logs promptly when reporting a problem: the next non-empty
+session replaces the backup. If preservation fails, the old current log is left
+untouched and that session falls back to stderr. This adds no collected fields or
+automatic uploads; it does not limit the current session log's existing growth.
 
 On Linux these files live in `$XDG_CONFIG_HOME/eyeflow` or `~/.config/eyeflow`; on macOS, `~/Library/Application Support/eyeflow`. Removing a DEB or macOS app preserves user data. Windows installer uninstall removes its user-data directory; corrupted-config backups may also exist there.
 
@@ -467,7 +475,13 @@ language = "zh-CN"             # 界面语言：zh-CN / en-US（凡以 "en" 开�
 |---|---|
 | `%APPDATA%\eyeflow\config.toml` | 上面全部设置 |
 | `%APPDATA%\eyeflow\stats.toml` | 今日完成（短 / 长 / 自然）、跳过、延后、连续坚持天数 |
-| `%APPDATA%\eyeflow\eyeflow.log` | 诊断日志，每次启动覆盖 |
+| `%APPDATA%\eyeflow\eyeflow.log` | 当前会话的诊断日志 |
+| `%APPDATA%\eyeflow\eyeflow.log.previous` | 上一非空会话的日志末尾，至多 1 MiB |
+
+启动新日志前先保留上一非空会话，仅保留一份备份；大日志按字节截取末尾，首行或
+UTF-8 字符可能不完整。反馈问题时请及时复制这两份日志，下一非空会话会替换备份。
+若保留失败，不截断原当前日志，该次会话退回标准错误输出。不新增采集字段或自动上传，
+也不改变当前会话日志原有的增长方式。
 
 Linux 使用 `$XDG_CONFIG_HOME/eyeflow` 或 `~/.config/eyeflow`，macOS 使用 `~/Library/Application Support/eyeflow`。卸载 DEB 或删除 macOS 应用保留用户数据；Windows 安装版卸载会删除用户数据目录。配置损坏时该目录还可能有备份文件。
 

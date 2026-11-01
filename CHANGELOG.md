@@ -4,6 +4,13 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [Unreleased]
+
+### Fixed
+
+- 启动新诊断日志前保留上一非空会话末尾至多 1 MiB，便于重启恢复声音后排查
+  故障。只保留一份本地备份，不新增采集或上传；备份失败时不截断原日志。
+
 ## [0.7.4-test.1] - 2026-10-23
 
 ### Preview status

@@ -158,9 +158,17 @@ On Windows with the normal MSVC/GNU development tools:
 8. Check the shortest cues and UI responsiveness with the affected headphone and
    Bluetooth device. Opening/dropping a stream is synchronous on the main thread;
    actual driver latency is an explicit remaining validation risk.
-9. If silence persists, collect `%APPDATA%\eyeflow\eyeflow.log` before relaunch
-   (the existing logger overwrites it at startup), Windows version, output type,
-   default endpoint and exact unplug/replug sequence. Never collect unrelated data.
+9. If silence persists, copy `%APPDATA%\eyeflow\eyeflow.log` before relaunch
+   when possible. If EyeFlow has already restarted, also copy
+   `%APPDATA%\eyeflow\eyeflow.log.previous`: startup retains the final 1 MiB of
+   the last non-empty session before starting a fresh current log. Only one backup
+   is kept; its first line or UTF-8 character can be partial after byte trimming.
+   Copy it promptly before another non-empty session replaces it. If backup
+   creation/replacement fails, the current log is not truncated and the new
+   session falls back to stderr. Retention uses a fixed temporary file during
+   copying, adds no diagnostic fields or uploads, and does not change the current
+   session log's growth. Include Windows version, output type, default endpoint
+   and exact unplug/replug sequence. Never collect unrelated data.
 
 At the time of local verification, no remote push, PR, release, user-machine
 installation or mobile-source change had been made for this patch.
