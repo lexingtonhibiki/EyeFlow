@@ -15,6 +15,16 @@ cargo build --locked --release --manifest-path crates/eyeflow-core/Cargo.toml
 
 Artifacts are under this crate's `target`, including `release/libeyeflow_core.a` and the target's dynamic library. Rust hosts use public `mobile::{MobileEngine, MobileConfig, MobileSnapshot, MobileState, MobilePhase}`. All calls for one C handle must be serialized; a live handle is destroyed exactly once. No callback or background thread is created.
 
+## Legacy desktop ABI safety limitation
+
+The legacy `eyeflow_tick` signature cannot establish fullscreen or unlocked-session evidence.
+Following the current desktop sensor contract, its automatic reminders are **paused**, not
+assumed safe from idle/focus alone. Explicit manual breaks still complete; import does not
+turn missing observations into screen use, natural-rest credit, or catch-up notifications.
+This is an explicit safety limitation of the unpublished portable preview, not a change to
+the native desktop backends or the separate mobile interval API. A future automatic host
+needs real sensor evidence; enabling compatibility mode cannot bypass unavailable readings.
+
 ## Mobile interval contract
 
 Call `eyeflow_mobile_advance(handle, delta_ms, state, delivery_allowed)` for each **disjoint, chronological elapsed interval**. Durations are not cumulative timestamps. The entire interval must be covered by the indicated observation. Split intervals at every known foreground, permission, lock, session, or stop transition. A zero-duration call establishes the current boundary/delivery eligibility without adding time.
@@ -62,11 +72,11 @@ Checkpoints preserve configuration, short/long exposure, remaining selected-time
 
 ## Legacy desktop-compatible ABI
 
-The pre-existing `eyeflow_*` API and tests are preserved. This adapter accepts a caller-owned monotonically increasing active clock plus desktop-style idle/focus signals; its scheduler may infer natural rest from desktop inactivity or a large tick gap. It is **not a valid mobile observation contract**. Its snapshot import rebases that legacy active clock to zero. Refer to the first section of the header for signatures.
+The `eyeflow_*` signatures and checkpoint format are preserved, but idle/focus cannot satisfy the current desktop sensor contract. Automatic reminders pause, and neither inactivity nor a large tick gap earns natural-rest credit. Manual breaks remain available and checkpoint import rebases the caller-owned active clock to zero. This is **not a valid mobile observation contract**; see the safety limitation above and the header for signatures.
 
 ## Boundary and target checks
 
-After the release build, run the unchanged desktop ABI smoke test:
+After the release build, run the desktop ABI safety and manual-break smoke test:
 
 ```sh
 cc -Wall -Wextra -Werror -I crates/eyeflow-core/include \
