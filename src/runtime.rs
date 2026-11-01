@@ -409,6 +409,9 @@ impl Runtime {
             TrayCommand::ToggleSound => {
                 let on = !self.core.cfg.sound_enabled;
                 self.core.cfg.sound_enabled = on;
+                if !on {
+                    self.audio.stop();
+                }
                 self.persist_config();
                 self.tray.set_sound(on);
                 if let Some(s) = &mut self.settings {
@@ -429,6 +432,9 @@ impl Runtime {
                 let cfg = *cfg;
                 let check_now = cfg.update_check_enabled && !self.core.cfg.update_check_enabled;
                 self.core.apply_config(cfg.clone(), now);
+                if !cfg.sound_enabled {
+                    self.audio.stop();
+                }
                 if let Err(e) = cfg.save() {
                     log::error!("保存配置失败: {e}");
                 }
