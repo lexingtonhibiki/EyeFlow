@@ -37,7 +37,7 @@ SetCompressor /SOLID lzma
 ; ⚠️ 这个兜底值只在「不经 CI 直接敲 makensis」时才生效,但它就是本地跑出来的
 ;    安装包上的版本号 —— 下次发版记得同步改这里(当前 v0.7.2)。
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.7.3"
+  !define PRODUCT_VERSION "0.7.4-test.1"
 !endif
 !define PRODUCT_PUBLISHER "lexingtonhibiki"
 !define PRODUCT_DIR "$LOCALAPPDATA\${PRODUCT_NAME}"
@@ -132,6 +132,8 @@ Section "Install" SEC_MAIN
 
     ; 1. 主程序
     File "..\target\release\eyeflow.exe"
+    File /oname=LICENSE.txt "..\LICENSE"
+    File /oname=THIRD_PARTY_NOTICES.txt "..\packaging\notices\THIRD_PARTY_NOTICES.windows.txt"
 
     ; 1b. 界面语言:预置 config.toml,让应用侧的首次运行判定落在 false 上。
     ;     应用侧 main.rs 是 `let first_run = !Config::path().exists();`,只要这里
@@ -219,6 +221,8 @@ Section "Uninstall"
 
     ; 2. 程序文件
     Delete "$INSTDIR\eyeflow.exe"
+    Delete "$INSTDIR\LICENSE.txt"
+    Delete "$INSTDIR\THIRD_PARTY_NOTICES.txt"
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
 

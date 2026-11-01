@@ -162,8 +162,11 @@ fn main() {
         generate_i18n(d);
     }
 
-    // Resources only make sense for Windows targets (cross-compiles included).
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+    // Only the Windows desktop executable embeds native resources. Shared-library
+    // builds still generate translations above, without requiring a resource compiler.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows")
+        || env::var_os("CARGO_FEATURE_DESKTOP").is_none()
+    {
         return;
     }
 

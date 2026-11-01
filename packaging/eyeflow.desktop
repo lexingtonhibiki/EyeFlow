@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=EyeFlow
+Comment=Eye-care break reminder (platform preview)
+Exec=eyeflow
+TryExec=eyeflow
+Icon=eyeflow
+Terminal=false
+Categories=Utility;
+StartupNotify=false

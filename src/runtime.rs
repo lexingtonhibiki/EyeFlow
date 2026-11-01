@@ -62,7 +62,7 @@ pub struct Runtime {
 /// - `phase` 只取判别式：`HeadsUp` / `Break` 的文案是常量，带上的时间载荷不影响输出；
 /// - `minute` → `Idle` 分支里 `%H:%M` 的钟点，**只会在分钟边界变**；
 /// - `completed` / `postponed` / `streak` → 第 3 行的计数。
-type TooltipFingerprint = (ContextState, bool, bool, u8, i64, u32, u32, u32);
+type TooltipFingerprint = (ContextState, bool, bool, u8, i64, u32, u32, u32, bool);
 
 impl Runtime {
     pub fn new(
@@ -96,6 +96,16 @@ impl Runtime {
             rt.spawn_update_check();
         }
         rt
+    }
+
+    /// Install the manager only once the native main-thread event loop is running.
+    #[cfg(not(target_os = "windows"))]
+    pub fn attach_hotkeys(&mut self, manager: GlobalHotKeyManager) -> Result<(), String> {
+        if self.hotkeys.is_some() {
+            return Err("Global hotkey manager is already initialized".to_owned());
+        }
+        self.hotkeys = Some(manager);
+        self.apply_hotkey_enabled(self.core.cfg.hotkey_enabled)
     }
 
     /// 在后台线程查询 GitHub Releases，结果经事件总线回到主线程。
@@ -222,14 +232,38 @@ impl Runtime {
 
     /// 处理所有待处理输入并推进调度核心一步。两种模式都调用它。
     pub fn step(&mut self, now: Instant) {
+        // Quit takes precedence over queued actions and scheduler work. In
+        // particular, do not open/reopen an audio device on the exit frame.
+        let commands = self.tray.poll();
+        if self.quit || commands.iter().any(|cmd| matches!(cmd, TrayCommand::Quit)) {
+            if !self.quit {
+                self.handle_tray(TrayCommand::Quit, now);
+            }
+            if self.core.stats.dirty {
+                self.core.stats.save();
+            }
+            return;
+        }
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
+                #[cfg(feature = "desktop-smoke")]
+                Event::SmokeCommand(command) => {
+                    // Exercise the existing tray action and ordinary shutdown
+                    // path; never substitute process termination for a quit.
+                    self.handle_tray(command, now);
+                    if self.quit {
+                        if self.core.stats.dirty {
+                            self.core.stats.save();
+                        }
+                        return;
+                    }
+                }
                 Event::KeyPress(t) => self.core.on_key(t),
                 Event::Sensors(s) => self.core.set_sensors(s),
                 Event::UpdateChecked(result) => self.on_update_checked(result),
             }
         }
-        for cmd in self.tray.poll() {
+        for cmd in commands {
             self.handle_tray(cmd, now);
         }
         self.sync_esc_hotkey();
@@ -312,6 +346,7 @@ impl Runtime {
             self.core.stats.completed_today(),
             self.core.stats.postponed,
             self.core.stats.streak_days,
+            self.core.automatic_pause_reason(now).is_some(),
         )
     }
 
@@ -465,14 +500,11 @@ impl Runtime {
                 duration_secs,
             } => self.audio.play_cue(preset, volume_pct, duration_secs),
             SettingsAction::PreviewCustom { path, volume_pct } => {
-                if let Err(e) = self
+                let result = self
                     .audio
-                    .play_custom(std::path::Path::new(&path), volume_pct)
-                {
-                    if let Some(s) = &mut self.settings {
-                        s.custom_sound_error =
-                            Some(tr_fill("runtime.custom_play_failed", "{err}", e));
-                    }
+                    .play_custom(std::path::Path::new(&path), volume_pct);
+                if let Some(s) = &mut self.settings {
+                    s.record_custom_preview_result(result);
                 }
             }
             SettingsAction::PickCustomSound => {
@@ -538,8 +570,21 @@ impl Runtime {
             SettingsAction::SetLanguage(code) => self.apply_language(code),
             SettingsAction::OpenConfigDir => {
                 let dir = crate::config::config_dir();
-                let _ = std::fs::create_dir_all(&dir);
-                let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+                #[cfg(target_os = "windows")]
+                let opener = "explorer";
+                #[cfg(target_os = "macos")]
+                let opener = "open";
+                #[cfg(target_os = "linux")]
+                let opener = "xdg-open";
+                let result = std::fs::create_dir_all(&dir).and_then(|()| {
+                    std::process::Command::new(opener)
+                        .arg(&dir)
+                        .spawn()
+                        .map(|_| ())
+                });
+                if let Some(settings) = &mut self.settings {
+                    settings.config_open_error = result.err().map(|error| error.to_string());
+                }
             }
         }
     }
@@ -577,6 +622,10 @@ impl Runtime {
             tr("runtime.reminder_disabled").to_string()
         } else if self.core.is_paused(now) {
             tr("runtime.reminder_paused").to_string()
+        } else if self.core.automatic_pause_reason(now).is_some()
+            && !matches!(self.core.phase, Phase::Break { .. })
+        {
+            tr("runtime.monitoring_paused").to_string()
         } else {
             match self.core.phase {
                 // 具体钟点比“约 12 分钟后”更直观（快赢审计 #4）

@@ -12,6 +12,137 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  shared-core:
+    name: Shared core (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Test shared core without native desktop dependencies
+        run: cargo test --locked --no-default-features
+
+  native-desktop:
+    name: Native desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native architecture
+        shell: bash
+        run: test "$(uname -m)" = "${{ matrix.arch }}"
+      - name: Install Linux native development libraries
+        timeout-minutes: 10
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libgtk-3-dev libasound2-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev fonts-noto-cjk xvfb xdotool openbox wmctrl libgl1-mesa-dri libgl1 libegl1 libxkbcommon-x11-0 dpkg-dev desktop-file-utils
+      - name: Inspect installed macOS CJK font families
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/eyeflow-font-probe.swift" <<'SWIFT'
+          import Foundation
+          import CoreText
+          let families = CTFontManagerCopyAvailableFontFamilyNames() as! [String]
+          for family in families.sorted() where ["PingFang", "Heiti", "Songti", "Hiragino", "Arial Unicode"].contains(where: family.contains) {
+              let font = CTFontCreateWithName(family as CFString, 14, nil)
+              print("\(family): \(String(describing: CTFontCopyAttribute(font, kCTFontURLAttribute)))")
+          }
+          SWIFT
+          swift "$RUNNER_TEMP/eyeflow-font-probe.swift"
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Format
+        run: cargo fmt --check
+      - name: Check native desktop
+        run: cargo check --locked --all-targets
+      - name: Clippy native production code
+        run: cargo clippy --locked --lib --bins -- -D warnings
+      # Eight Windows hardware-font tests/probes remain Windows-specific and explicitly report
+      # ignored here. Portable parser/contracts and all runtime unit tests still run.
+      # These are build/unit checks, not proof of native GUI, lock or audio behavior.
+      - name: Test native desktop and portable contracts
+        run: cargo test --locked
+      - name: Verify real idle on an isolated X11 display
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a -s '-screen 0 1280x1024x24' env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 EYEFLOW_ISOLATED_X11_TEST=1 cargo test --locked --test native_sensors -- --ignored --nocapture
+      - name: Test package assembly contracts
+        run: python3 -m unittest discover -s packaging -p 'test_*.py' -v
+      - name: Build native release executable (not a published release)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --locked --release
+          else
+            cargo build --locked --release
+          fi
+      - name: Verify native visible windows and Linux popup exit
+        # Linux owns a private Xvfb/WM; macOS checks startup windows only.
+        # macOS SIGTERM is cleanup, never evidence of an ordinary app exit.
+        run: python3 scripts/test-desktop-smoke.py target/release/eyeflow
+      - name: Verify packaging build excludes test control feature
+        shell: bash
+        run: |
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/eyeflow-default-metadata.json"
+          python3 - "$RUNNER_TEMP/eyeflow-default-metadata.json" <<'PYTHON'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          root = next(node for node in data["resolve"]["nodes"] if node["id"] == data["resolve"]["root"])
+          assert "desktop-smoke" not in root["features"], root["features"]
+          print("Default package features:", root["features"])
+          PYTHON
+          shasum -a 256 target/release/eyeflow > "$RUNNER_TEMP/eyeflow-production.sha256"
+      - name: Build isolated macOS lifecycle-test executable
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          MACOSX_DEPLOYMENT_TARGET=15.0 cargo test --locked --features desktop-smoke --target-dir target/desktop-smoke --bin eyeflow smoke_control::tests
+          MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --locked --release --features desktop-smoke --target-dir target/desktop-smoke
+          shasum -a 256 -c "$RUNNER_TEMP/eyeflow-production.sha256"
+      - name: Verify shared menu actions and normal macOS popup exit
+        if: runner.os == 'macOS'
+        # Private stdin in a separate test-feature binary, not a native mouse click.
+        run: python3 scripts/test-desktop-smoke.py target/desktop-smoke/release/eyeflow --stdin-control
+      - name: Assemble native preview package (not a release)
+        shell: bash
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            python3 scripts/package-desktop.py macos --binary target/release/eyeflow --version "$version" --arch "${{ matrix.arch }}" --macos-min-version 15.0
+          else
+            python3 scripts/package-desktop.py linux --binary target/release/eyeflow --version "$version"
+          fi
+      - name: Retain native preview artifacts for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: eyeflow-preview-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.dmg
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   ci:
     name: Check / Test / Build (windows-latest)
     runs-on: windows-latest
@@ -45,9 +176,7 @@ jobs:
           "installer.nsi UTF-8 BOM OK"
 
       # 生产代码（--bins）阻塞：今天已经是零警告，守住它不花钱。
-      # 注意用 `--bins` 而不是 ADR-0007 判决七原文的 `--lib --bins`——
-      # 本项目是纯 bin crate，没有 lib target，`cargo clippy --lib --bins`
-      # 会直接报 "no library targets found" 而根本跑不起来。
+      # 桌面生产代码保持原有 --bins 门禁；共享库另由 shared-core job 验收。
       # --all-targets 保持 advisory：clippy 的 lint 集合每个 stable 版本都在变，
       # 一旦对测试代码也 -D warnings，下一次例行工具链升级就会红灯，
       # 而唯一能修的人是作者、修法往往是加 #[allow]——
@@ -65,10 +194,90 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
-      # 带在线更新检查的构建：默认 feature 关掉了 TLS 栈，
-      # 这个 job 保证那条路径不会悄悄烂掉（见 ADR-0007 判决五）。
+      # update-check 已是默认 feature；保留显式 feature 构建，验证该调用方式兼容。
       - name: Build release binary (with update-check feature)
         run: cargo build --release --locked --features update-check
+
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # Hosted Windows runners expose only GDI Generic OpenGL 1.1. Keep Mesa
+      # and its dependencies in a disposable test prefix, never in the package.
+      - name: Prepare private software OpenGL for native test
+        shell: pwsh
+        env:
+          CONDA_PKGS_DIRS: ${{ runner.temp }}/eyeflow-conda-cache
+        run: |
+          $conda = Join-Path $env:CONDA "Scripts/conda.exe"
+          if (-not (Test-Path $conda)) { throw "Runner's preinstalled Conda is missing" }
+          $prefix = Join-Path $env:RUNNER_TEMP "eyeflow-mesa"
+          & $conda create --yes --no-default-packages --override-channels --channel https://conda.anaconda.org/conda-forge --prefix $prefix "mesa-llvmpipe=26.2.5=hca91ad9_0"
+          if ($LASTEXITCODE -ne 0) { throw "Private Mesa dependency installation failed" }
+          $package = "mesa-llvmpipe-26.2.5-hca91ad9_0"
+          $expectedHash = "320e4d51ab471ac19e38c4104d4dd6ac1efcdda655b45a98830db6be39cb614f"
+          $archive = Join-Path $env:CONDA_PKGS_DIRS "$package.conda"
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) {
+            throw "Mesa package archive SHA256 mismatch"
+          }
+          $record = Get-Content (Join-Path $prefix "conda-meta/$package.json") -Raw | ConvertFrom-Json
+          if ($record.sha256 -ne $expectedHash) { throw "Installed Mesa metadata SHA256 mismatch" }
+          foreach ($dll in @("opengl32.dll", "libgallium_wgl.dll")) {
+            if (-not (Test-Path (Join-Path $prefix "Library/bin/$dll"))) { throw "Missing Mesa DLL: $dll" }
+          }
+          & $conda list --prefix $prefix --explicit
+          if ($LASTEXITCODE -ne 0) { throw "Could not record resolved renderer dependencies" }
+          Copy-Item target/release/eyeflow.exe (Join-Path $prefix "Library/bin/eyeflow.exe")
+          if ((Get-FileHash target/release/eyeflow.exe).Hash -ne (Get-FileHash (Join-Path $prefix "Library/bin/eyeflow.exe")).Hash) {
+            throw "Private test executable differs from built executable"
+          }
+
+      - name: Native tray quit with reminder and settings open
+        id: native_quit
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+          LIBGL_ALWAYS_SOFTWARE: "true"
+        run: python scripts/test-tray-quit.py "$env:RUNNER_TEMP/eyeflow-mesa/Library/bin/eyeflow.exe" --expected-renderer llvmpipe
+
+      - name: Verify audited third-party notices
+        run: python scripts/package-desktop.py --check-notices
+      - name: Install official NSIS build tool
+        run: choco install nsis -y --no-progress
+      - name: Build and inspect Windows installer without installing
+        shell: pwsh
+        run: |
+          $v = python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DPRODUCT_VERSION=$v" installer/installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "NSIS build failed" }
+          $installer = "dist/EyeFlow-$v-Setup.exe"
+          $unpack = Join-Path $env:RUNNER_TEMP "eyeflow-nsis-inspection"
+          & 7z x $installer "-o$unpack" -y
+          if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed" }
+          $expected = @{
+            'eyeflow.exe' = 'target/release/eyeflow.exe';
+            'LICENSE.txt' = 'LICENSE';
+            'THIRD_PARTY_NOTICES.txt' = 'packaging/notices/THIRD_PARTY_NOTICES.windows.txt'
+          }
+          foreach ($name in $expected.Keys) {
+            $files = @(Get-ChildItem $unpack -Recurse -File -Filter $name)
+            if ($files.Count -ne 1) { throw "Expected exactly one $name in installer" }
+            if ((Get-FileHash $files[0].FullName).Hash -ne (Get-FileHash $expected[$name]).Hash) {
+              throw "Installer payload mismatch: $name"
+            }
+          }
+          Get-ChildItem $unpack -Recurse -File | Select-Object FullName, Length
+          (Get-FileHash $installer -Algorithm SHA256).Hash | Out-File "$installer.sha256" -Encoding ascii
+      - name: Retain Windows installer preview (no Release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: eyeflow-preview-windows-x86_64
+          path: |
+            dist/*-Setup.exe
+            dist/*-Setup.exe.sha256
+          retention-days: 7
+          if-no-files-found: error
 
   msrv:
     name: MSRV 1.95

@@ -147,6 +147,10 @@ pub struct Config {
     /// 总开关（托盘“启用提醒”）
     #[serde(default = "d_true")]
     pub enabled: bool,
+    /// Explicit opt-in to reminders without supported lock/fullscreen detection.
+    /// This never permits missing idle data or failed/permission-blocked sensors.
+    #[serde(default)]
+    pub compatibility_reminders: bool,
     /// 短休息间隔下限（秒）
     #[serde(default = "d_short_min")]
     pub short_break_min_secs: u64,
@@ -300,6 +304,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
+            compatibility_reminders: false,
             short_break_min_secs: d_short_min(),
             short_break_max_secs: d_short_max(),
             short_break_secs: d_short_break(),
@@ -447,10 +452,53 @@ impl Config {
 }
 
 pub fn config_dir() -> PathBuf {
-    std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("eyeflow")
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let base =
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"));
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let base = xdg_config_base(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    );
+    base.unwrap_or_else(|| PathBuf::from(".")).join("eyeflow")
+}
+
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
+fn xdg_config_base(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    xdg.map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".config")))
+}
+
+#[cfg(test)]
+mod platform_path_tests {
+    use super::*;
+    #[test]
+    fn xdg_uses_absolute_override() {
+        let root = std::env::temp_dir();
+        assert_eq!(
+            xdg_config_base(Some(root.clone().into_os_string()), Some("ignored".into())),
+            Some(root)
+        );
+    }
+    #[test]
+    fn xdg_rejects_empty_and_relative_override() {
+        for value in ["", "relative/path"] {
+            assert_eq!(
+                xdg_config_base(Some(value.into()), Some("home".into())),
+                Some(PathBuf::from("home/.config"))
+            );
+        }
+    }
+    #[test]
+    fn xdg_missing_environment_is_explicit() {
+        assert_eq!(xdg_config_base(None, None), None);
+    }
 }
 
 /// 原子写：先写同目录下的临时文件，再 `rename` 覆盖目标。写法照抄 `stats.rs`。
@@ -736,7 +784,7 @@ global_mute_hotkey = "Ctrl+Shift+E"
 
         /// 语言是进程级全局状态（`AtomicU8`）：所有会切语言的测试共用一把锁，
         /// 结束时恢复成 zh-CN，避免污染同进程里其它测试的默认值。
-        static LANG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        use crate::tr::TEST_LANGUAGE_LOCK as LANG_LOCK;
 
         fn zh_index(key: &str) -> usize {
             KEYS.iter()
@@ -865,19 +913,19 @@ global_mute_hotkey = "Ctrl+Shift+E"
             let orig = crate::tr::language();
             set_language(Lang::EnUs);
 
-            let two_hours = crate::ui::human_duration(Duration::from_secs(7200));
+            let two_hours = crate::duration_format::human_duration(Duration::from_secs(7200));
             assert!(
                 !two_hours.contains("0 min"),
                 "英文 2 小时输出成 {two_hours:?} —— 必须有一条 m > 0 的分支（ADR-0008 风险 3）"
             );
-            let two_h_five = crate::ui::human_duration(Duration::from_secs(7500));
+            let two_h_five = crate::duration_format::human_duration(Duration::from_secs(7500));
             assert!(
                 two_h_five.contains("2") && two_h_five.contains("5"),
                 "英文 2 小时 5 分输出成 {two_h_five:?} —— 数字丢了"
             );
 
             set_language(Lang::ZhCn);
-            let zh = crate::ui::human_duration(Duration::from_secs(7200));
+            let zh = crate::duration_format::human_duration(Duration::from_secs(7200));
             assert!(
                 zh.contains("小时"),
                 "中文模式输出成 {zh:?} —— 切语言后 human_duration 走的是英文分支"
@@ -921,5 +969,20 @@ global_mute_hotkey = "Ctrl+Shift+E"
             assert_eq!(zh, "· 连续坚持 1 天", "中文状态条输出成 {zh:?}");
             set_language(orig);
         }
+    }
+}
+
+#[cfg(test)]
+mod compatibility_config_tests {
+    use super::Config;
+    #[test]
+    fn compatibility_requires_explicit_opt_in_and_roundtrips() {
+        assert!(!Config::default().compatibility_reminders);
+        let old: Config = toml::from_str("enabled = true").unwrap();
+        assert!(!old.compatibility_reminders);
+        let opted_in: Config = toml::from_str("compatibility_reminders = true").unwrap();
+        assert!(opted_in.compatibility_reminders);
+        let roundtrip: Config = toml::from_str(&toml::to_string(&opted_in).unwrap()).unwrap();
+        assert!(roundtrip.compatibility_reminders);
     }
 }
