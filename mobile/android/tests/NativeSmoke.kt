@@ -1,0 +1,52 @@
+package com.eyeflow.mobile
+fun main() {
+    val h = NativeCore.create()
+    check(h != 0L)
+    check(NativeCore.advance(h, 60000, UseState.TRACKING.ordinal, true) >= 0)
+    val debt = NativeCore.shortDebt(h)
+    NativeCore.advance(h, 600000, UseState.OUT_OF_SCOPE.ordinal, false)
+    check(NativeCore.shortDebt(h) == debt && NativeCore.completed(h) == 0)
+    NativeCore.advance(h, 600000, UseState.UNKNOWN.ordinal, false)
+    check(NativeCore.shortDebt(h) == debt && NativeCore.natural(h) == 0)
+    NativeCore.advance(h, 30000, UseState.LOCKED.ordinal, false)
+    check(NativeCore.shortDebt(h) == 0L && NativeCore.natural(h) == 1)
+    val bytes = checkNotNull(NativeCore.exportState(h))
+    val copy = NativeCore.create()
+    check(NativeCore.importState(copy, bytes))
+    check(NativeCore.advance(copy, 0, UseState.UNKNOWN.ordinal, false) >= 0)
+    check(NativeCore.command(copy, 6) == 0)
+    val longBefore = NativeCore.longDebt(copy)
+    NativeCore.advance(copy, 100000, UseState.TRACKING.ordinal, true)
+    check(NativeCore.longDebt(copy) == longBefore)
+    check(NativeCore.command(copy, 5) == 0)
+    NativeCore.remaining(copy); NativeCore.postponed(copy); NativeCore.paused(copy)
+    NativeCore.reminderId(copy); NativeCore.canDeliver(copy)
+    val separate = NativeCore.create()
+    NativeCore.advance(separate, 60000, UseState.TRACKING.ordinal, true)
+    val chain = UsageClock(0, "eyeflow")
+    chain.sample(0, emptyList(), true, false, setOf("reader"), false, false)
+    val intervals = chain.sample(40000, listOf(
+        UseEvent(1000, EventKind.LOCK), UseEvent(16000, EventKind.SCREEN_ON),
+        UseEvent(16000, EventKind.LOCK), UseEvent(31000, EventKind.SCREEN_ON)),
+        true, false, setOf("reader"), false, false)
+    for (interval in intervals) NativeCore.advance(separate, interval.durationMs, interval.state.ordinal, false)
+    check(NativeCore.natural(separate) == 0) // Two15s chains must not become one30s rest.
+    check(NativeCore.shortDebt(separate) == 60L)
+    NativeCore.destroy(separate)
+    // DND closes only the optional card. Continued target use remains usage,
+    // never a completed rest or a reset of the engine's outstanding debt.
+    val dndCore = NativeCore.create()
+    val dndPolicy = availablePresentationPolicy().copy(interruptionsAllowed = false)
+    check(NativeCore.advance(dndCore, 1_500_000, UseState.TRACKING.ordinal, true) == 2)
+    val dndShortBefore = NativeCore.shortDebt(dndCore)
+    val dndLongBefore = NativeCore.longDebt(dndCore)
+    check(NativeCore.advance(dndCore, 10_000, UseState.TRACKING.ordinal, dndPolicy.deliveryAllowed) == 2)
+    check(dndPolicy.notificationAllowed(NativeCore.canDeliver(dndCore)))
+    check(!dndPolicy.cardAllowed(NativeCore.canDeliver(dndCore)))
+    check(NativeCore.shortDebt(dndCore) == dndShortBefore + 10)
+    check(NativeCore.longDebt(dndCore) == dndLongBefore + 10)
+    check(NativeCore.natural(dndCore) == 0 && NativeCore.completed(dndCore) == 0)
+    NativeCore.destroy(dndCore)
+    NativeCore.destroy(copy); NativeCore.destroy(h)
+    println("Corrected Kotlin/JVM → JNI → mobile Rust evidence and snapshot tests passed")
+}
