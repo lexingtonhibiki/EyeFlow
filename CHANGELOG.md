@@ -4,6 +4,14 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [Unreleased]
+
+### Fixed
+
+- 锁屏期间若新鲜、已知的空闲读数确认至少 15 分钟休息，除清零连续用屏累计外，
+  同时重新安排完整提醒周期，避免解锁第二次采样立即重放锁屏前的预告。
+  短暂锁屏以及未知、失败或过期的空闲读数不会据此重置计时，也不会凭空增加休息完成统计。
+
 ## [0.7.4-test.1] - 2026-10-23
 
 ### Preview status
