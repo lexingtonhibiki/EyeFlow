@@ -23,6 +23,8 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -74,10 +76,13 @@ jobs:
       - name: Build separate instrumented acceptance binary
         shell: pwsh
         run: |
-          cargo build --locked --release --features desktop-smoke --target-dir target/acceptance
+          $production = "$env:RUNNER_TEMP/eyeflow-mesa/Library/bin/eyeflow.exe"
+          $productionHash = (Get-FileHash $production).Hash
+          cargo build --locked --release --features desktop-smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Copy-Item target/acceptance/release/eyeflow.exe "$env:RUNNER_TEMP/eyeflow-mesa/Library/bin/eyeflow-acceptance.exe"
-          if ((Get-FileHash target/acceptance/release/eyeflow.exe).Hash -ne (Get-FileHash "$env:RUNNER_TEMP/eyeflow-mesa/Library/bin/eyeflow-acceptance.exe").Hash) { throw "Acceptance binary copy mismatch" }
+          Copy-Item target/release/eyeflow.exe "$env:RUNNER_TEMP/eyeflow-mesa/Library/bin/eyeflow-acceptance.exe"
+          if ((Get-FileHash target/release/eyeflow.exe).Hash -ne (Get-FileHash "$env:RUNNER_TEMP/eyeflow-mesa/Library/bin/eyeflow-acceptance.exe").Hash) { throw "Acceptance binary copy mismatch" }
+          if ((Get-FileHash $production).Hash -ne $productionHash) { throw "Production smoke binary was modified" }
       - name: Install isolated GUI test dependencies
         run: python -m pip install PyAutoGUI==0.9.54 Pillow==11.3.0
       - name: Real widget edit, tab round-trip, restart and screenshots

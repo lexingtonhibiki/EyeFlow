@@ -123,7 +123,17 @@ def main():
             x, y = wait(coordinates)
             point = wintypes.POINT(0, 0)
             assert user.ClientToScreen(hwnd, ctypes.byref(point))
-            gui.click(point.x + float(x), point.y + float(y), clicks=2 if double else 1, interval=.1)
+            screen_x, screen_y = point.x + float(x), point.y + float(y)
+            report.setdefault('actions', []).append({'pid': proc.pid, 'widget': name, 'x': screen_x, 'y': screen_y, 'double': double})
+            # Make down and up observable on separate application frames. A zero-
+            # duration OS click can focus the widget without completing its click.
+            gui.moveTo(screen_x, screen_y, duration=.15)
+            for _ in range(2 if double else 1):
+                assert user.GetForegroundWindow() == hwnd and owned(hwnd)
+                gui.mouseDown()
+                time.sleep(.12)
+                gui.mouseUp()
+                time.sleep(.12)
             time.sleep(.3)
             expected_tab = {'tab.now': 'Now', 'tab.reminder': 'Reminder'}.get(name)
             if expected_tab:
