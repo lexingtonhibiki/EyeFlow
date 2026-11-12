@@ -195,7 +195,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Ve
             match s.tab {
                 // 首屏（默认页签）就是「下次休息 14:32」——首次运行会自动打开这个
                 // 窗口做引导，第一眼不该是一张要往下滚的设置表单。
-                SettingsTab::Now => status_card(ui, view, &mut actions),
+                SettingsTab::Now => status_card(ui, s, view, &mut actions),
                 SettingsTab::Reminder => {
                     rhythm_card(ui, s, &mut actions);
                     ui.add_space(4.0);
@@ -209,14 +209,61 @@ pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Ve
             footer(ui, s, &mut actions);
         });
 
+    #[cfg(feature = "desktop-smoke")]
+    acceptance_state(s);
     actions
 }
 
+#[cfg(feature = "desktop-smoke")]
+fn acceptance_state(s: &SettingsState) {
+    if !std::env::args_os().any(|a| a == "--smoke-stdin") {
+        return;
+    }
+    let line = format!(
+        "GUI_STATE pid={} tab={:?} short={} long={}",
+        std::process::id(),
+        s.tab,
+        s.draft.short_break_secs,
+        s.draft.long_break_secs
+    );
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last != line {
+        log::info!("{line}");
+        *last = line;
+    }
+}
+
 /// 页签栏。文案只有两三个字，五个页签中英文都远窄于内容区（宽度闸门会量）。
+// Only the separately built acceptance executable reports widget geometry.
+// No input/config mutation, listener, or production behavior is added.
+#[cfg(feature = "desktop-smoke")]
+fn acceptance_rect(name: &str, response: &egui::Response) {
+    if !std::env::args_os().any(|a| a == "--smoke-stdin") {
+        return;
+    }
+    let center = response.rect.center() * response.ctx.pixels_per_point();
+    let line = format!("GUI_ACCEPT {name} {:.1} {:.1}", center.x, center.y);
+    static LAST: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, old)) = last.iter_mut().find(|(key, _)| key == name) {
+        if *old != line {
+            log::info!("{line}");
+            *old = line;
+        }
+    } else {
+        log::info!("{line}");
+        last.push((name.to_owned(), line));
+    }
+}
+
 fn tab_bar(ui: &mut egui::Ui, s: &mut SettingsState) {
     ui.horizontal(|ui| {
         for tab in SettingsTab::ALL {
-            if ui.selectable_label(s.tab == tab, tr(tab.key())).clicked() {
+            let response = ui.selectable_label(s.tab == tab, tr(tab.key()));
+            #[cfg(feature = "desktop-smoke")]
+            acceptance_rect(tab.key(), &response);
+            if response.clicked() {
                 s.tab = tab;
             }
         }
@@ -313,21 +360,27 @@ fn push_save(s: &SettingsState, actions: &mut Vec<SettingsAction>) {
     actions.push(SettingsAction::Save(Box::new(s.draft.clone().sanitized())));
 }
 
-fn status_card(ui: &mut egui::Ui, view: &SettingsView, actions: &mut Vec<SettingsAction>) {
+fn status_card(
+    ui: &mut egui::Ui,
+    s: &mut SettingsState,
+    view: &SettingsView,
+    actions: &mut Vec<SettingsAction>,
+) {
     card(ui, tr("card.now"), |ui| {
-        ui.horizontal(|ui| {
-            ui.label(format!(
-                "{} {}{}{}",
-                tr("stats.dot"),
-                view.state_label,
-                tr("stats.separator"),
-                view.reminder_line,
-            ));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(tr("ui.rest_now")).clicked() {
-                    actions.push(SettingsAction::RestNow);
-                }
-            });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new(view.reminder_line.as_str())
+                    .size(16.0)
+                    .strong(),
+            );
+            ui.add_space(8.0);
+            if ui.button(tr("ui.rest_now")).clicked() {
+                actions.push(SettingsAction::RestNow);
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.weak(tr("stats.dot"));
+            ui.weak(view.state_label);
         });
         let st = view.stats;
         let good = COLOR_OK;
@@ -361,6 +414,60 @@ fn status_card(ui: &mut egui::Ui, view: &SettingsView, actions: &mut Vec<Setting
             ui.colored_label(postponed_color, tr_fill("stats.count", "{n}", st.postponed));
             ui.weak(trn("stats.streak_label", st.streak_days));
         });
+
+        ui.add_space(4.0);
+        ui.group(|ui| {
+            ui.label(egui::RichText::new(tr("ui.status_custom_durations")).strong());
+            let mut dirty = false;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(tr("ui.status_short_seconds"));
+                let mut short = s.draft.short_break_secs as u32;
+                let r = ui.add(
+                    egui::DragValue::new(&mut short)
+                        .range(10..=600)
+                        .suffix(tr("unit.second")),
+                );
+                #[cfg(feature = "desktop-smoke")]
+                acceptance_rect("status.short", &r);
+                s.draft.short_break_secs = short as u64;
+                if commit(&r) {
+                    dirty = true;
+                }
+                ui.add_space(8.0);
+                ui.label(tr("ui.status_long_minutes"));
+                let mut long_m = (s.draft.long_break_secs / 60) as u32;
+                let r = ui.add(egui::DragValue::new(&mut long_m).range(1..=60));
+                #[cfg(feature = "desktop-smoke")]
+                acceptance_rect("status.long", &r);
+                if r.changed() {
+                    s.draft.long_break_secs = (long_m as u64) * 60;
+                }
+                if commit(&r) {
+                    dirty = true;
+                }
+            });
+            ui.weak(tr("ui.status_numeric_hint"));
+            ui.weak(tr("ui.status_edit_next"));
+            if dirty {
+                push_save(s, actions);
+            }
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            if s.draft.long_break_enabled {
+                ui.colored_label(COLOR_OK, tr("ui.status_long_enabled"));
+            } else {
+                ui.colored_label(COLOR_WARN, tr("ui.status_long_disabled"));
+            }
+        });
+
+        if s.draft.sound_enabled && !s.draft.start_cue_enabled {
+            ui.colored_label(COLOR_WARN, tr("ui.sound_start_off_warning"));
+        }
+
+        if ui.button(tr("ui.status_reminder_settings")).clicked() {
+            s.tab = SettingsTab::Reminder;
+        }
     });
 }
 
@@ -450,9 +557,10 @@ fn rhythm_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<Setti
         ui.horizontal(|ui| {
             ui.label(tr("ui.short_duration"));
             committed |=
-                commit(&ui.add(egui::Slider::new(&mut rest, 10..=90).suffix(tr("unit.second"))));
+                commit(&ui.add(egui::Slider::new(&mut rest, 10..=600).suffix(tr("unit.second"))));
         });
         s.draft.short_break_secs = rest as u64;
+        ui.weak(tr("ui.numeric_hint"));
         if committed {
             push_save(s, actions);
         }
@@ -480,6 +588,9 @@ fn rhythm_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<Setti
                         .suffix(tr("unit.hour"))
                         .custom_formatter(|v, _range| hours_label(v)),
                 );
+                if after_screen.changed() {
+                    s.draft.long_break_after_secs = (after_h * 3600.0).round() as u64;
+                }
                 committed |= commit(&after_screen);
                 after_screen.on_hover_text(tr("ui.weak_aoa"));
             });
@@ -491,12 +602,13 @@ fn rhythm_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<Setti
             // 拆成两行后每行只剩「标签 + 一个 220 滑条」。
             ui.horizontal(|ui| {
                 ui.label(tr("ui.then_break"));
-                committed |= commit(
-                    &ui.add(egui::Slider::new(&mut long_m, 3..=30).suffix(tr("unit.minute"))),
-                );
+                let response =
+                    ui.add(egui::Slider::new(&mut long_m, 1..=60).suffix(tr("unit.minute")));
+                if response.changed() {
+                    s.draft.long_break_secs = long_m as u64 * 60;
+                }
+                committed |= commit(&response);
             });
-            s.draft.long_break_after_secs = (after_h * 3600.0).round() as u64;
-            s.draft.long_break_secs = long_m as u64 * 60;
             if committed {
                 push_save(s, actions);
             }
@@ -1083,6 +1195,105 @@ pub use crate::duration_format::human_duration;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rest_durations_survive_reminder_status_round_trip() {
+        let _language = crate::tr::TEST_LANGUAGE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for secs in [60, 120, 125, 1800, 1860, 3600] {
+            let cfg = Config {
+                long_break_secs: secs,
+                short_break_secs: 600,
+                long_break_enabled: true,
+                ..Config::default()
+            };
+            let mut state = SettingsState::new(cfg, false);
+            let ctx = egui::Context::default();
+            let stats = Stats::default();
+            let view = SettingsView {
+                sensor_pause_reason: None,
+                state_label: "Active",
+                reminder_line: "Next break".into(),
+                hotkey_active: false,
+                stats: &stats,
+                audio_ok: true,
+                update_status: &UpdateStatus::Idle,
+            };
+            for page in [0, 1, 0] {
+                let mut actions = Vec::new();
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(560.0, 1100.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        if page == 0 {
+                            status_card(ui, &mut state, &view, &mut actions);
+                        } else {
+                            rhythm_card(ui, &mut state, &mut actions);
+                        }
+                    },
+                );
+                output.textures_delta.clear();
+                assert_eq!(
+                    state.draft.long_break_secs, secs,
+                    "rendering page {page} changed duration"
+                );
+                assert_eq!(state.draft.short_break_secs, 600);
+                assert!(actions.is_empty(), "rendering page {page} must not save");
+            }
+        }
+    }
+
+    #[test]
+    fn status_render_preserves_durations_and_explicit_sound_choices() {
+        let _language = crate::tr::TEST_LANGUAGE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let cfg = Config {
+            long_break_secs: 125,
+            short_break_secs: 599,
+            long_break_enabled: false,
+            sound_enabled: true,
+            start_cue_enabled: false,
+            heads_up_cue_enabled: false,
+            ..Config::default()
+        };
+        let mut state = SettingsState::new(cfg, false);
+        let ctx = egui::Context::default();
+        let stats = Stats::default();
+        let view = SettingsView {
+            sensor_pause_reason: None,
+            state_label: "Active",
+            reminder_line: "Next break in 15 minutes".into(),
+            hotkey_active: false,
+            stats: &stats,
+            audio_ok: true,
+            update_status: &UpdateStatus::Idle,
+        };
+        let mut actions = Vec::new();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(560.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| status_card(ui, &mut state, &view, &mut actions),
+        );
+        output.textures_delta.clear();
+        assert_eq!(state.draft.long_break_secs, 125);
+        assert_eq!(state.draft.short_break_secs, 599);
+        assert!(!state.draft.long_break_enabled);
+        assert!(!state.draft.start_cue_enabled);
+        assert!(!state.draft.heads_up_cue_enabled);
+        assert!(actions.is_empty(), "viewing status must not write settings");
+    }
 
     fn preview_position(shape: &egui::epaint::Shape) -> Option<egui::Pos2> {
         match shape {

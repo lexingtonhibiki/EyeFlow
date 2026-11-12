@@ -223,7 +223,7 @@ pub struct Config {
     /// 上次检查更新的 Unix 时间戳（秒）
     #[serde(default)]
     pub update_last_checked: Option<u64>,
-    /// 点击『现在开始』/『立即休息』时播放提示音（结束音照常）
+    /// 休息开始时播放提示音，手动与自动开始共用此选项（结束音照常）
     #[serde(default = "d_true")]
     pub start_cue_enabled: bool,
     /// 预告浮窗弹出时播放提示音。
