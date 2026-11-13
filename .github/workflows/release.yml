@@ -1,6 +1,16 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Exact approved stable tag (must match Cargo.toml)'
+        required: true
+        type: string
+      expected_sha:
+        description: 'Exact reviewed main commit (40 lowercase hex characters)'
+        required: true
+        type: string
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
@@ -8,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -47,8 +57,11 @@ jobs:
           python-version: "3.13"
       - name: Verify exact tag, checkout, version and release notes
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           RELEASE_SHA: ${{ github.sha }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           python - <<'PY'
           import os, pathlib, re, subprocess, tomllib
@@ -57,8 +70,16 @@ jobs:
           version = tomllib.loads(pathlib.Path('Cargo.toml').read_text(encoding='utf-8'))['package']['version']
           assert tag == 'v' + version, (tag, version)
           head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          tagged = subprocess.check_output(['git', 'rev-parse', tag + '^{commit}'], text=True).strip()
-          assert head == tagged == os.environ['RELEASE_SHA'], (head, tagged)
+          assert head == os.environ['RELEASE_SHA'], head
+          if os.environ['RELEASE_EVENT'] == 'workflow_dispatch':
+              assert os.environ['RELEASE_REF'] == 'refs/heads/main', 'Manual releases only run from main'
+              expected_sha = os.environ['EXPECTED_SHA']
+              assert re.fullmatch(r'[0-9a-f]{40}', expected_sha), 'Expected exact reviewed SHA'
+              assert head == expected_sha, 'main changed since review; do not release'
+          else:
+              assert os.environ['RELEASE_EVENT'] == 'push'
+              tagged = subprocess.check_output(['git', 'rev-parse', tag + '^{commit}'], text=True).strip()
+              assert head == tagged, (head, tagged)
           notes = pathlib.Path('docs/releases') / (tag + '.md')
           assert notes.is_file(), notes
           note_text = notes.read_text(encoding='utf-8')
@@ -258,8 +279,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           RELEASE_SHA: ${{ github.sha }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           python - <<'PY'
           import hashlib, json, os, pathlib, re, subprocess, tempfile, tomllib
@@ -299,8 +323,23 @@ jobs:
           # Never replace an existing published release or silently resume an uncertain attempt.
           probe = subprocess.run(['gh', 'api', f'repos/{os.environ["GH_REPO"]}/releases/tags/{tag}'], capture_output=True, text=True)
           assert probe.returncode != 0 and '(HTTP 404)' in probe.stderr, 'Release exists or status is uncertain; inspect before retrying'
+          if os.environ['RELEASE_EVENT'] == 'workflow_dispatch':
+              assert os.environ['RELEASE_REF'] == 'refs/heads/main'
+              assert re.fullmatch(r'[0-9a-f]{40}', os.environ['EXPECTED_SHA'])
+              assert sha == os.environ['EXPECTED_SHA']
+              repo = os.environ['GH_REPO']
+              main = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/git/ref/heads/main'], text=True))
+              assert main['object']['sha'] == sha, 'main advanced during builds; require another review'
+              tag_probe = subprocess.run(['gh', 'api', f'repos/{repo}/git/ref/tags/{tag}'], capture_output=True, text=True)
+              assert tag_probe.returncode != 0 and '(HTTP 404)' in tag_probe.stderr, 'Tag exists or status uncertain; inspect before retrying'
+              # Only after all five packages and notes pass validation. The existing
+              # job-scoped contents:write is sufficient; do not add a PAT or grant.
+              # GITHUB_TOKEN-created tags do not recursively trigger push workflows.
+              created = json.loads(subprocess.check_output(['gh', 'api', '--method', 'POST', f'repos/{repo}/git/refs', '-f', 'ref=refs/tags/' + tag, '-f', 'sha=' + sha], text=True))
+              assert created['ref'] == 'refs/tags/' + tag and created['object']['sha'] == sha
           subprocess.run(['gh', 'release', 'create', tag, '--verify-tag', '--draft', '--title', 'EyeFlow ' + v, '--notes-file', str(notes), *uploads], check=True)
-          # Any failure from here leaves a draft, never a partially populated public release.
+          # Failures before the edit below leave a draft, not a partial public release.
+          # Post-publication verification failures require inspection; never retry blindly.
           remote = json.loads(subprocess.check_output(['gh', 'release', 'view', tag, '--json', 'isDraft,assets'], text=True))
           assert remote['isDraft'] is True
           assert len(remote['assets']) == len(published)
@@ -310,5 +349,19 @@ jobs:
               assert {p.name for p in pathlib.Path(tmp).iterdir()} == set(published)
               for name, content in published.items():
                   assert (pathlib.Path(tmp) / name).read_bytes() == content, name
+          if os.environ['RELEASE_EVENT'] == 'workflow_dispatch':
+              # Recheck after upload/download to narrow races with other writers.
+              # A changed/deleted/annotated tag is not silently accepted.
+              main_now = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/git/ref/heads/main'], text=True))
+              tag_now = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/git/ref/tags/{tag}'], text=True))
+              assert main_now['object']['sha'] == sha, 'main advanced before publication'
+              assert tag_now['object']['type'] == 'commit' and tag_now['object']['sha'] == sha, 'Tag moved before publication'
           subprocess.run(['gh', 'release', 'edit', tag, '--draft=false'], check=True)
+          final = json.loads(subprocess.check_output(['gh', 'release', 'view', tag, '--json', 'isDraft,isPrerelease,tagName,assets'], text=True))
+          assert final['isDraft'] is False and final['isPrerelease'] is False and final['tagName'] == tag
+          assert len(final['assets']) == len(published)
+          assert {a['name']: a['size'] for a in final['assets']} == {n: len(b) for n, b in published.items()}
+          if os.environ['RELEASE_EVENT'] == 'workflow_dispatch':
+              final_tag = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/git/ref/tags/{tag}'], text=True))
+              assert final_tag['object']['type'] == 'commit' and final_tag['object']['sha'] == sha, 'Tag changed after publication; release may be public, inspect immediately'
           PY
