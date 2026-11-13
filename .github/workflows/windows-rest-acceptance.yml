@@ -2,7 +2,9 @@ name: Windows rest settings acceptance
 
 on:
   push:
-    branches: ["feature/rest-status-windows-acceptance-20261113"]
+    branches:
+      - "feature/rest-status-windows-acceptance-20261113"
+      - "test/theme-release-acceptance-20261113"
 
 permissions:
   contents: read

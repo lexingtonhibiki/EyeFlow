@@ -130,6 +130,7 @@
 | flow_sensitivity | "Medium" | 心流判定灵敏度:Low / Medium / High |
 | away_secs | 180 | 无输入多久判定为离开(秒) |
 | language | "zh-CN" | 界面语言:`zh-CN` / `en-US`。凡以 `en` 开头(大小写不敏感)一律视为英文,其余一切回落中文。**无法识别的原值原样保留、不写回规范化结果**(README 鼓励手改配置,静默改写等于替用户改他自己的配置);能识别的值规范成 BCP-47 写法写回(`en_US` → `en-US`) |
+| theme | "system" | 主题模式:可选 `system` / `light` / `dark`;默认 `system`(跟随系统) |
 
 统计文件 `%APPDATA%\eyeflow\stats.toml`:今日完成(短/长/自然)、跳过、延后次数、连续坚持天数。
 

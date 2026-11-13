@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use egui::Widget;
 
-use crate::config::{format_hhmm, parse_hhmm, Config, FlowSensitivity, SoundPreset, WallpaperFit};
+use crate::config::{
+    format_hhmm, parse_hhmm, Config, FlowSensitivity, SoundPreset, ThemeMode, WallpaperFit,
+};
 use crate::stats::Stats;
 use crate::tr::{tr, tr_fill, trn};
 use crate::wallpaper::{self, WallpaperCache};
@@ -184,7 +186,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Ve
     ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
 
     if let Some(reason) = view.sensor_pause_reason {
-        ui.colored_label(COLOR_ERR, tr("ui.monitoring_unavailable"));
+        ui.colored_label(color_err(ui.visuals()), tr("ui.monitoring_unavailable"));
         ui.label(reason);
     }
     tab_bar(ui, s);
@@ -210,21 +212,23 @@ pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Ve
         });
 
     #[cfg(feature = "desktop-smoke")]
-    acceptance_state(s);
+    acceptance_state(s, ui);
     actions
 }
 
 #[cfg(feature = "desktop-smoke")]
-fn acceptance_state(s: &SettingsState) {
+fn acceptance_state(s: &SettingsState, ui: &egui::Ui) {
     if !std::env::args_os().any(|a| a == "--smoke-stdin") {
         return;
     }
     let line = format!(
-        "GUI_STATE pid={} tab={:?} short={} long={}",
+        "GUI_STATE pid={} tab={:?} short={} long={} theme={:?} dark_mode={}",
         std::process::id(),
         s.tab,
         s.draft.short_break_secs,
-        s.draft.long_break_secs
+        s.draft.long_break_secs,
+        s.draft.theme,
+        ui.visuals().dark_mode
     );
     static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
@@ -324,16 +328,34 @@ fn label_column_width(ui: &egui::Ui, label: &str) -> f32 {
         .x
 }
 
-/// 状态色：全项目就这三个值，v0.6.1 之前它们以字面量形式散落在 10 处调用点上。
+/// 语义状态色按主题选值：浅色主题用深色文字、深色主题用浅色文字，
+/// 保证在实际 panel/window/card 填充上达到 WCAG AA 4.5:1。
 ///
-/// ⚠️ **不要改成 `visuals.error_fg_color` / `warn_fg_color`**：那两个是**字段**不是
-/// 方法（`egui-0.36.1/src/style.rs:1055/1058`），值是 egui 默认的**纯红
-/// 纯红 `RGB(255, 0, 0)`**（`:1516-1517` dark / `:1579-1580` light），会把本项目调过
-/// 的 `(220, 80, 80)` 换成纯红——那是视觉退化；而且 **egui 根本没有
-/// `success_fg_color`**，换过去会变成「错误纯红、成功自定义绿」的不一致。
-const COLOR_OK: egui::Color32 = egui::Color32::from_rgb(70, 170, 100);
-const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(230, 150, 40);
-const COLOR_ERR: egui::Color32 = egui::Color32::from_rgb(220, 80, 80);
+/// 仍不使用 `visuals.error_fg_color` / `warn_fg_color`：egui 的默认纯红会退化，
+/// 且没有 `success_fg_color`。
+fn color_ok(visuals: &egui::Visuals) -> egui::Color32 {
+    if visuals.dark_mode {
+        egui::Color32::from_rgb(126, 226, 168)
+    } else {
+        egui::Color32::from_rgb(11, 110, 79)
+    }
+}
+
+fn color_warn(visuals: &egui::Visuals) -> egui::Color32 {
+    if visuals.dark_mode {
+        egui::Color32::from_rgb(255, 200, 87)
+    } else {
+        egui::Color32::from_rgb(138, 75, 0)
+    }
+}
+
+fn color_err(visuals: &egui::Visuals) -> egui::Color32 {
+    if visuals.dark_mode {
+        egui::Color32::from_rgb(255, 138, 138)
+    } else {
+        egui::Color32::from_rgb(176, 0, 32)
+    }
+}
 
 /// 统一的“提交”语义：该帧是否应当把当前改动立即保存。
 ///
@@ -383,9 +405,9 @@ fn status_card(
             ui.weak(view.state_label);
         });
         let st = view.stats;
-        let good = COLOR_OK;
-        let warn = COLOR_WARN;
-        let bad = COLOR_ERR;
+        let good = color_ok(ui.visuals());
+        let warn = color_warn(ui.visuals());
+        let bad = color_err(ui.visuals());
         let muted = ui.visuals().weak_text_color();
         // 延后次数按今日累计变色：0 灰 → 1~2 橙 → ≥3 红，让“欠账”一眼可见
         let postponed_color = match st.postponed {
@@ -455,14 +477,14 @@ fn status_card(
 
         ui.horizontal_wrapped(|ui| {
             if s.draft.long_break_enabled {
-                ui.colored_label(COLOR_OK, tr("ui.status_long_enabled"));
+                ui.colored_label(color_ok(ui.visuals()), tr("ui.status_long_enabled"));
             } else {
-                ui.colored_label(COLOR_WARN, tr("ui.status_long_disabled"));
+                ui.colored_label(color_warn(ui.visuals()), tr("ui.status_long_disabled"));
             }
         });
 
         if s.draft.sound_enabled && !s.draft.start_cue_enabled {
-            ui.colored_label(COLOR_WARN, tr("ui.sound_start_off_warning"));
+            ui.colored_label(color_warn(ui.visuals()), tr("ui.sound_start_off_warning"));
         }
 
         if ui.button(tr("ui.status_reminder_settings")).clicked() {
@@ -793,7 +815,7 @@ fn custom_sound_row(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<
     match (&s.custom_sound_error, &s.custom_sound_info, fallback_name) {
         (Some(err), _, _) => {
             indented(ui, |ui| {
-                ui.colored_label(COLOR_ERR, err);
+                ui.colored_label(color_err(ui.visuals()), err);
             });
         }
         (None, Some(info), _) => {
@@ -906,7 +928,7 @@ fn wallpaper_section(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec
                 .unwrap_or_else(|| tr("ui.image_loading"))
                 .to_string();
             indented(ui, |ui| {
-                ui.colored_label(COLOR_ERR, err);
+                ui.colored_label(color_err(ui.visuals()), err);
             });
         }
     }
@@ -1004,7 +1026,26 @@ fn system_card(
     actions: &mut Vec<SettingsAction>,
 ) {
     card(ui, tr("card.system"), |ui| {
-        // 语言选择器放在卡片**首行**：英文母语用户装上第一眼看到的是中文的托盘
+        ui.horizontal(|ui| {
+            ui.label(tr("ui.theme"));
+            let _theme_combo = egui::ComboBox::from_id_salt("theme")
+                .selected_text(tr(s.draft.theme.key()))
+                .show_ui(ui, |ui| {
+                    for theme in ThemeMode::ALL {
+                        let option =
+                            ui.selectable_value(&mut s.draft.theme, theme, tr(theme.key()));
+                        #[cfg(feature = "desktop-smoke")]
+                        acceptance_rect(&format!("theme.option.{theme:?}"), &option);
+                        if commit(&option) {
+                            push_save(s, actions);
+                        }
+                    }
+                });
+            #[cfg(feature = "desktop-smoke")]
+            acceptance_rect("theme.combo", &_theme_combo.response);
+        });
+
+        // 语言选择器放在卡片前部：英文母语用户装上第一眼看到的是中文的托盘
         // 右键菜单（7 项），而设置窗是首次运行时唯一自动打开的窗口。
         ui.horizontal(|ui| {
             ui.label(tr("ui.language"));
@@ -1036,7 +1077,7 @@ fn system_card(
             actions.push(SettingsAction::SetAutostart(s.autostart));
         }
         if let Some(err) = &s.autostart_error {
-            ui.colored_label(COLOR_ERR, err);
+            ui.colored_label(color_err(ui.visuals()), err);
         }
         let before_hotkey = s.draft.hotkey_enabled;
         ui.horizontal(|ui| {
@@ -1055,7 +1096,7 @@ fn system_card(
         // 与上面 `autostart_error` 的写法一致：错误信息是竖排的一行，不需要
         // 和它描述的控件并排。
         if s.draft.hotkey_enabled && !view.hotkey_active && before_hotkey {
-            ui.colored_label(COLOR_ERR, tr("ui.hotkey_failed"));
+            ui.colored_label(color_err(ui.visuals()), tr("ui.hotkey_failed"));
         }
 
         ui.add_space(2.0);
@@ -1076,7 +1117,7 @@ fn system_card(
             }
         });
         if let Some(error) = &s.config_open_error {
-            ui.colored_label(COLOR_ERR, error);
+            ui.colored_label(color_err(ui.visuals()), error);
         }
     });
 }
@@ -1153,10 +1194,13 @@ fn about_card(
                     ui.weak(tr("ui.checking"));
                 }
                 UpdateStatus::UpToDate => {
-                    ui.colored_label(COLOR_OK, tr("ui.up_to_date"));
+                    ui.colored_label(color_ok(ui.visuals()), tr("ui.up_to_date"));
                 }
                 UpdateStatus::Available { latest, url } => {
-                    ui.colored_label(COLOR_WARN, tr_fill("ui.new_version", "{ver}", latest));
+                    ui.colored_label(
+                        color_warn(ui.visuals()),
+                        tr_fill("ui.new_version", "{ver}", latest),
+                    );
                     // 「前往下载」= 打开 Releases 页面，下哪个包、下不下，用户自己定
                     ui.hyperlink_to(tr("ui.open_release"), url);
                 }
@@ -1184,7 +1228,7 @@ fn footer(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<SettingsAc
             if s.saved_at
                 .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
             {
-                ui.colored_label(COLOR_OK, tr("ui.saved"));
+                ui.colored_label(color_ok(ui.visuals()), tr("ui.saved"));
             }
         });
     });
@@ -1416,6 +1460,63 @@ mod tests {
         state.record_custom_preview_result(Ok(()));
         assert!(state.custom_sound_error.is_none());
         assert_eq!(state.draft, draft);
+    }
+
+    fn srgb_channel_to_linear(channel: u8) -> f64 {
+        let c = channel as f64 / 255.0;
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(color: egui::Color32) -> f64 {
+        let [r, g, b, _] = color.to_array();
+        0.2126 * srgb_channel_to_linear(r)
+            + 0.7152 * srgb_channel_to_linear(g)
+            + 0.0722 * srgb_channel_to_linear(b)
+    }
+
+    fn contrast_ratio(a: egui::Color32, b: egui::Color32) -> f64 {
+        let (l1, l2) = (relative_luminance(a), relative_luminance(b));
+        let (hi, lo) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn semantic_status_colors_meet_wcag_aa_against_actual_egui_fills() {
+        for (mode, visuals) in [
+            ("dark", egui::Visuals::dark()),
+            ("light", egui::Visuals::light()),
+        ] {
+            // Semantic labels are painted on these surfaces, not button fills.
+            // Test the matching theme boundary, never an opposite-theme surface.
+            let boundary = if visuals.dark_mode {
+                egui::Color32::from_rgb(0x1b, 0x1b, 0x1b)
+            } else {
+                egui::Color32::from_rgb(0xf8, 0xf8, 0xf8)
+            };
+            let fills = [
+                visuals.panel_fill,
+                visuals.window_fill,
+                visuals.widgets.noninteractive.bg_fill,
+                boundary,
+            ];
+            for (label, fg) in [
+                ("ok", color_ok(&visuals)),
+                ("warn", color_warn(&visuals)),
+                ("err", color_err(&visuals)),
+            ] {
+                for bg in &fills {
+                    let ratio = contrast_ratio(fg, *bg);
+                    assert!(
+                        ratio >= 4.5,
+                        "{mode} {label} {fg:?} on {bg:?} = {ratio:.2} < 4.5"
+                    );
+                }
+            }
+        }
     }
 
     /// 滑条数值的显示形态：整小时不写尾零（`2` 而不是 `2.00`）。

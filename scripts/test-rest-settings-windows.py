@@ -88,11 +88,16 @@ def main():
 
         def state():
             text = log.read_text(encoding='utf-8', errors='replace') if log.exists() else ''
-            hits = re.findall(r'GUI_STATE pid=' + str(proc.pid) + r' tab=(\w+) short=(\d+) long=(\d+)', text)
+            hits = re.findall(
+                r'GUI_STATE pid=' + str(proc.pid) +
+                r' tab=(\w+) short=(\d+) long=(\d+) theme=(\w+) dark_mode=(true|false)',
+                text,
+            )
             if not hits:
                 return None
-            tab, short, long = hits[-1]
-            return {'tab': tab, 'short': int(short), 'long': int(long)}
+            tab, short, long, theme, dark_mode = hits[-1]
+            return {'tab': tab, 'short': int(short), 'long': int(long),
+                    'theme': theme, 'dark_mode': dark_mode == 'true'}
 
         def archive():
             if log.exists():
@@ -162,6 +167,20 @@ def main():
             gui.press('enter')
             time.sleep(.4)
 
+        def choose_theme(option, expected_theme, expected_dark_mode):
+            click('tab.system')
+            wait(lambda: state() is not None and state()['tab'] == 'System')
+            click('theme.combo')
+            click('theme.option.' + option)
+            wait(lambda: values().get('theme') == expected_theme.lower())
+
+            def effective():
+                current = state()
+                return (current is not None and current['theme'] == expected_theme
+                        and (expected_dark_mode is None
+                             or current['dark_mode'] is expected_dark_mode))
+            return wait(effective)
+
         try:
             launch()
             screenshot('01-status-initial-125-seconds')
@@ -193,6 +212,33 @@ def main():
                 assert cfg['sound_enabled'] is False and cfg['start_cue_enabled'] is False
                 report['cases'].append({'case': f'UI edit {minutes} minutes + {short_seconds} seconds; tabs + restart', 'passed': True, 'pid': proc.pid, 'loaded_state': state()})
             screenshot('05-status-after-restart')
+            for option, expected_theme, expected_dark_mode, prefix in (
+                ('Light', 'Light', False, '06-light'),
+                ('Dark', 'Dark', True, '07-dark'),
+                ('System', 'System', None, '08-system'),
+            ):
+                choose_theme(option, expected_theme, expected_dark_mode)
+                cfg = values()
+                assert cfg['theme'] == expected_theme.lower()
+                assert cfg['long_break_secs'] == 3600 and cfg['short_break_secs'] == 600
+                assert cfg['sound_enabled'] is False and cfg['start_cue_enabled'] is False
+                screenshot(prefix + '-system')
+                click('tab.now')
+                screenshot(prefix + '-status')
+                click('tab.reminder')
+                screenshot(prefix + '-reminder')
+                quit_app()
+                launch()
+                wait(lambda: state() is not None and state()['theme'] == expected_theme
+                     and (expected_dark_mode is None
+                          or state()['dark_mode'] is expected_dark_mode))
+                cfg = values()
+                assert cfg['theme'] == expected_theme.lower()
+                assert cfg['long_break_secs'] == 3600 and cfg['short_break_secs'] == 600
+                assert cfg['sound_enabled'] is False and cfg['start_cue_enabled'] is False
+                report['cases'].append({
+                    'case': f'theme {expected_theme} native selection + restart',
+                    'passed': True, 'pid': proc.pid, 'loaded_state': state()})
             quit_app()
             report['passed'] = True
         except BaseException as exc:
