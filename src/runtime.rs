@@ -188,8 +188,10 @@ impl Runtime {
 
     /// 手动开始休息（预告“现在开始”/ 托盘 / 热键）：可选播放一声开始提示音。
     pub fn on_manual_break_start(&mut self, now: Instant) {
-        self.core.start_break_now(now);
-        if self.core.cfg.sound_enabled && self.core.cfg.start_cue_enabled {
+        if self.core.start_break_now(now)
+            && self.core.cfg.sound_enabled
+            && self.core.cfg.start_cue_enabled
+        {
             self.play_cue(false);
         }
     }

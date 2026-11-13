@@ -4,6 +4,26 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.8.0] - 2026-11-13
+
+### Added
+
+- Persisted System / Light / Dark themes with per-field fallback for invalid theme values.
+- Status-page short (10–600 seconds) and long (1–60 minutes) rest duration editing.
+
+### Fixed
+
+- Preserve fractional-minute long break settings until explicitly edited.
+- Play the enabled start cue on automatic rest entry; deduplicate repeated manual rest start.
+- Use theme-aware foreground colors for semantic status and reminder countdown readability.
+- Verify generated locale keys against this exact build output rather than a guessed Cargo cache path.
+
+### Validation scope
+
+- Native GUI checks cover actual widget edits, restart/persistence and independent rest windows.
+- Hosted GUI audio is disabled; hardware sound, headset switching and all OS-theme changes are not claimed verified.
+- Implementation and review were AI-assisted, not independently hand-written or human-reviewed by the account owner.
+
 ## [0.7.4-test.1] - 2026-10-23
 
 ### Preview status

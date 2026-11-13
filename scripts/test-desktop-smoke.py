@@ -64,6 +64,21 @@ def linux_windows(pid, *, only_visible=True):
     return found
 
 
+def activate_owned_root(proc, root, timeout=2):
+    """No key input until startup focus settles on the PID-owned root twice."""
+    def focused():
+        if not any(w["id"] == root["id"] for w in linux_windows(proc.pid)):
+            raise SmokeFailure("Owned root disappeared before activation")
+        command(["xdotool", "windowactivate", "--sync", root["id"]], timeout=timeout)
+        for _ in range(2):
+            active = command(["xdotool", "getactivewindow"], timeout=timeout).stdout.strip()
+            if active != root["id"] or not any(w["id"] == active for w in linux_windows(proc.pid)):
+                return False
+            time.sleep(0.05)
+        return True
+    wait_for(proc, focused, timeout)
+
+
 def linux_smoke(proc, args, report, started):
     root = wait_for(proc, lambda: next((w for w in linux_windows(proc.pid)
                                        if w["title"] == "EyeFlow"), None), args.timeout)
@@ -71,10 +86,7 @@ def linux_smoke(proc, args, report, started):
                               for w in linux_windows(proc.pid)), args.timeout)
     report["root_and_settings_visible"] = True
     # This is an explicitly isolated X server, and activation is PID checked.
-    command(["xdotool", "windowactivate", "--sync", root["id"]])
-    active = command(["xdotool", "getactivewindow"]).stdout.strip()
-    if active != root["id"] or not any(w["id"] == active for w in linux_windows(proc.pid)):
-        raise SmokeFailure("Refusing input: active window is not the owned EyeFlow root")
+    activate_owned_root(proc, root)
     # DEMO opens Settings but can create HeadsUp after 60 - 45 = 15 seconds.
     # Require a fresh no-popup baseline and complete hotkey delivery by 10 seconds
     # since Popen, conservatively earlier than the application's own timer start.

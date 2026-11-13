@@ -173,6 +173,7 @@ quiet_start = "00:00"          # do-not-disturb window start
 quiet_end = "08:00"            # do-not-disturb window end
 flow_sensitivity = "Medium"    # flow detection sensitivity: Low / Medium / High
 away_secs = 180                # no input for this long counts as away (s)
+theme = "system"               # interface theme: default system; values system / light / dark (system follows OS)
 language = "zh-CN"             # interface language: zh-CN / en-US (any "en" prefix means English)
 ```
 
@@ -458,6 +459,7 @@ quiet_start = "00:00"          # 免打扰时段开始
 quiet_end = "08:00"            # 免打扰时段结束
 flow_sensitivity = "Medium"    # 心流判定灵敏度：Low / Medium / High
 away_secs = 180                # 无输入多久判定为离开（秒）
+theme = "system"               # 界面主题：默认 system，可选 system / light / dark（system 跟随系统）
 language = "zh-CN"             # 界面语言：zh-CN / en-US（凡以 "en" 开头一律视为英文）
 ```
 

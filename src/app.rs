@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, ViewportBuilder, ViewportCommand, ViewportId};
 
-use crate::config::WallpaperFit;
+use crate::config::{ThemeMode, WallpaperFit};
 use crate::core::{Core, Phase};
 use crate::runtime::Runtime;
 use crate::tips;
@@ -40,6 +40,8 @@ pub struct UiSession<'a> {
     /// 上一次装字体时的语言。切语言 → `ctx.set_fonts()` + 重画。
     /// egui 视口内容每帧现取 `tr()`，只有字体需要显式重装。
     font_lang: Lang,
+    /// 上一次应用的主题；用于在保存后把切换同步到共享 egui 上下文。
+    theme: ThemeMode,
     panel_epoch: u64,
     panel_kind: PanelKind,
     panel_noactivate_applied: bool,
@@ -69,14 +71,16 @@ const IDLE_REPAINT: Duration = Duration::from_millis(500);
 
 impl<'a> UiSession<'a> {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: &'a mut Runtime) -> Self {
+        let theme = rt.core.cfg.theme;
         set_fonts(&cc.egui_ctx);
-        cc.egui_ctx.set_theme(egui::ThemePreference::System);
+        cc.egui_ctx.set_theme(theme_preference(theme));
         cc.egui_ctx.style_mut_of(egui::Theme::Dark, tune_style);
         cc.egui_ctx.style_mut_of(egui::Theme::Light, tune_style);
         crate::event::set_ui_context(Some(cc.egui_ctx.clone()));
         Self {
             rt,
             font_lang: crate::tr::language(),
+            theme,
             panel_epoch: 0,
             panel_kind: PanelKind::None,
             panel_noactivate_applied: false,
@@ -176,7 +180,17 @@ impl<'a> UiSession<'a> {
 
         let rt = &mut *self.rt;
         let noactivate_applied = &mut self.panel_noactivate_applied;
+        let theme = rt.core.cfg.theme;
         ctx.show_viewport_immediate(id, builder, |ui, _class| {
+            ui.ctx().set_theme(theme_preference(theme));
+            #[cfg(feature = "desktop-smoke")]
+            if std::env::args().any(|arg| arg == "--smoke-stdin") {
+                log::info!(
+                    "GUI_PANEL pid={} theme={theme:?} dark_mode={}",
+                    std::process::id(),
+                    ui.visuals().dark_mode
+                );
+            }
             if !*noactivate_applied {
                 *noactivate_applied = apply_noactivate(&title);
             }
@@ -245,6 +259,7 @@ impl<'a> UiSession<'a> {
             .with_position([(monitor.x - w) / 2.0, (monitor.y - h) / 2.0])
             .with_resizable(true);
 
+        let theme = rt.core.cfg.theme;
         let view = SettingsView {
             state_label,
             sensor_pause_reason: rt.core.automatic_pause_reason(now),
@@ -256,6 +271,7 @@ impl<'a> UiSession<'a> {
         };
 
         let (actions, close) = ctx.show_viewport_immediate(id, builder, |ui, _class| {
+            ui.ctx().set_theme(theme_preference(theme));
             if focus {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Focus);
             }
@@ -324,6 +340,11 @@ impl eframe::App for UiSession<'_> {
         }
         let now = Instant::now();
         self.rt.step(now);
+
+        if self.theme != self.rt.core.cfg.theme {
+            self.theme = self.rt.core.cfg.theme;
+            ctx.set_theme(theme_preference(self.theme));
+        }
 
         if close_ui_for_quit(ctx, self.rt.quit) {
             return;
@@ -607,7 +628,24 @@ fn mmss(d: Duration) -> String {
 }
 
 fn accent(ui: &egui::Ui) -> Color32 {
-    ui.visuals().selection.bg_fill
+    panel_accent(ui.visuals())
+}
+
+fn panel_accent(visuals: &egui::Visuals) -> Color32 {
+    // Selection fill is a background, not a readable foreground on panel fill.
+    if visuals.dark_mode {
+        Color32::from_rgb(90, 200, 250)
+    } else {
+        Color32::from_rgb(0, 95, 140)
+    }
+}
+
+fn theme_preference(theme: ThemeMode) -> egui::ThemePreference {
+    match theme {
+        ThemeMode::System => egui::ThemePreference::System,
+        ThemeMode::Light => egui::ThemePreference::Light,
+        ThemeMode::Dark => egui::ThemePreference::Dark,
+    }
 }
 
 fn tune_style(style: &mut egui::Style) {
@@ -618,6 +656,13 @@ fn tune_style(style: &mut egui::Style) {
     // （一行两滑条：标签 + 两个 100 px 滑条，右边全空）。220.0 把那条死区
     // 压到 30 px 以内，滑条本身仍然明显短于行宽，动起来仍然好按。
     style.spacing.slider_width = 220.0;
+    // Keep body/weak text readable in both palettes. egui derives weak text from
+    // noninteractive.fg_stroke, so set a high-contrast base per theme.
+    style.visuals.widgets.noninteractive.fg_stroke.color = if style.visuals.dark_mode {
+        Color32::from_gray(180)
+    } else {
+        Color32::from_gray(60)
+    };
     style.visuals.widgets.noninteractive.corner_radius = 6.0.into();
     style.visuals.widgets.inactive.corner_radius = 6.0.into();
     style.visuals.widgets.hovered.corner_radius = 6.0.into();
@@ -932,6 +977,43 @@ fn apply_noactivate(title: &str) -> bool {
 #[cfg(test)]
 mod quit_tests {
     use super::*;
+
+    #[test]
+    fn reminder_accent_has_readable_panel_contrast() {
+        fn luminance(c: Color32) -> f64 {
+            let linear = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
+        }
+        for visuals in [egui::Visuals::light(), egui::Visuals::dark()] {
+            let a = luminance(panel_accent(&visuals));
+            let b = luminance(visuals.panel_fill);
+            assert!((a.max(b) + 0.05) / (a.min(b) + 0.05) >= 4.5);
+        }
+    }
+
+    #[test]
+    fn theme_preference_maps_config_modes() {
+        use crate::config::ThemeMode;
+        assert!(matches!(
+            theme_preference(ThemeMode::System),
+            egui::ThemePreference::System
+        ));
+        assert!(matches!(
+            theme_preference(ThemeMode::Light),
+            egui::ThemePreference::Light
+        ));
+        assert!(matches!(
+            theme_preference(ThemeMode::Dark),
+            egui::ThemePreference::Dark
+        ));
+    }
 
     #[test]
     fn quit_hides_and_closes_reminder_settings_and_root_in_one_pass() {
