@@ -628,7 +628,16 @@ fn mmss(d: Duration) -> String {
 }
 
 fn accent(ui: &egui::Ui) -> Color32 {
-    ui.visuals().selection.bg_fill
+    panel_accent(ui.visuals())
+}
+
+fn panel_accent(visuals: &egui::Visuals) -> Color32 {
+    // Selection fill is a background, not a readable foreground on panel fill.
+    if visuals.dark_mode {
+        Color32::from_rgb(90, 200, 250)
+    } else {
+        Color32::from_rgb(0, 95, 140)
+    }
 }
 
 fn theme_preference(theme: ThemeMode) -> egui::ThemePreference {
@@ -968,6 +977,26 @@ fn apply_noactivate(title: &str) -> bool {
 #[cfg(test)]
 mod quit_tests {
     use super::*;
+
+    #[test]
+    fn reminder_accent_has_readable_panel_contrast() {
+        fn luminance(c: Color32) -> f64 {
+            let linear = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
+        }
+        for visuals in [egui::Visuals::light(), egui::Visuals::dark()] {
+            let a = luminance(panel_accent(&visuals));
+            let b = luminance(visuals.panel_fill);
+            assert!((a.max(b) + 0.05) / (a.min(b) + 0.05) >= 4.5);
+        }
+    }
 
     #[test]
     fn theme_preference_maps_config_modes() {
