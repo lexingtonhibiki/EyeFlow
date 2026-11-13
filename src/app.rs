@@ -183,6 +183,14 @@ impl<'a> UiSession<'a> {
         let theme = rt.core.cfg.theme;
         ctx.show_viewport_immediate(id, builder, |ui, _class| {
             ui.ctx().set_theme(theme_preference(theme));
+            #[cfg(feature = "desktop-smoke")]
+            if std::env::args().any(|arg| arg == "--smoke-stdin") {
+                log::info!(
+                    "GUI_PANEL pid={} theme={theme:?} dark_mode={}",
+                    std::process::id(),
+                    ui.visuals().dark_mode
+                );
+            }
             if !*noactivate_applied {
                 *noactivate_applied = apply_noactivate(&title);
             }

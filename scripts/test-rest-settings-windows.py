@@ -151,6 +151,32 @@ def main():
             assert user.GetWindowRect(hwnd, ctypes.byref(rect))
             gui.screenshot(region=(rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top)).save(args.output / (name + '.png'))
 
+        def capture_rest_panel(name, expected_dark_mode):
+            click('tab.now')
+            click('status.rest_now')
+            def panel():
+                found = []
+                @callback
+                def visit(hwnd, _):
+                    title = ctypes.create_unicode_buffer(256)
+                    user.GetWindowTextW(hwnd, title, len(title))
+                    if owned(hwnd) and user.IsWindowVisible(hwnd) and title.value.startswith('EyeFlow Reminder '):
+                        found.append(hwnd)
+                    return True
+                user.EnumWindows(visit, 0)
+                return found[0] if found else None
+            hwnd = wait(panel)
+            def effective():
+                text = log.read_text(encoding='utf-8', errors='replace')
+                hits = re.findall(r'GUI_PANEL pid=' + str(proc.pid) + r' theme=(\w+) dark_mode=(true|false)', text)
+                return hits and (expected_dark_mode is None or (hits[-1][1] == 'true') is expected_dark_mode)
+            wait(effective)
+            time.sleep(.5)
+            rect = wintypes.RECT()
+            assert owned(hwnd) and user.GetWindowRect(hwnd, ctypes.byref(rect))
+            gui.screenshot(region=(rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top)).save(args.output / (name + '-actual-rest-window.png'))
+            report['cases'].append({'case': name + ' actual independent rest window', 'passed': True})
+
         def quit_app():
             proc.stdin.write(b'quit\n')
             proc.stdin.flush()
@@ -227,6 +253,7 @@ def main():
                 screenshot(prefix + '-status')
                 click('tab.reminder')
                 screenshot(prefix + '-reminder')
+                capture_rest_panel(prefix, expected_dark_mode)
                 quit_app()
                 launch()
                 wait(lambda: state() is not None and state()['theme'] == expected_theme

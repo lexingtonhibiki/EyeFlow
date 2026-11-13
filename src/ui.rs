@@ -396,7 +396,10 @@ fn status_card(
                     .strong(),
             );
             ui.add_space(8.0);
-            if ui.button(tr("ui.rest_now")).clicked() {
+            let rest_now = ui.button(tr("ui.rest_now"));
+            #[cfg(feature = "desktop-smoke")]
+            acceptance_rect("status.rest_now", &rest_now);
+            if rest_now.clicked() {
                 actions.push(SettingsAction::RestNow);
             }
         });
