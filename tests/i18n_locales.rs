@@ -88,36 +88,10 @@ fn key_is_well_formed(key: &str) -> bool {
         })
 }
 
-/// `build.rs` 生成物落点：`<target>/{debug,release}/build/eyeflow-*/out/i18n.rs`
-/// （ADR-0008 数据流图的最后一段；文件名按 plan-v0.6 §2.2 `src/i18n.rs` 的注释）
-fn newest_generated_i18n() -> Option<PathBuf> {
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| Path::new(ROOT).join("target"));
-    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
-    for profile in ["debug", "release"] {
-        let build = target_dir.join(profile).join("build");
-        let Ok(entries) = std::fs::read_dir(&build) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            if !name.starts_with("eyeflow-") {
-                continue;
-            }
-            for candidate in [e.path().join("out").join("i18n.rs")] {
-                let Ok(md) = std::fs::metadata(&candidate) else {
-                    continue;
-                };
-                let Ok(t) = md.modified() else { continue };
-                if best.as_ref().is_none_or(|(bt, _)| t > *bt) {
-                    best = Some((t, candidate));
-                }
-            }
-        }
-    }
-    best.map(|(_, p)| p)
+// Use this compilation's exact build output; never scan another profile or a
+// stale cache entry. Cargo owns OUT_DIR and may change its directory layout.
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/i18n.rs"));
 }
 
 // ---------------------------------------------------------------------------
@@ -175,22 +149,13 @@ fn t1b_locale_keys_are_lowercase_dot_separated() {
 fn t1c_generated_table_covers_every_source_key() {
     let zh = load(ZH);
     let en = load(EN);
-    let gen = newest_generated_i18n().unwrap_or_else(|| {
-        panic!(
-            "找不到 build.rs 的生成物 i18n.rs（应在 <target>/debug/build/eyeflow-*/out/i18n.rs）\
-             —— ADR-0008 要求 build.rs 用 str::lines() 解析 locales/*.toml 并生成静态表"
-        )
-    });
-    let text =
-        std::fs::read_to_string(&gen).unwrap_or_else(|e| panic!("读 {} 失败: {e}", gen.display()));
-
-    for key in zh.keys().chain(en.keys()) {
-        assert!(
-            text.contains(&format!("\"{key}\"")),
-            "生成物 {} 里找不到键 {key:?} —— 静态表与 locales/*.toml 漂移",
-            gen.display()
-        );
-    }
+    assert_eq!(generated::KEY_COUNT, zh.len());
+    assert_eq!(generated::KEYS.len(), en.len());
+    let actual: BTreeSet<&str> = generated::KEYS.iter().copied().collect();
+    let expected: BTreeSet<&str> = zh.keys().map(String::as_str).collect();
+    assert_eq!(actual, expected, "Generated keys differ from source locale");
+    assert_eq!(generated::ZH_CN.len(), generated::KEY_COUNT);
+    assert_eq!(generated::EN_US.len(), generated::KEY_COUNT);
 }
 
 // ---------------------------------------------------------------------------

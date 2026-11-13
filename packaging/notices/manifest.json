@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "cargo_lock_sha256": "b3010214c1b14921a7d377fea49a6354d4e516ac0a3016a0fd408b0f4b3827d9",
+  "cargo_lock_sha256": "d2e01ee3a580a361d633c831bb86c022c47e3a2ed5a14f6a20be5855a0aa82a7",
   "manifest_dependency_configuration_sha256": "7e071b1de3252cbc90214d33c175f78368d85e310f7e8e61ccd612ce59b6c265",
   "feature_selection": {
     "default_features": true,
@@ -26,5 +26,5 @@
     }
   },
   "license_dependency_audit_baseline_revision": "719bd5ef3ceec726f8f1eebfe57513d35a1ff4f4",
-  "configuration_reconciliation": "2026-10-23: added non-default desktop-smoke=[desktop], no dependencies changed; all four default normal,no-proc-macro trees exactly matched original audited trees (excluding root path line). Smoke-feature binaries are not distribution inputs."
+  "configuration_reconciliation": "2026-10-23: added non-default desktop-smoke=[desktop], no dependencies changed; all four default normal,no-proc-macro trees exactly matched original audited trees (excluding root path line). Smoke-feature binaries are not distribution inputs. 2026-11-13: root EyeFlow version only 0.7.4 -> 0.8.0; parsed lockfile non-root packages and root dependencies exactly unchanged. All target notice bytes and dependency configuration hashes unchanged."
 }

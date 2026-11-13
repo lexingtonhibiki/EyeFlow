@@ -209,13 +209,15 @@ impl Core {
     // ------------------------------------------------------------ 用户动作
 
     /// 立即开始休息（热键 / 托盘 / 预告浮窗“现在开始”）
-    pub fn start_break_now(&mut self, now: Instant) {
+    /// 返回是否真的发生了进入 Break 的阶段切换；已在 Break 时返回 false。
+    pub fn start_break_now(&mut self, now: Instant) -> bool {
         let is_long = match self.phase {
             Phase::HeadsUp { is_long, .. } => is_long,
-            Phase::Break { .. } => return,
+            Phase::Break { .. } => return false,
             Phase::Idle => self.long_break_due(),
         };
         self.begin_break(now, is_long);
+        true
     }
 
     /// 延后一次：短休息与长休息都允许，但每个提醒回合只能延后一次（已延后过返回 false）。
@@ -480,6 +482,9 @@ impl Core {
             Phase::HeadsUp { ends, is_long, .. } => {
                 if now >= ends {
                     self.begin_break(now, is_long);
+                    if self.cfg.start_cue_enabled {
+                        actions.push(Action::PlayCue);
+                    }
                 }
             }
             Phase::Break { ends, is_long, .. } => {
@@ -929,10 +934,110 @@ mod tests {
     fn start_break_now_from_idle() {
         let t0 = Instant::now();
         let mut c = core(600, t0);
-        c.start_break_now(t0 + S(10));
+        assert!(c.start_break_now(t0 + S(10)));
         assert!(matches!(c.phase, Phase::Break { is_long: false, .. }));
         sampled_tick(&mut c, t0 + S(41), false);
         assert_eq!(c.stats.completed_short, 1);
+    }
+
+    #[test]
+    fn start_sound_is_independent_of_heads_up_sound_for_both_break_lengths() {
+        for is_long in [false, true] {
+            for start_enabled in [false, true] {
+                let t0 = Instant::now();
+                let mut c = core(600, t0);
+                c.cfg.heads_up_cue_enabled = false;
+                c.cfg.start_cue_enabled = start_enabled;
+                c.phase = Phase::HeadsUp {
+                    started: t0,
+                    ends: t0 + S(15),
+                    is_long,
+                };
+                let actions = sampled_tick(&mut c, t0 + S(15), false);
+                assert_eq!(actions.len(), usize::from(start_enabled));
+                assert!(actions.iter().all(|a| matches!(a, Action::PlayCue)));
+                assert!(
+                    matches!(c.phase, Phase::Break { is_long: actual, .. } if actual == is_long)
+                );
+                assert!(sampled_tick(&mut c, t0 + S(16), false).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn duration_edit_applies_to_next_break_not_current_deadline() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        assert!(c.start_break_now(t0));
+        let mut cfg = c.cfg.clone();
+        cfg.short_break_secs = 600;
+        c.apply_config(cfg, t0 + S(1));
+        assert!(matches!(c.phase, Phase::Break { ends, .. } if ends == t0 + S(30)));
+        sampled_tick(&mut c, t0 + S(30), false);
+        assert!(c.start_break_now(t0 + S(31)));
+        assert!(matches!(c.phase, Phase::Break { ends, .. } if ends == t0 + S(631)));
+    }
+
+    #[test]
+    fn disabled_start_cue_does_not_disable_completion_cue() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        c.cfg.start_cue_enabled = false;
+        assert!(c.start_break_now(t0));
+        assert_eq!(
+            sampled_tick(&mut c, t0 + S(30), false),
+            vec![Action::PlayCue]
+        );
+    }
+
+    #[test]
+    fn start_break_now_returns_false_when_already_in_break() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        assert!(c.start_break_now(t0 + S(10)));
+        assert!(matches!(c.phase, Phase::Break { .. }));
+        assert!(!c.start_break_now(t0 + S(11)));
+        assert!(matches!(c.phase, Phase::Break { .. }));
+    }
+
+    #[test]
+    fn automatic_break_start_cue_follows_start_cue_enabled() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        let actions = sampled_tick(&mut c, t0 + S(586), false);
+        assert!(matches!(c.phase, Phase::HeadsUp { .. }));
+        assert_eq!(actions, vec![Action::PlayCue]);
+        let ends = match c.phase {
+            Phase::HeadsUp { ends, .. } => ends,
+            _ => panic!(),
+        };
+
+        let actions = sampled_tick(&mut c, ends, false);
+        assert!(matches!(c.phase, Phase::Break { is_long: false, .. }));
+        assert_eq!(actions, vec![Action::PlayCue]);
+        assert!(sampled_tick(&mut c, ends + S(1), false).is_empty());
+
+        let mut c2 = core(600, t0);
+        c2.cfg.start_cue_enabled = false;
+        sampled_tick(&mut c2, t0 + S(586), false);
+        let ends2 = match c2.phase {
+            Phase::HeadsUp { ends, .. } => ends,
+            _ => panic!(),
+        };
+        let actions = sampled_tick(&mut c2, ends2, false);
+        assert!(matches!(c2.phase, Phase::Break { .. }));
+        assert!(actions.is_empty());
+        assert!(sampled_tick(&mut c2, ends2 + S(1), false).is_empty());
+    }
+
+    #[test]
+    fn manual_break_start_does_not_replay_or_duplicate_start_cue() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        assert!(c.start_break_now(t0 + S(10)));
+        assert!(!c.start_break_now(t0 + S(11)));
+        let actions = sampled_tick(&mut c, t0 + S(41), false);
+        assert_eq!(actions, vec![Action::PlayCue]);
     }
 
     #[test]

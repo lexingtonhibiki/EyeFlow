@@ -137,6 +137,30 @@ impl WallpaperFit {
     }
 }
 
+/// 界面主题（System / Light / Dark；默认跟随系统）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ThemeMode {
+    #[default]
+    #[serde(rename = "system")]
+    System,
+    #[serde(rename = "light")]
+    Light,
+    #[serde(rename = "dark")]
+    Dark,
+}
+
+impl ThemeMode {
+    pub const ALL: [ThemeMode; 3] = [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            ThemeMode::System => "theme.system",
+            ThemeMode::Light => "theme.light",
+            ThemeMode::Dark => "theme.dark",
+        }
+    }
+}
+
 /// EyeFlow 配置（%APPDATA%\eyeflow\config.toml）
 ///
 /// 默认值的科学依据见 docs/adr/0001（AOA 20-20-20 + 2h/15min）。
@@ -223,7 +247,7 @@ pub struct Config {
     /// 上次检查更新的 Unix 时间戳（秒）
     #[serde(default)]
     pub update_last_checked: Option<u64>,
-    /// 点击『现在开始』/『立即休息』时播放提示音（结束音照常）
+    /// 休息开始时播放提示音，手动与自动开始共用此选项（结束音照常）
     #[serde(default = "d_true")]
     pub start_cue_enabled: bool,
     /// 预告浮窗弹出时播放提示音。
@@ -252,6 +276,11 @@ pub struct Config {
     /// 静默忽略，所以降级不会炸。
     #[serde(default = "d_language")]
     pub language: String,
+    /// 界面主题（`system` / `light` / `dark`；默认跟随系统，保持旧行为）
+    ///
+    /// 单字段兜底：未知或非法值回退 System，不让整个 Config 反序列化失败。
+    #[serde(default, deserialize_with = "de_theme_mode")]
+    pub theme: ThemeMode,
 }
 
 fn d_true() -> bool {
@@ -300,6 +329,22 @@ fn d_language() -> String {
     "zh-CN".into()
 }
 
+fn de_theme_mode<'de, D>(deserializer: D) -> Result<ThemeMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = toml::Value::deserialize(deserializer)?;
+    Ok(match raw.as_str() {
+        Some("system") => ThemeMode::System,
+        Some("light") => ThemeMode::Light,
+        Some("dark") => ThemeMode::Dark,
+        _ => {
+            log::warn!("Unsupported theme value; using System without resetting other settings");
+            ThemeMode::System
+        }
+    })
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -335,6 +380,7 @@ impl Default for Config {
             strict_overlay_pct: d_overlay_pct(),
             strict_overlay_gradient: false,
             language: d_language(),
+            theme: ThemeMode::default(),
         }
     }
 }
@@ -670,6 +716,64 @@ mod tests {
         assert_eq!(cfg.short_break_secs, 30);
         assert_eq!(cfg.short_break_min_secs, 900);
         assert_eq!(cfg.flow_sensitivity, FlowSensitivity::Medium);
+    }
+
+    #[test]
+    fn theme_defaults_to_system_and_values_roundtrip() {
+        let old: Config = toml::from_str("enabled = false").unwrap();
+        assert_eq!(old.theme, ThemeMode::System);
+        assert_eq!(Config::default().theme, ThemeMode::System);
+        for (raw, want) in [
+            ("system", ThemeMode::System),
+            ("light", ThemeMode::Light),
+            ("dark", ThemeMode::Dark),
+        ] {
+            let cfg: Config = toml::from_str(&format!("theme = \"{raw}\"")).unwrap();
+            assert_eq!(cfg.theme, want);
+            let roundtrip: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
+            assert_eq!(roundtrip.theme, want);
+        }
+    }
+
+    #[test]
+    fn unknown_theme_falls_back_locally_without_resetting_unrelated_preferences() {
+        let cfg: Config = toml::from_str(
+            r#"
+enabled = false
+short_break_secs = 123
+long_break_secs = 456
+sound_enabled = false
+theme = "neon"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.theme, ThemeMode::System);
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.short_break_secs, 123);
+        assert_eq!(cfg.long_break_secs, 456);
+        assert!(!cfg.sound_enabled);
+    }
+
+    #[test]
+    fn invalid_theme_values_do_not_reset_unrelated_settings() {
+        for theme in [
+            "theme = \"future-theme\"",
+            "theme = true",
+            "theme = 42",
+            "theme = [1, 2]",
+            "theme = { name = \"future-theme\" }",
+            "[theme]\nname = \"future-theme\"",
+        ] {
+            let text = format!(
+                "enabled = false\nshort_break_secs = 123\nlong_break_secs = 456\nsound_enabled = false\n{theme}"
+            );
+            let cfg: Config = toml::from_str(&text).unwrap();
+            assert_eq!(cfg.theme, ThemeMode::System);
+            assert!(!cfg.enabled);
+            assert_eq!(cfg.short_break_secs, 123);
+            assert_eq!(cfg.long_break_secs, 456);
+            assert!(!cfg.sound_enabled);
+        }
     }
 
     #[test]

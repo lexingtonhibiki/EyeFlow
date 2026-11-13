@@ -100,7 +100,7 @@
 "ui.weak_strict" = "The break panel becomes a full-screen overlay (with your own background image)"
 "ui.sound" = "Sound cue"
 "ui.no_audio_device" = "(no output; Preview retries)"
-"ui.start_cue_checkbox" = "Play a cue when you click Start now / Rest now"
+"ui.start_cue_checkbox" = "Play a cue when a break starts (manual or automatic)"
 "ui.heads_up_cue_checkbox" = "Play a cue when the heads-up window appears"
 "ui.weak_heads_up_cue" = "The heads-up only says a break is coming; this cue means you do not have to watch the corner of the screen. It is separate from the end-of-break cue and from the full-screen sound-only cue."
 "ui.cue_volume" = "Cue volume"
@@ -172,6 +172,12 @@
 "ui.reset_defaults" = "Restore defaults"
 "ui.weak_saved_hint" = "Changes are saved as you make them"
 "ui.saved" = "Saved"
+
+# ── Theme selector ──────────────────────────────────────────────────────
+"ui.theme" = "Theme"
+"theme.system" = "System"
+"theme.light" = "Light"
+"theme.dark" = "Dark"
 
 # ── Language selector ───────────────────────────────────────────────────
 "ui.language" = "Language"
@@ -283,3 +289,15 @@
 "ui.compatibility_reminders" = "Allow compatibility automatic reminders (off by default)"
 "ui.compatibility_warning" = "Opt in only if you accept possible interruptions: on macOS, screen-lock and fullscreen detection are unsupported, so reminders may appear while locked or fullscreen. This does not grant system permissions."
 "ui.compatibility_limits" = "Compatibility mode: macOS lock/fullscreen state remains unknown. Only fresh, real idle data counts; sensor errors, permission requirements and detected inactive sessions still pause reminders. Wayland without global idle data remains manual-only."
+
+# Status quick settings
+"ui.status_custom_durations" = "Custom rest durations"
+"ui.status_short_seconds" = "Short break seconds"
+"ui.status_long_minutes" = "Long break minutes"
+"ui.status_numeric_hint" = "Numeric values can be edited directly"
+"ui.status_edit_next" = "Changes apply to the next break"
+"ui.status_long_enabled" = "Long breaks enabled"
+"ui.status_long_disabled" = "Long breaks disabled (enable in Reminder)"
+"ui.sound_start_off_warning" = "Break-start sound is OFF. Configure it in Reminder → Sound."
+"ui.status_reminder_settings" = "Full reminder settings"
+"ui.numeric_hint" = "Numeric values can be edited directly"
