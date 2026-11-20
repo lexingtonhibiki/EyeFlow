@@ -125,8 +125,7 @@
 | esc_skip_enabled | true | 休息中按 Esc 跳过(严格模式下不可用) |
 | update_check_enabled | false | 启动时检查更新(每 24 小时至多一次,仅访问 GitHub Releases API) |
 | update_last_checked | (空) | 上次检查更新的 Unix 时间戳(程序维护) |
-| quiet_start | "00:00" | 免打扰时段开始 |
-| quiet_end | "08:00" | 免打扰时段结束 |
+| quiet_periods | `[{ start = "00:00", end = "08:00" }]` | 每日免打扰时段列表（本地时间，起含止不含，支持跨午夜）；空列表表示不启用，旧版单段设置会自动迁移 |
 | flow_sensitivity | "Medium" | 心流判定灵敏度:Low / Medium / High |
 | away_secs | 180 | 无输入多久判定为离开(秒) |
 | language | "zh-CN" | 界面语言:`zh-CN` / `en-US`。凡以 `en` 开头(大小写不敏感)一律视为英文,其余一切回落中文。**无法识别的原值原样保留、不写回规范化结果**(README 鼓励手改配置,静默改写等于替用户改他自己的配置);能识别的值规范成 BCP-47 写法写回(`en_US` → `en-US`) |

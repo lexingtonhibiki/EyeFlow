@@ -161,6 +161,32 @@ impl ThemeMode {
     }
 }
 
+/// A daily local-time interval; start inclusive, end exclusive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuietPeriod {
+    pub start: String,
+    pub end: String,
+}
+
+impl QuietPeriod {
+    fn contains(&self, now_min: u32) -> bool {
+        let (Some(start), Some(end)) = (quiet_minute(&self.start), quiet_minute(&self.end)) else {
+            return false;
+        };
+        match start.cmp(&end) {
+            std::cmp::Ordering::Less => (start..end).contains(&now_min),
+            std::cmp::Ordering::Greater => now_min >= start || now_min < end,
+            std::cmp::Ordering::Equal => false,
+        }
+    }
+}
+
+fn quiet_minute(value: &str) -> Option<u32> {
+    let (hour, minute) = value.trim().split_once(':')?;
+    let (hour, minute): (u32, u32) = (hour.parse().ok()?, minute.parse().ok()?);
+    (hour < 24 && minute < 60).then_some(hour * 60 + minute)
+}
+
 /// EyeFlow 配置（%APPDATA%\eyeflow\config.toml）
 ///
 /// 默认值的科学依据见 docs/adr/0001（AOA 20-20-20 + 2h/15min）。
@@ -211,12 +237,9 @@ pub struct Config {
     /// 严格模式：休息面板变为全屏暗色遮罩
     #[serde(default)]
     pub strict_mode: bool,
-    /// 免打扰时段开始（HH:MM）
-    #[serde(default = "d_quiet_start")]
-    pub quiet_start: String,
-    /// 免打扰时段结束（HH:MM）
-    #[serde(default = "d_quiet_end")]
-    pub quiet_end: String,
+    /// 每天暂停自动计时的时段（本地钟点，HH:MM）；空列表表示不启用。
+    #[serde(default = "d_quiet_periods")]
+    pub quiet_periods: Vec<QuietPeriod>,
     /// 心流检测灵敏度
     #[serde(default)]
     pub flow_sensitivity: FlowSensitivity,
@@ -307,11 +330,20 @@ fn d_heads_up() -> u64 {
 fn d_postpone() -> u64 {
     300
 }
-fn d_quiet_start() -> String {
-    "00:00".into()
+fn d_quiet_periods() -> Vec<QuietPeriod> {
+    legacy_quiet_periods("00:00", "08:00")
 }
-fn d_quiet_end() -> String {
-    "08:00".into()
+
+fn legacy_quiet_periods(start: &str, end: &str) -> Vec<QuietPeriod> {
+    let (start, end) = (parse_hhmm(start), parse_hhmm(end));
+    if start == end {
+        Vec::new()
+    } else {
+        vec![QuietPeriod {
+            start: format_hhmm(start),
+            end: format_hhmm(end),
+        }]
+    }
 }
 fn d_away() -> u64 {
     180
@@ -362,8 +394,7 @@ impl Default for Config {
             sound_preset: SoundPreset::default(),
             visual_enabled: true,
             strict_mode: false,
-            quiet_start: d_quiet_start(),
-            quiet_end: d_quiet_end(),
+            quiet_periods: d_quiet_periods(),
             flow_sensitivity: FlowSensitivity::default(),
             away_secs: d_away(),
             cue_volume_pct: d_cue_volume(),
@@ -410,6 +441,7 @@ impl Config {
                 return Self::create_default(&path);
             }
         };
+        migrate_quiet_periods(&table, &mut cfg);
         if migrate_legacy(&table, &mut cfg) {
             log::info!("检测到 v0.1 配置格式，已迁移到 v0.2 并备份原文件");
             Self::backup(&path, "v0.1");
@@ -485,15 +517,9 @@ impl Config {
     /// 免打扰时段（支持跨零点）。起止相同视为未设置。
     pub fn in_quiet_hours(&self, now: chrono::NaiveTime) -> bool {
         let now_min = now.hour() * 60 + now.minute();
-        let (s, e) = (parse_hhmm(&self.quiet_start), parse_hhmm(&self.quiet_end));
-        if s == e {
-            return false;
-        }
-        if s < e {
-            now_min >= s && now_min < e
-        } else {
-            now_min >= s || now_min < e
-        }
+        self.quiet_periods
+            .iter()
+            .any(|period| period.contains(now_min))
     }
 }
 
@@ -572,6 +598,20 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     }
 }
 
+/// An explicitly empty current list always takes precedence over a legacy pair.
+fn migrate_quiet_periods(table: &toml::Table, cfg: &mut Config) {
+    if table.contains_key("quiet_periods") {
+        return;
+    }
+    let (start, end) = (table.get("quiet_start"), table.get("quiet_end"));
+    if start.is_some() || end.is_some() {
+        cfg.quiet_periods = legacy_quiet_periods(
+            start.and_then(toml::Value::as_str).unwrap_or("00:00"),
+            end.and_then(toml::Value::as_str).unwrap_or("08:00"),
+        );
+    }
+}
+
 /// v0.1 → v0.2 字段迁移。返回是否检测到旧格式。
 ///
 /// 只有用户**改过**的旧值才带过来：旧默认值（10~18 分钟 / 25 秒）会被 v0.2 的
@@ -611,15 +651,21 @@ fn migrate_legacy(table: &toml::Table, cfg: &mut Config) -> bool {
     if let Some(v) = int("eye_rest_secs").filter(|v| *v != 25) {
         cfg.short_break_secs = v;
     }
-    if let Some(v) = text("dnd_start") {
-        cfg.quiet_start = v;
-    }
-    if let Some(v) = text("dnd_end") {
-        cfg.quiet_end = v;
-    }
-    // 某些旧版本有独立的免打扰总开关；关掉过就用“起止相同”表示未启用
-    if flag("dnd_enabled") == Some(false) {
-        cfg.quiet_end = cfg.quiet_start.clone();
+    if !table.contains_key("quiet_periods")
+        && ["dnd_start", "dnd_end", "dnd_enabled"]
+            .iter()
+            .any(|key| table.contains_key(*key))
+    {
+        let start = text("dnd_start").or_else(|| text("quiet_start"));
+        let end = text("dnd_end").or_else(|| text("quiet_end"));
+        cfg.quiet_periods = if flag("dnd_enabled") == Some(false) {
+            Vec::new()
+        } else {
+            legacy_quiet_periods(
+                start.as_deref().unwrap_or("00:00"),
+                end.as_deref().unwrap_or("08:00"),
+            )
+        };
     }
     // 旧版本允许关闭全局热键，尊重该偏好
     if flag("hotkey_enabled") == Some(false) {
@@ -685,13 +731,76 @@ impl From<toml::ser::Error> for ConfigError {
 mod tests {
     use super::*;
 
+    fn period(start: &str, end: &str) -> QuietPeriod {
+        QuietPeriod {
+            start: start.into(),
+            end: end.into(),
+        }
+    }
+
+    #[test]
+    fn quiet_periods_are_additive_with_exact_local_boundaries() {
+        let cfg = Config {
+            quiet_periods: vec![
+                period("12:00", "13:00"),
+                period("12:40", "13:30"),
+                period("18:30", "00:00"),
+                period("25:00", "02:00"),
+                period("03:00", "bad"),
+            ],
+            ..Config::default()
+        };
+        for (hour, minute, second, expected) in [
+            (11, 59, 59, false),
+            (12, 0, 0, true),
+            (13, 29, 59, true),
+            (13, 30, 0, false),
+            (18, 30, 0, true),
+            (23, 59, 59, true),
+            (0, 0, 0, false),
+            (1, 0, 0, false),
+            (3, 30, 0, false),
+        ] {
+            let time = chrono::NaiveTime::from_hms_opt(hour, minute, second).unwrap();
+            assert_eq!(cfg.in_quiet_hours(time), expected, "{time}");
+        }
+    }
+
+    #[test]
+    fn old_quiet_pair_migrates_without_overriding_the_explicit_empty_list() {
+        let deserialize = |value: &str| {
+            let table: toml::Table = value.parse().unwrap();
+            let mut cfg: Config = table.clone().try_into().unwrap();
+            migrate_quiet_periods(&table, &mut cfg);
+            cfg
+        };
+        let old = "quiet_start = \"23:00\"\nquiet_end = \"07:30\"";
+        let migrated = deserialize(old);
+        assert_eq!(migrated.quiet_periods, vec![period("23:00", "07:30")]);
+        let serialized = toml::to_string_pretty(&migrated).unwrap();
+        assert_eq!(deserialize(&serialized), migrated);
+        let off = deserialize(&format!("{old}\nquiet_periods = []"));
+        assert!(off.quiet_periods.is_empty());
+        assert!(deserialize(&toml::to_string_pretty(&off).unwrap())
+            .quiet_periods
+            .is_empty());
+        assert!(
+            deserialize("quiet_start = \"08:00\"\nquiet_end = \"08:00\"")
+                .quiet_periods
+                .is_empty()
+        );
+        assert_eq!(
+            deserialize("enabled = false").quiet_periods,
+            d_quiet_periods()
+        );
+    }
+
     #[test]
     fn quiet_hours_crossing_midnight() {
         // clippy::field_reassign_with_default：首句就是 `Config::default()` 再逐字段改，
         // 写成结构体更新语法更清楚，也免得以后加字段时漏看一处。
         let c = Config {
-            quiet_start: "23:00".into(),
-            quiet_end: "07:00".into(),
+            quiet_periods: vec![period("23:00", "07:00")],
             ..Config::default()
         };
         assert!(c.in_quiet_hours(chrono::NaiveTime::from_hms_opt(23, 30, 0).unwrap()));
@@ -702,8 +811,7 @@ mod tests {
     #[test]
     fn quiet_hours_same_bounds_means_disabled() {
         let c = Config {
-            quiet_start: "08:00".into(),
-            quiet_end: "08:00".into(),
+            quiet_periods: vec![period("08:00", "08:00")],
             ..Config::default()
         };
         assert!(!c.in_quiet_hours(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap()));
@@ -817,8 +925,7 @@ global_mute_hotkey = "Ctrl+Shift+E"
         assert_eq!(cfg.short_break_max_secs, 2400);
         // 旧默认 25 秒 → 新默认 30 秒
         assert_eq!(cfg.short_break_secs, 30);
-        assert_eq!(cfg.quiet_start, "23:00");
-        assert_eq!(cfg.quiet_end, "07:30");
+        assert_eq!(cfg.quiet_periods, vec![period("23:00", "07:30")]);
         // 同名字段直接解析
         assert!(!cfg.sound_enabled);
         assert_eq!(cfg.sound_preset, SoundPreset::WaterDrop);
@@ -843,7 +950,7 @@ global_mute_hotkey = "Ctrl+Shift+E"
             .unwrap();
         let mut cfg = Config::default();
         assert!(migrate_legacy(&table, &mut cfg));
-        assert_eq!(cfg.quiet_start, cfg.quiet_end);
+        assert!(cfg.quiet_periods.is_empty());
         assert!(!cfg.in_quiet_hours(chrono::NaiveTime::from_hms_opt(3, 0, 0).unwrap()));
     }
 

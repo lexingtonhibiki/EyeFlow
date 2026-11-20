@@ -62,7 +62,7 @@ pub struct Runtime {
 /// - `phase` 只取判别式：`HeadsUp` / `Break` 的文案是常量，带上的时间载荷不影响输出；
 /// - `minute` → `Idle` 分支里 `%H:%M` 的钟点，**只会在分钟边界变**；
 /// - `completed` / `postponed` / `streak` → 第 3 行的计数。
-type TooltipFingerprint = (ContextState, bool, bool, u8, i64, u32, u32, u32, bool);
+type TooltipFingerprint = (ContextState, bool, bool, u8, i64, u32, u32, u32, bool, bool);
 
 impl Runtime {
     pub fn new(
@@ -349,6 +349,7 @@ impl Runtime {
             self.core.stats.postponed,
             self.core.stats.streak_days,
             self.core.automatic_pause_reason(now).is_some(),
+            self.core.in_quiet_period(),
         )
     }
 
@@ -624,6 +625,8 @@ impl Runtime {
             tr("runtime.reminder_disabled").to_string()
         } else if self.core.is_paused(now) {
             tr("runtime.reminder_paused").to_string()
+        } else if self.core.in_quiet_period() && !matches!(self.core.phase, Phase::Break { .. }) {
+            tr("runtime.reminder_quiet").to_string()
         } else if self.core.automatic_pause_reason(now).is_some()
             && !matches!(self.core.phase, Phase::Break { .. })
         {

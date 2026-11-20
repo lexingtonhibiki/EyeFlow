@@ -169,13 +169,14 @@ heads_up_cue_enabled = true    # play a cue when the heads-up window appears (ne
 esc_skip_enabled = true        # press Esc during a break to skip (unavailable in strict mode)
 update_check_enabled = false   # check for updates at startup (at most once every 24 h, GitHub Releases API only, nothing is downloaded or installed automatically)
 # update_last_checked         # optional; the Unix timestamp of the last check, maintained by the program (Option<u64>)
-quiet_start = "00:00"          # do-not-disturb window start
-quiet_end = "08:00"            # do-not-disturb window end
+quiet_periods = [{ start = "00:00", end = "08:00" }] # daily quiet periods (local time); [] disables
 flow_sensitivity = "Medium"    # flow detection sensitivity: Low / Medium / High
 away_secs = 180                # no input for this long counts as away (s)
 theme = "system"               # interface theme: default system; values system / light / dark (system follows OS)
 language = "zh-CN"             # interface language: zh-CN / en-US (any "en" prefix means English)
 ```
+
+In **Settings → Reminders → Quiet hours**, add your own daily periods, such as lunch and after work. The timer pauses and automatic reminders stay silent until the period ends. Overnight periods are supported, and **Rest now** still works. Existing single-period settings carry over.
 
 ### Files and where they live
 
@@ -455,13 +456,14 @@ heads_up_cue_enabled = true    # 预告浮窗弹出时播放提示音（同一�
 esc_skip_enabled = true        # 休息中按 Esc 跳过（严格模式下不可用）
 update_check_enabled = false   # 启动时检查更新（每 24 小时至多一次，仅访问 GitHub Releases API，不自动下载、不自动安装）
 # update_last_checked         # 可选；上次检查更新的 Unix 时间戳，由程序维护（Option<u64>）
-quiet_start = "00:00"          # 免打扰时段开始
-quiet_end = "08:00"            # 免打扰时段结束
+quiet_periods = [{ start = "00:00", end = "08:00" }] # 每日免打扰时段（本地时间）；[] 表示停用
 flow_sensitivity = "Medium"    # 心流判定灵敏度：Low / Medium / High
 away_secs = 180                # 无输入多久判定为离开（秒）
 theme = "system"               # 界面主题：默认 system，可选 system / light / dark（system 跟随系统）
 language = "zh-CN"             # 界面语言：zh-CN / en-US（凡以 "en" 开头一律视为英文）
 ```
+
+在 **设置 → 提醒 → 免打扰时段** 可添加多段每日时段，例如午休和下班后。时段内暂停自动计时，不弹窗、不响铃；结束后继续之前的计时。支持跨午夜，仍可手动「立即休息」。升级会保留原有的单段设置。
 
 ### 文件与位置
 

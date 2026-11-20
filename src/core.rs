@@ -97,9 +97,10 @@ pub struct Core {
 
     due: Instant,
     last_tick: Instant,
-    /// 最近一次 `tick` 传入的免打扰状态（`ui_warmup_in` 要用：免打扰里
-    /// 到点会被顺延，此时预热出的会话 5 秒后就得退出，纯属白开）。
+    /// Whether automatic reminders were paused by the schedule on the last tick.
     last_quiet: bool,
+    /// Meaningful only during `Phase::Break`: explicit rest can override the schedule.
+    manual_break: bool,
     monitoring_ready: bool,
     keys: VecDeque<Instant>,
     last_key: Option<Instant>,
@@ -124,6 +125,7 @@ impl Core {
             due: now,
             last_tick: now,
             last_quiet: false,
+            manual_break: false,
             monitoring_ready: false,
             keys: VecDeque::with_capacity(256),
             last_key: None,
@@ -216,7 +218,7 @@ impl Core {
             Phase::Break { .. } => return false,
             Phase::Idle => self.long_break_due(),
         };
-        self.begin_break(now, is_long);
+        self.begin_break(now, is_long, true);
         true
     }
 
@@ -272,6 +274,10 @@ impl Core {
 
     // ---------------------------------------------------------------- 查询
 
+    pub fn in_quiet_period(&self) -> bool {
+        self.last_quiet
+    }
+
     pub fn next_break_in(&self, now: Instant) -> Duration {
         self.due.saturating_duration_since(now)
     }
@@ -301,8 +307,8 @@ impl Core {
         if !self.cfg.enabled || !self.cfg.visual_enabled || self.is_paused(now) {
             return None;
         }
-        // 免打扰里到点会被顺延（见 tick 第 3 步），此刻预热出的会话很快就要退出
-        if self.last_quiet {
+        // Scheduled pauses never prewarm automatic reminder windows.
+        if self.in_quiet_period() {
             return None;
         }
         if !matches!(self.phase, Phase::Idle) {
@@ -334,8 +340,38 @@ impl Core {
         let mut actions = Vec::new();
         let dt = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
-        self.last_quiet = quiet;
+        let was_quiet = std::mem::replace(&mut self.last_quiet, quiet);
         self.prune_keys(now);
+
+        if quiet || was_quiet {
+            // A tick that crosses either boundary may straddle the quiet period.
+            // Don't charge that interval to active use or wake a reminder.
+            self.due += dt;
+            self.completed_flash_until = None;
+
+            match self.phase {
+                Phase::Break { ends, is_long, .. }
+                    if self.manual_break && self.cfg.enabled && !self.is_paused(now) =>
+                {
+                    // A user-requested rest can finish, silently. Only this actual
+                    // completion, never the scheduled pause itself, counts as a break.
+                    if now >= ends {
+                        self.complete_break(now, is_long);
+                        self.completed_flash_until = None;
+                    }
+                }
+                _ => self.phase = Phase::Idle,
+            }
+
+            if !quiet {
+                self.monitoring_ready = self.automatic_pause_reason(now).is_none();
+                let heads_up = self.heads_up_len(self.long_break_due());
+                if self.due <= now + heads_up {
+                    self.due = now + heads_up + RESUME_GRACE;
+                }
+            }
+            return actions;
+        }
 
         // A break already started by the user/scheduler owns its countdown.
         // Resolve it before sensor recovery/Away handling, otherwise a legitimate
@@ -352,7 +388,7 @@ impl Core {
                 self.screen_accum += dt;
             }
             self.monitoring_ready = observed;
-            if !self.cfg.enabled || quiet || self.is_paused(now) {
+            if !self.cfg.enabled || self.is_paused(now) {
                 self.phase = Phase::Idle;
             } else if now >= ends {
                 self.complete_break(now, is_long);
@@ -369,10 +405,6 @@ impl Core {
             self.due += dt;
             if matches!(self.phase, Phase::HeadsUp { .. }) {
                 self.phase = Phase::Idle;
-            }
-            if !self.cfg.enabled || quiet || self.is_paused(now) {
-                self.phase = Phase::Idle;
-                return actions;
             }
             return actions;
         }
@@ -437,8 +469,8 @@ impl Core {
         self.away_since = None;
         self.screen_accum += dt;
 
-        // 3. 暂停 / 免打扰 / 总开关：不投递，到点则推到恢复后 60 秒
-        if !self.cfg.enabled || quiet || self.is_paused(now) {
+        // 3. 主动暂停 / 总开关：不投递，到点则推到恢复后 60 秒
+        if !self.cfg.enabled || self.is_paused(now) {
             if !matches!(self.phase, Phase::Idle) {
                 self.phase = Phase::Idle;
             }
@@ -481,7 +513,7 @@ impl Core {
             }
             Phase::HeadsUp { ends, is_long, .. } => {
                 if now >= ends {
-                    self.begin_break(now, is_long);
+                    self.begin_break(now, is_long, false);
                     if self.cfg.start_cue_enabled {
                         actions.push(Action::PlayCue);
                     }
@@ -541,7 +573,8 @@ impl Core {
         };
     }
 
-    fn begin_break(&mut self, now: Instant, is_long: bool) {
+    fn begin_break(&mut self, now: Instant, is_long: bool, manual: bool) {
+        self.manual_break = manual;
         let len = if is_long {
             self.cfg.long_break_secs
         } else {
@@ -876,13 +909,87 @@ mod tests {
     }
 
     #[test]
-    fn quiet_hours_and_pause_block_delivery_then_grace_after() {
+    fn quiet_hours_freeze_both_timers_even_through_sleep_or_idle() {
         let t0 = Instant::now();
         let mut c = core(600, t0);
-        sampled_tick(&mut c, t0 + S(700), true);
-        assert_eq!(c.phase, Phase::Idle);
-        assert!(c.next_break_in(t0 + S(700)) >= S(74));
+        sampled_tick(&mut c, t0 + S(70), false);
+        assert_eq!(c.screen_accum, S(70));
 
+        c.sensors.idle = Reading::Known(S(3000));
+        assert!(sampled_tick(&mut c, t0 + S(3000), true).is_empty());
+        assert!(c.in_quiet_period());
+        assert!(sampled_tick(&mut c, t0 + S(3100), true).is_empty());
+        c.sensors.idle = Reading::Known(S(0));
+        assert!(sampled_tick(&mut c, t0 + S(3200), false).is_empty());
+        assert!(!c.in_quiet_period());
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.screen_accum, S(70));
+        assert_eq!(c.next_break_in(t0 + S(3200)), S(530));
+        assert_eq!(c.stats.completed_natural, 0);
+
+        sampled_tick(&mut c, t0 + S(3201), false);
+        assert_eq!(c.screen_accum, S(71));
+        assert_eq!(c.next_break_in(t0 + S(3201)), S(529));
+    }
+
+    #[test]
+    fn quiet_hours_dismiss_heads_up_and_give_grace_on_resume() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        sampled_tick(&mut c, t0 + S(586), false);
+        assert!(matches!(c.phase, Phase::HeadsUp { .. }));
+
+        assert!(sampled_tick(&mut c, t0 + S(587), true).is_empty());
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.ui_warmup_in(t0 + S(587)), None);
+        assert!(sampled_tick(&mut c, t0 + S(700), false).is_empty());
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.next_break_in(t0 + S(700)), S(75));
+
+        assert!(sampled_tick(&mut c, t0 + S(759), false).is_empty());
+        sampled_tick(&mut c, t0 + S(760), false);
+        assert!(matches!(c.phase, Phase::HeadsUp { .. }));
+    }
+
+    #[test]
+    fn quiet_hours_cancel_automatic_break_without_fake_completion() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        sampled_tick(&mut c, t0 + S(586), false);
+        sampled_tick(&mut c, t0 + S(601), false);
+        assert!(matches!(c.phase, Phase::Break { .. }));
+        let used = c.screen_accum;
+
+        assert!(sampled_tick(&mut c, t0 + S(640), true).is_empty());
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.stats.completed_short, 0);
+        assert_eq!(c.stats.skipped, 0);
+        assert_eq!(c.screen_accum, used);
+        assert!(!c.flash_active(t0 + S(640)));
+        assert!(sampled_tick(&mut c, t0 + S(641), false).is_empty());
+        assert_eq!(c.next_break_in(t0 + S(641)), S(75));
+    }
+
+    #[test]
+    fn explicitly_started_break_can_finish_silently_inside_quiet_hours() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        sampled_tick(&mut c, t0 + S(20), true);
+        assert!(c.start_break_now(t0 + S(21)));
+
+        assert!(sampled_tick(&mut c, t0 + S(30), true).is_empty());
+        assert!(matches!(c.phase, Phase::Break { .. }));
+        assert!(sampled_tick(&mut c, t0 + S(52), true).is_empty());
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.stats.completed_short, 1);
+        assert_eq!(c.stats.completed_natural, 0);
+        assert_eq!(c.screen_accum, S(0));
+        assert!(!c.flash_active(t0 + S(52)));
+    }
+
+    #[test]
+    fn manual_pause_still_blocks_delivery() {
+        let t0 = Instant::now();
         let mut c2 = core(600, t0);
         c2.pause_for(t0, S(3600));
         sampled_tick(&mut c2, t0 + S(700), false);

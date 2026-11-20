@@ -43,6 +43,7 @@
 "stats.streak" = "连续 {n} 天"
 
 # ── 提醒状态行（runtime.rs）──────────────────────────────────────────────
+"runtime.reminder_quiet" = "免打扰中 · 已暂停计时"
 "runtime.reminder_disabled" = "提醒已关闭"
 "runtime.reminder_paused" = "已暂停 1 小时"
 "runtime.reminder_next" = "下次休息 {t}"
@@ -138,8 +139,20 @@
 "ui.unit_min_idle" = " 分钟无操作"
 "ui.weak_away" = "离开时计时暂停；进入离开状态即视为一次自然休息。全屏游戏 / 演示 / 独占应用中只响提示音，退出后补发预告。"
 "ui.quiet_hours" = "免打扰时段"
-"ui.quiet_until" = "到"
-"ui.weak_quiet_same" = "（起止相同 = 不启用）"
+"ui.quiet_explainer" = "每天按本地时间重复。免打扰时暂停计时，不弹出自动提醒。"
+"ui.quiet_empty" = "还没有设置时段。可以添加午休、下班后，或自己的时间。"
+"ui.quiet_add" = "＋ 添加时段"
+"ui.quiet_edit_row" = "编辑 {n}"
+"ui.quiet_remove_row" = "移除 {n}"
+"ui.quiet_presets" = "快速填入："
+"ui.quiet_lunch" = "午休"
+"ui.quiet_after_work" = "下班后"
+"ui.quiet_start" = "开始"
+"ui.quiet_end" = "结束"
+"ui.quiet_next_day" = "次日结束"
+"ui.quiet_time_help" = "用 24 小时制输入开始和结束，二者不能相同。"
+"ui.quiet_save" = "保存时段"
+"ui.quiet_cancel" = "取消"
 "ui.esc_skip" = "休息中按 Esc 跳过（严格模式下不可用）"
 
 # ── 设置窗：系统卡片 ────────────────────────────────────────────────────

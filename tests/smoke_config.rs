@@ -24,7 +24,7 @@ fn native_smoke_profile_keeps_manual_rest_visible_at_any_hour() {
     core.start_break_now(t0);
     core.tick(t0 + Duration::from_secs(1), quiet);
     assert!(matches!(core.phase, Phase::Break { .. }));
-    // Product quiet-hours semantics remain unchanged, not bypassed by a test hook.
+    // Quiet periods pause automatic reminders, not explicitly started breaks.
     core.tick(t0 + Duration::from_secs(2), true);
-    assert!(matches!(core.phase, Phase::Idle));
+    assert!(matches!(core.phase, Phase::Break { .. }));
 }
