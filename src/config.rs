@@ -181,7 +181,8 @@ impl QuietPeriod {
     }
 }
 
-fn quiet_minute(value: &str) -> Option<u32> {
+/// Parse a local quiet-period time for both scheduling and the settings editor.
+pub(crate) fn quiet_minute(value: &str) -> Option<u32> {
     let (hour, minute) = value.trim().split_once(':')?;
     let (hour, minute): (u32, u32) = (hour.parse().ok()?, minute.parse().ok()?);
     (hour < 24 && minute < 60).then_some(hour * 60 + minute)
@@ -793,6 +794,19 @@ mod tests {
             deserialize("enabled = false").quiet_periods,
             d_quiet_periods()
         );
+    }
+
+    #[test]
+    fn quiet_clock_times_accept_unpadded_minutes_and_normalize_on_save() {
+        assert_eq!(quiet_minute(" 8:5 "), Some(8 * 60 + 5));
+        assert_eq!(format_hhmm(quiet_minute("8:5").unwrap()), "08:05");
+        assert_eq!(quiet_minute("24:0"), None);
+        assert_eq!(quiet_minute("8:60"), None);
+        assert_eq!(quiet_minute("8:"), None);
+
+        let overnight = period("18:30", "8:5");
+        assert!(overnight.contains(8 * 60 + 4));
+        assert!(!overnight.contains(8 * 60 + 5));
     }
 
     #[test]

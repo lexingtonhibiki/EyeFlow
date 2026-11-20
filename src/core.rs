@@ -99,6 +99,9 @@ pub struct Core {
     last_tick: Instant,
     /// Whether automatic reminders were paused by the schedule on the last tick.
     last_quiet: bool,
+    /// Watermarks exclude hidden idle time from the natural-break policy.
+    quiet_started_at: Option<Instant>,
+    quiet_ended_at: Option<Instant>,
     /// Meaningful only during `Phase::Break`: explicit rest can override the schedule.
     manual_break: bool,
     monitoring_ready: bool,
@@ -125,6 +128,8 @@ impl Core {
             due: now,
             last_tick: now,
             last_quiet: false,
+            quiet_started_at: None,
+            quiet_ended_at: None,
             manual_break: false,
             monitoring_ready: false,
             keys: VecDeque::with_capacity(256),
@@ -307,8 +312,8 @@ impl Core {
         if !self.cfg.enabled || !self.cfg.visual_enabled || self.is_paused(now) {
             return None;
         }
-        // Scheduled pauses never prewarm automatic reminder windows.
-        if self.in_quiet_period() {
+        // Neither a scheduled pause nor an Away context can show a reminder.
+        if self.in_quiet_period() || self.state == ContextState::Away {
             return None;
         }
         if !matches!(self.phase, Phase::Idle) {
@@ -338,9 +343,13 @@ impl Core {
     /// 每秒调用一次。`quiet` 为“当前处于免打扰时段”。
     pub fn tick(&mut self, now: Instant, quiet: bool) -> Vec<Action> {
         let mut actions = Vec::new();
-        let dt = now.saturating_duration_since(self.last_tick);
+        let previous_tick = self.last_tick;
+        let dt = now.saturating_duration_since(previous_tick);
         self.last_tick = now;
         let was_quiet = std::mem::replace(&mut self.last_quiet, quiet);
+        if quiet && !was_quiet {
+            self.quiet_started_at = Some(previous_tick);
+        }
         self.prune_keys(now);
 
         if quiet || was_quiet {
@@ -364,6 +373,7 @@ impl Core {
             }
 
             if !quiet {
+                self.quiet_ended_at = Some(now);
                 self.monitoring_ready = self.automatic_pause_reason(now).is_none();
                 let heads_up = self.heads_up_len(self.long_break_due());
                 if self.due <= now + heads_up {
@@ -431,7 +441,9 @@ impl Core {
         let Reading::Known(idle) = self.sensors.idle else {
             unreachable!("unknown readings are handled above")
         };
-        self.state = if idle >= Duration::from_secs(self.cfg.away_secs) {
+        let eligible_idle = self.creditable_idle(idle);
+        let away_threshold = Duration::from_secs(self.cfg.away_secs);
+        self.state = if idle >= away_threshold {
             ContextState::Away
         } else if self.sensors.fullscreen == Reading::Known(true)
             || self.sensors.interruptible == Reading::Known(false)
@@ -446,12 +458,24 @@ impl Core {
         // 2. 离开：计时暂停；进入离开状态即视为一次自然休息（离开阈值远大于休息时长）；
         //    离开 15 分钟清零用屏累计
         if self.state == ContextState::Away {
-            if self.away_since.is_none() {
-                self.away_since = Some(now.checked_sub(idle).unwrap_or(now));
-                self.natural_counted = false;
+            // Real raw idle must hide pending reminders and pause timing even
+            // when accumulated outside-quiet idle cannot qualify as a rest.
+            if eligible_idle < away_threshold {
+                self.phase = Phase::Idle;
+                self.due += dt;
+                return actions;
             }
             if matches!(self.phase, Phase::Idle) {
                 self.due += dt;
+            }
+            if self.away_since.is_none() {
+                self.away_since = Some(
+                    self.sensors
+                        .sampled_at
+                        .checked_sub(eligible_idle)
+                        .unwrap_or(now),
+                );
+                self.natural_counted = false;
             }
             if !self.natural_counted {
                 self.natural_counted = true;
@@ -461,7 +485,7 @@ impl Core {
                 self.stats.record_completed(Completed::Natural);
                 self.schedule_next(now);
             }
-            if idle >= AWAY_RESETS_ACCUM {
+            if eligible_idle >= AWAY_RESETS_ACCUM {
                 self.screen_accum = Duration::ZERO;
             }
             return actions;
@@ -530,6 +554,40 @@ impl Core {
     }
 
     // ---------------------------------------------------------------- 内部
+
+    /// The native reading describes the current physical context, including
+    /// quiet time. Only bound the idle eligible for automatic rest credit.
+    fn creditable_idle(&mut self, idle: Duration) -> Duration {
+        let Some(ended_at) = self.quiet_ended_at else {
+            return idle;
+        };
+        // A still-fresh sample can predate a schedule's end. Don't count it
+        // toward post-quiet idle or use it to resolve the previous Away episode.
+        let sampled_at = self.sensors.sampled_at;
+        let Some(outside_quiet) = sampled_at.checked_duration_since(ended_at) else {
+            return Duration::ZERO;
+        };
+        let last_input = sampled_at.checked_sub(idle);
+        let new_input_during_quiet = self.quiet_started_at.take().is_some_and(|started_at| {
+            self.away_since.is_some_and(|away_at| away_at <= started_at)
+                && last_input.is_some_and(|input_at| input_at > started_at)
+        });
+        let new_input_after_quiet = idle < outside_quiet;
+        if new_input_during_quiet
+            || (new_input_after_quiet
+                && self
+                    .away_since
+                    .zip(last_input)
+                    .is_some_and(|(away_at, input_at)| input_at > away_at))
+        {
+            self.away_since = None;
+            self.natural_counted = false;
+        }
+        if new_input_after_quiet {
+            self.quiet_ended_at = None;
+        }
+        idle.min(outside_quiet)
+    }
 
     fn heads_up_len(&self, is_long: bool) -> Duration {
         if is_long {
@@ -930,6 +988,115 @@ mod tests {
         sampled_tick(&mut c, t0 + S(3201), false);
         assert_eq!(c.screen_accum, S(71));
         assert_eq!(c.next_break_in(t0 + S(3201)), S(529));
+    }
+
+    #[test]
+    fn quiet_end_while_still_idle_does_not_credit_lunch_as_an_away_break() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        sampled_tick(&mut c, t0 + S(70), false);
+        c.sensors.idle = Reading::Known(S(1));
+        sampled_tick(&mut c, t0 + S(71), true);
+        c.sensors.idle = Reading::Known(S(1931));
+        sampled_tick(&mut c, t0 + S(2001), false);
+        c.sensors.idle = Reading::Known(S(1932));
+        assert!(sampled_tick(&mut c, t0 + S(2002), false).is_empty());
+        assert_eq!(c.state, ContextState::Away);
+        assert_eq!(c.screen_accum, S(70));
+        assert_eq!(c.next_break_in(t0 + S(2002)), S(530));
+        assert_eq!(c.stats.completed_natural, 0);
+
+        c.sensors.idle = Reading::Known(S(0));
+        assert!(sampled_tick(&mut c, t0 + S(2003), false).is_empty());
+        assert_eq!(c.state, ContextState::Desktop);
+        assert_eq!(c.screen_accum, S(71));
+        assert_eq!(c.next_break_in(t0 + S(2003)), S(529));
+
+        // A different absence observed after real post-lunch input is unchanged.
+        c.sensors.idle = Reading::Known(S(180));
+        sampled_tick(&mut c, t0 + S(2183), false);
+        assert_eq!(c.state, ContextState::Away);
+        assert_eq!(c.stats.completed_natural, 1);
+        assert_eq!(c.next_break_in(t0 + S(2183)), S(600));
+    }
+
+    #[test]
+    fn raw_away_transition_hides_heads_up_before_eligible_idle_is_long_enough() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        c.cfg.away_secs = 60;
+        c.sensors.idle = Reading::Known(S(48));
+        sampled_tick(&mut c, t0 + S(70), false);
+        c.set_due_in(t0 + S(70), S(16));
+        c.sensors.idle = Reading::Known(S(49));
+        sampled_tick(&mut c, t0 + S(71), true);
+        c.sensors.idle = Reading::Known(S(58));
+        sampled_tick(&mut c, t0 + S(80), false);
+        c.sensors.idle = Reading::Known(S(59));
+        sampled_tick(&mut c, t0 + S(81), false);
+        assert!(matches!(c.phase, Phase::HeadsUp { .. }));
+
+        c.sensors.idle = Reading::Known(S(60));
+        assert!(sampled_tick(&mut c, t0 + S(82), false).is_empty());
+        assert_eq!(c.state, ContextState::Away);
+        assert_eq!(c.phase, Phase::Idle);
+        assert_eq!(c.ui_warmup_in(t0 + S(82)), None);
+        assert_eq!(c.stats.completed_natural, 0);
+        assert_eq!(c.next_break_in(t0 + S(82)), S(15));
+    }
+
+    #[test]
+    fn counted_away_spanning_quiet_stays_away_but_only_post_quiet_idle_can_reset_usage() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        sampled_tick(&mut c, t0 + S(70), false);
+        c.sensors.idle = Reading::Known(S(180));
+        sampled_tick(&mut c, t0 + S(250), false);
+        assert_eq!(c.stats.completed_natural, 1);
+        assert_eq!(c.screen_accum, S(70));
+        c.sensors.idle = Reading::Known(S(181));
+        sampled_tick(&mut c, t0 + S(251), true);
+        c.sensors.idle = Reading::Known(S(1880));
+        sampled_tick(&mut c, t0 + S(1950), false);
+        c.sensors.idle = Reading::Known(S(1881));
+        assert!(sampled_tick(&mut c, t0 + S(1951), false).is_empty());
+        assert_eq!(c.state, ContextState::Away);
+        assert_eq!(c.stats.completed_natural, 1);
+        assert_eq!(c.screen_accum, S(70));
+
+        c.sensors.idle = Reading::Known(S(2380));
+        assert!(sampled_tick(&mut c, t0 + S(2450), false).is_empty());
+        assert_eq!(c.screen_accum, S(70));
+        c.sensors.idle = Reading::Known(S(2780));
+        assert!(sampled_tick(&mut c, t0 + S(2850), false).is_empty());
+        assert_eq!(c.stats.completed_natural, 1);
+        assert_eq!(c.screen_accum, S(0));
+    }
+
+    #[test]
+    fn new_departure_during_quiet_can_be_counted_once_after_observed_nonquiet_idle() {
+        let t0 = Instant::now();
+        let mut c = core(600, t0);
+        sampled_tick(&mut c, t0 + S(70), false);
+        c.sensors.idle = Reading::Known(S(180));
+        sampled_tick(&mut c, t0 + S(250), false);
+        assert_eq!(c.stats.completed_natural, 1);
+        sampled_tick(&mut c, t0 + S(251), true);
+
+        // The last input timestamp is now during quiet, not the previous Away.
+        c.sensors.idle = Reading::Known(S(200));
+        sampled_tick(&mut c, t0 + S(550), false);
+        c.sensors.idle = Reading::Known(S(201));
+        sampled_tick(&mut c, t0 + S(551), false);
+        assert_eq!(c.state, ContextState::Away);
+        assert_eq!(c.stats.completed_natural, 1);
+        c.sensors.idle = Reading::Known(S(380));
+        sampled_tick(&mut c, t0 + S(730), false);
+        assert_eq!(c.state, ContextState::Away);
+        assert_eq!(c.stats.completed_natural, 2);
+        c.sensors.idle = Reading::Known(S(381));
+        sampled_tick(&mut c, t0 + S(731), false);
+        assert_eq!(c.stats.completed_natural, 2);
     }
 
     #[test]

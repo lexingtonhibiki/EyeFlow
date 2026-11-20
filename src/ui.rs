@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 use egui::Widget;
 
 use crate::config::{
-    format_hhmm, Config, FlowSensitivity, QuietPeriod, SoundPreset, ThemeMode, WallpaperFit,
+    format_hhmm, quiet_minute, Config, FlowSensitivity, QuietPeriod, SoundPreset, ThemeMode,
+    WallpaperFit,
 };
 use crate::stats::Stats;
 use crate::tr::{tr, tr_fill, trn};
@@ -995,22 +996,9 @@ fn context_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<Sett
     });
 }
 
-fn quiet_time_minutes(value: &str) -> Option<u32> {
-    let (h, m) = value.trim().split_once(':')?;
-    if !(1..=2).contains(&h.len())
-        || m.len() != 2
-        || !h.bytes().chain(m.bytes()).all(|b| b.is_ascii_digit())
-    {
-        return None;
-    }
-    let h = h.parse::<u32>().ok()?;
-    let m = m.parse::<u32>().ok()?;
-    (h < 24 && m < 60).then_some(h * 60 + m)
-}
-
 fn quiet_period_ends_next_day(start: &str, end: &str) -> bool {
-    quiet_time_minutes(start)
-        .zip(quiet_time_minutes(end))
+    quiet_minute(start)
+        .zip(quiet_minute(end))
         .is_some_and(|(start, end)| start > end)
 }
 
@@ -1124,8 +1112,8 @@ fn quiet_hours_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<
                     let _ = end;
                 });
 
-                let valid = quiet_time_minutes(&edit.start)
-                    .zip(quiet_time_minutes(&edit.end))
+                let valid = quiet_minute(&edit.start)
+                    .zip(quiet_minute(&edit.end))
                     .filter(|(start, end)| start != end);
                 if let Some((start, end)) = valid {
                     if start > end {
@@ -1624,13 +1612,14 @@ mod tests {
             ("23:59", Some(1439)),
             ("24:00", None),
             ("13:60", None),
-            ("12:3", None),
+            ("12:3", Some(723)),
             ("bad", None),
             ("", None),
         ] {
-            assert_eq!(quiet_time_minutes(value), expected, "{value:?}");
+            assert_eq!(quiet_minute(value), expected, "{value:?}");
         }
         assert!(quiet_period_ends_next_day("18:00", "8:00"));
+        assert!(quiet_period_ends_next_day("18:30", "8:5"));
         assert!(!quiet_period_ends_next_day("8:00", "18:00"));
         assert!(!quiet_period_ends_next_day("18:00", "18:00"));
     }
