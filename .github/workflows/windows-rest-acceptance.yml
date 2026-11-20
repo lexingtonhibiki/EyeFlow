@@ -5,6 +5,7 @@ on:
     branches:
       - "feature/rest-status-windows-acceptance-20261113"
       - "test/theme-release-acceptance-20261113"
+      - "test/quiet-periods-windows-acceptance-20261120"
 
 permissions:
   contents: read
@@ -92,7 +93,10 @@ jobs:
         env:
           GALLIUM_DRIVER: llvmpipe
           LIBGL_ALWAYS_SOFTWARE: "true"
-        run: python scripts/test-rest-settings-windows.py "$env:RUNNER_TEMP/eyeflow-mesa/Library/bin/eyeflow-acceptance.exe" --output acceptance-evidence
+        run: |
+          $extra = @()
+          if ($env:GITHUB_REF_NAME -eq "test/quiet-periods-windows-acceptance-20261120") { $extra += "--quiet-periods" }
+          python scripts/test-rest-settings-windows.py "$env:RUNNER_TEMP/eyeflow-mesa/Library/bin/eyeflow-acceptance.exe" --output acceptance-evidence @extra
       - name: Keep acceptance evidence, including failures (not a Release)
         if: always()
         uses: actions/upload-artifact@v4

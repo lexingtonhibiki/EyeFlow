@@ -231,14 +231,33 @@ fn acceptance_state(s: &SettingsState, ui: &egui::Ui) {
     if !std::env::args_os().any(|a| a == "--smoke-stdin") {
         return;
     }
+    let quiet_editor = match &s.quiet_period_edit {
+        None => "closed",
+        Some(edit) => match (
+            quiet_time_minutes(&edit.start),
+            quiet_time_minutes(&edit.end),
+        ) {
+            (Some(start), Some(end)) if start != end => "ready",
+            _ => "invalid",
+        },
+    };
+    let quiet_periods = s
+        .draft
+        .quiet_periods
+        .iter()
+        .map(|period| format!("{}-{}", period.start, period.end))
+        .collect::<Vec<_>>()
+        .join(",");
     let line = format!(
-        "GUI_STATE pid={} tab={:?} short={} long={} theme={:?} dark_mode={}",
+        "GUI_STATE pid={} tab={:?} short={} long={} theme={:?} dark_mode={} quiet_editor={} quiet_periods=[{}]",
         std::process::id(),
         s.tab,
         s.draft.short_break_secs,
         s.draft.long_break_secs,
         s.draft.theme,
-        ui.visuals().dark_mode
+        ui.visuals().dark_mode,
+        quiet_editor,
+        quiet_periods
     );
     static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
@@ -253,11 +272,25 @@ fn acceptance_state(s: &SettingsState, ui: &egui::Ui) {
 // No input/config mutation, listener, or production behavior is added.
 #[cfg(feature = "desktop-smoke")]
 fn acceptance_rect(name: &str, response: &egui::Response) {
+    acceptance_rect_for_periods(name, response, None);
+}
+
+#[cfg(feature = "desktop-smoke")]
+fn acceptance_rect_for_periods(name: &str, response: &egui::Response, periods: Option<usize>) {
     if !std::env::args_os().any(|a| a == "--smoke-stdin") {
         return;
     }
     let center = response.rect.center() * response.ctx.pixels_per_point();
-    let line = format!("GUI_ACCEPT {name} {:.1} {:.1}", center.x, center.y);
+    let mut line = format!(
+        "GUI_ACCEPT {name} {:.1} {:.1} pid={}",
+        center.x,
+        center.y,
+        std::process::id()
+    );
+    if let Some(periods) = periods {
+        use std::fmt::Write;
+        let _ = write!(line, " periods={periods}");
+    }
     static LAST: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((_, old)) = last.iter_mut().find(|(key, _)| key == name) {
@@ -1027,6 +1060,8 @@ fn quiet_hours_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<
         let mut remove = None;
         let mut edit = None;
         let editing = s.quiet_period_edit.is_some();
+        #[cfg(feature = "desktop-smoke")]
+        let periods = Some(s.draft.quiet_periods.len());
         for (index, period) in s.draft.quiet_periods.iter().enumerate() {
             ui.push_id(("quiet_period", index), |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -1068,7 +1103,7 @@ fn quiet_hours_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<
         if s.quiet_period_edit.is_none() {
             let add = ui.button(tr("ui.quiet_add"));
             #[cfg(feature = "desktop-smoke")]
-            acceptance_rect("quiet.add", &add);
+            acceptance_rect_for_periods("quiet.add", &add, periods);
             if add.clicked() {
                 s.quiet_period_edit = Some(QuietPeriodEdit {
                     index: None,
@@ -1090,7 +1125,10 @@ fn quiet_hours_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<
                             ("ui.quiet_lunch", "12:00", "13:00"),
                             ("ui.quiet_after_work", "18:00", "08:00"),
                         ] {
-                            if ui.button(tr(label)).clicked() {
+                            let preset = ui.button(tr(label));
+                            #[cfg(feature = "desktop-smoke")]
+                            acceptance_rect_for_periods(label, &preset, periods);
+                            if preset.clicked() {
                                 start.clone_into(&mut edit.start);
                                 end.clone_into(&mut edit.end);
                             }
@@ -1108,7 +1146,7 @@ fn quiet_hours_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<
                         )
                         .labelled_by(start_label.id);
                     #[cfg(feature = "desktop-smoke")]
-                    acceptance_rect("quiet.start", &start);
+                    acceptance_rect_for_periods("quiet.start", &start, periods);
                     let _ = start;
                     let end_label = ui.label(tr("ui.quiet_end"));
                     let end = ui
@@ -1120,7 +1158,7 @@ fn quiet_hours_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<
                         )
                         .labelled_by(end_label.id);
                     #[cfg(feature = "desktop-smoke")]
-                    acceptance_rect("quiet.end", &end);
+                    acceptance_rect_for_periods("quiet.end", &end, periods);
                     let _ = end;
                 });
 
@@ -1138,7 +1176,9 @@ fn quiet_hours_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<
                     let save_button =
                         ui.add_enabled(valid.is_some(), egui::Button::new(tr("ui.quiet_save")));
                     #[cfg(feature = "desktop-smoke")]
-                    acceptance_rect("quiet.save", &save_button);
+                    if valid.is_some() {
+                        acceptance_rect_for_periods("quiet.save", &save_button, periods);
+                    }
                     if let Some((start, end)) = valid.filter(|_| save_button.clicked()) {
                         save = Some((
                             edit.index,

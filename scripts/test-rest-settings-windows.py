@@ -17,11 +17,39 @@ import time
 import tomllib
 
 
+def parse_state(text, pid):
+    hits = re.findall(
+        r'GUI_STATE pid=' + str(pid) +
+        r' tab=(\w+) short=(\d+) long=(\d+) theme=(\w+) dark_mode=(true|false)'
+        r' quiet_editor=(\w+) quiet_periods=\[([^\r\n\]]*)\]',
+        text,
+    )
+    if not hits:
+        return None
+    tab, short, long, theme, dark_mode, editor, periods = hits[-1]
+    return {'tab': tab, 'short': int(short), 'long': int(long),
+            'theme': theme, 'dark_mode': dark_mode == 'true',
+            'quiet_editor': editor, 'quiet_periods': periods.split(',') if periods else []}
+
+
+def parse_coordinates(text, pid, name, periods=None):
+    phase = '' if periods is None else ' periods=' + str(periods)
+    hits = re.findall(
+        r'GUI_ACCEPT ' + re.escape(name) +
+        r' ([\d.]+) ([\d.]+) pid=' + str(pid) + phase + r'(?=\s|$)',
+        text,
+    )
+    return hits[-1] if hits else None
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('binary', type=Path)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--quiet-periods', action='store_true',
+                        help='Exercise only quiet periods through actual Windows widgets in Chinese')
     args = parser.parse_args()
+    settings_title = 'EyeFlow 设置' if args.quiet_periods else 'EyeFlow Settings'
     assert os.name == 'nt', 'Requires an isolated Windows desktop runner'
     import pyautogui as gui
     user = ctypes.WinDLL('user32', use_last_error=True)
@@ -64,7 +92,7 @@ def main():
         def visit(hwnd, _):
             title = ctypes.create_unicode_buffer(256)
             user.GetWindowTextW(hwnd, title, len(title))
-            if owned(hwnd) and user.IsWindowVisible(hwnd) and title.value == 'EyeFlow Settings':
+            if owned(hwnd) and user.IsWindowVisible(hwnd) and title.value == settings_title:
                 found.append(hwnd)
             return True
         user.EnumWindows(visit, 0)
@@ -75,6 +103,8 @@ def main():
         config.mkdir()
         path = config / 'config.toml'
         fixture = (Path(__file__).parent / 'fixtures/desktop-smoke.toml').read_text()
+        if args.quiet_periods:
+            fixture = fixture.replace('language = "en-US"', 'language = "zh-CN"', 1)
         path.write_text(fixture + '\nlong_break_secs = 125\nlong_break_enabled = true\nstart_cue_enabled = false\n', encoding='utf-8')
         env = os.environ.copy()
         env.update(APPDATA=temp, RUST_LOG='info')
@@ -86,18 +116,11 @@ def main():
             except (OSError, ValueError):
                 return {}
 
+        def read_log():
+            return log.read_text(encoding='utf-8', errors='replace') if log.exists() else ''
+
         def state():
-            text = log.read_text(encoding='utf-8', errors='replace') if log.exists() else ''
-            hits = re.findall(
-                r'GUI_STATE pid=' + str(proc.pid) +
-                r' tab=(\w+) short=(\d+) long=(\d+) theme=(\w+) dark_mode=(true|false)',
-                text,
-            )
-            if not hits:
-                return None
-            tab, short, long, theme, dark_mode = hits[-1]
-            return {'tab': tab, 'short': int(short), 'long': int(long),
-                    'theme': theme, 'dark_mode': dark_mode == 'true'}
+            return parse_state(read_log(), proc.pid)
 
         def archive():
             if log.exists():
@@ -116,16 +139,12 @@ def main():
             time.sleep(.7)
             return hwnd
 
-        def click(name, double=False):
+        def click(name, double=False, periods=None):
             hwnd = wait(settings)
             assert owned(hwnd)
             user.SetForegroundWindow(hwnd)
             wait(lambda: user.GetForegroundWindow() == hwnd)
-            def coordinates():
-                text = log.read_text(encoding='utf-8', errors='replace') if log.exists() else ''
-                hits = re.findall(r'GUI_ACCEPT ' + re.escape(name) + r' ([\d.]+) ([\d.]+)', text)
-                return hits[-1] if hits else None
-            x, y = wait(coordinates)
+            x, y = wait(lambda: parse_coordinates(read_log(), proc.pid, name, periods))
             point = wintypes.POINT(0, 0)
             assert user.ClientToScreen(hwnd, ctypes.byref(point))
             screen_x, screen_y = point.x + float(x), point.y + float(y)
@@ -140,7 +159,8 @@ def main():
                 gui.mouseUp()
                 time.sleep(.12)
             time.sleep(.3)
-            expected_tab = {'tab.now': 'Now', 'tab.reminder': 'Reminder'}.get(name)
+            expected_tab = {'tab.now': 'Now', 'tab.reminder': 'Reminder',
+                            'status.quiet_hours': 'Reminder'}.get(name)
             if expected_tab:
                 wait(lambda: state() is not None and state()['tab'] == expected_tab)
 
@@ -207,8 +227,67 @@ def main():
                              or current['dark_mode'] is expected_dark_mode))
             return wait(effective)
 
-        try:
+        def accept_quiet_periods():
+            lunch = {'start': '12:00', 'end': '13:00'}
+            after_work = {'start': '19:15', 'end': '07:45'}
+            expected = [lunch, after_work]
+
+            def check_loaded(items, editor='closed'):
+                return wait(lambda: (current if (current := state())
+                            and current['tab'] == 'Reminder'
+                            and current['quiet_editor'] == editor
+                            and current['quiet_periods'] == [
+                                f"{item['start']}-{item['end']}" for item in items
+                            ] else None))
+
+            def type_time(name, value, count):
+                click(name, periods=count)
+                hwnd = wait(settings)
+                assert owned(hwnd) and user.GetForegroundWindow() == hwnd
+                gui.hotkey('ctrl', 'a')
+                assert owned(hwnd) and user.GetForegroundWindow() == hwnd
+                gui.write(value, interval=.1)
+
+            click('status.quiet_hours')
+            check_loaded([])
+            assert values().get('quiet_periods') == []
+            screenshot('09-quiet-empty')
+            click('quiet.add', periods=0)
+            check_loaded([], 'invalid')
+            click('ui.quiet_lunch', periods=0)
+            check_loaded([], 'ready')
+            assert values().get('quiet_periods') == [], 'Preset must not save before Save'
+            click('quiet.save', periods=0)
+            check_loaded([lunch])
+            wait(lambda: values().get('quiet_periods') == [lunch])
+
+            click('quiet.add', periods=1)
+            check_loaded([lunch], 'invalid')
+            click('ui.quiet_after_work', periods=1)
+            check_loaded([lunch], 'ready')
+            type_time('quiet.start', after_work['start'], 1)
+            type_time('quiet.end', after_work['end'], 1)
+            screenshot('10-quiet-custom-overnight-editor')
+            assert values().get('quiet_periods') == [lunch], 'Editor must not save before Save'
+            click('quiet.save', periods=1)
+            check_loaded(expected)
+            wait(lambda: values().get('quiet_periods') == expected)
+            screenshot('11-quiet-two-ranges')
+
+            saved_pid = proc.pid
+            quit_app()
             launch()
+            assert proc.pid != saved_pid
+            click('status.quiet_hours')
+            loaded = check_loaded(expected)
+            assert values().get('quiet_periods') == expected
+            screenshot('12-quiet-native-after-restart')
+            report['cases'].append({'case': 'two native quiet periods, including customized overnight, persist after restart',
+                                    'passed': True, 'pid': proc.pid,
+                                    'loaded_state': loaded})
+            return loaded
+
+        def accept_rest_settings():
             screenshot('01-status-initial-125-seconds')
             click('tab.reminder')
             screenshot('02-reminder-125-seconds')
@@ -266,6 +345,12 @@ def main():
                 report['cases'].append({
                     'case': f'theme {expected_theme} native selection + restart',
                     'passed': True, 'pid': proc.pid, 'loaded_state': state()})
+        try:
+            launch()
+            if args.quiet_periods:
+                accept_quiet_periods()
+            else:
+                accept_rest_settings()
             quit_app()
             report['passed'] = True
         except BaseException as exc:
