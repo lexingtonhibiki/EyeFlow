@@ -43,6 +43,7 @@
 "stats.streak" = "{n} days in a row"
 
 # ── Reminder state line ─────────────────────────────────────────────────
+"runtime.reminder_quiet" = "Quiet hours · Timer paused"
 "runtime.reminder_disabled" = "Reminders are off"
 "runtime.reminder_paused" = "Paused for one hour"
 "runtime.reminder_next" = "Next break at {t}"
@@ -135,8 +136,20 @@
 "ui.unit_min_idle" = " min idle"
 "ui.weak_away" = "The timer pauses while you are away; being away counts as one natural break. In full-screen games, presentations or exclusive apps only the cue plays, and a heads-up is sent once you return."
 "ui.quiet_hours" = "Do not disturb"
-"ui.quiet_until" = "to"
-"ui.weak_quiet_same" = "(same start and end = disabled)"
+"ui.quiet_explainer" = "Repeats daily in local time. The timer pauses and automatic reminders stay hidden."
+"ui.quiet_empty" = "No time periods yet. Add a lunch break, after-hours, or your own schedule."
+"ui.quiet_add" = "+ Add a time period"
+"ui.quiet_edit_row" = "Edit {n}"
+"ui.quiet_remove_row" = "Remove {n}"
+"ui.quiet_presets" = "Quick fill:"
+"ui.quiet_lunch" = "Lunch break"
+"ui.quiet_after_work" = "After hours"
+"ui.quiet_start" = "Start"
+"ui.quiet_end" = "End"
+"ui.quiet_next_day" = "Ends next day"
+"ui.quiet_time_help" = "Enter two different times in 24-hour format."
+"ui.quiet_save" = "Save period"
+"ui.quiet_cancel" = "Cancel"
 "ui.esc_skip" = "Press Esc during a break to skip (unavailable in strict mode)"
 
 # ── Settings window: system card ────────────────────────────────────────
@@ -172,6 +185,8 @@
 "ui.reset_defaults" = "Restore defaults"
 "ui.weak_saved_hint" = "Changes are saved as you make them"
 "ui.saved" = "Saved"
+"ui.save_failed" = "Could not save. These changes weren’t applied."
+"ui.retry_save" = "Retry save"
 
 # ── Theme selector ──────────────────────────────────────────────────────
 "ui.theme" = "Theme"

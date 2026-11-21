@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
-use crate::audio::{self, AudioPlayer};
+use crate::audio::{self, AudioPlayer, CueOrigin};
 use crate::autostart;
 use crate::config::{Config, SoundPreset};
 use crate::core::{Action, ContextState, Core, Phase};
@@ -29,6 +29,18 @@ fn global_hotkey() -> HotKey {
 }
 /// 声音是唯一提醒通道（游戏 / 全屏 / 不可打扰）时，提示音至少持续 2 秒
 const SOUND_ONLY_MIN_CUE_SECS: u64 = 2;
+
+fn tick_cue_boundary(
+    core: &mut Core,
+    now: Instant,
+    quiet: bool,
+    stop_automatic: impl FnOnce(),
+) -> Vec<Action> {
+    if quiet && !core.in_quiet_period() {
+        stop_automatic();
+    }
+    core.tick(now, quiet)
+}
 
 pub struct Runtime {
     pub core: Core,
@@ -62,7 +74,7 @@ pub struct Runtime {
 /// - `phase` 只取判别式：`HeadsUp` / `Break` 的文案是常量，带上的时间载荷不影响输出；
 /// - `minute` → `Idle` 分支里 `%H:%M` 的钟点，**只会在分钟边界变**；
 /// - `completed` / `postponed` / `streak` → 第 3 行的计数。
-type TooltipFingerprint = (ContextState, bool, bool, u8, i64, u32, u32, u32, bool);
+type TooltipFingerprint = (ContextState, bool, bool, u8, i64, u32, u32, u32, bool, bool);
 
 impl Runtime {
     pub fn new(
@@ -192,7 +204,7 @@ impl Runtime {
             && self.core.cfg.sound_enabled
             && self.core.cfg.start_cue_enabled
         {
-            self.play_cue(false);
+            self.play_cue(false, CueOrigin::User);
         }
     }
 
@@ -285,14 +297,15 @@ impl Runtime {
         }
 
         let quiet = self.core.cfg.in_quiet_hours(chrono::Local::now().time());
-        for action in self.core.tick(now, quiet) {
+        let audio = &self.audio;
+        for action in tick_cue_boundary(&mut self.core, now, quiet, || audio.stop_automatic()) {
             match action {
                 Action::PlayCue => {
                     if self.core.cfg.sound_enabled {
                         // 游戏 / 全屏 / 不可打扰时预告面板不可见，声音是唯一通道 → 自动增强
                         let sound_only = self.core.state == ContextState::Gaming;
                         log::debug!("播放提示音（sound_only={sound_only}）");
-                        self.play_cue(sound_only);
+                        self.play_cue(sound_only, CueOrigin::Automatic);
                     }
                 }
             }
@@ -349,11 +362,12 @@ impl Runtime {
             self.core.stats.postponed,
             self.core.stats.streak_days,
             self.core.automatic_pause_reason(now).is_some(),
+            self.core.in_quiet_period(),
         )
     }
 
     /// 按当前配置播放提示音：自定义音频优先，失败或未设置时回退到合成预设。
-    fn play_cue(&self, sound_only: bool) {
+    fn play_cue(&self, sound_only: bool, origin: CueOrigin) {
         let cfg = &self.core.cfg;
         let mut secs = cfg.cue_duration_secs;
         if sound_only {
@@ -363,17 +377,17 @@ impl Runtime {
             if let Some(path) = cfg.custom_sound_path.as_deref() {
                 match self
                     .audio
-                    .play_custom(std::path::Path::new(path), cfg.cue_volume_pct)
+                    .play_custom(std::path::Path::new(path), cfg.cue_volume_pct, origin)
                 {
                     Ok(()) => return,
                     Err(e) => log::warn!("自定义提示音播放失败（{e}），回退默认提示音"),
                 }
             }
             self.audio
-                .play_cue(SoundPreset::GentleChime, cfg.cue_volume_pct, secs);
+                .play_cue(SoundPreset::GentleChime, cfg.cue_volume_pct, secs, origin);
         } else {
             self.audio
-                .play_cue(cfg.sound_preset, cfg.cue_volume_pct, secs);
+                .play_cue(cfg.sound_preset, cfg.cue_volume_pct, secs, origin);
         }
     }
 
@@ -427,53 +441,9 @@ impl Runtime {
 
     pub fn apply_settings_action(&mut self, action: SettingsAction, now: Instant) {
         match action {
-            SettingsAction::Save(cfg) => {
-                let cfg = *cfg;
-                let check_now = cfg.update_check_enabled && !self.core.cfg.update_check_enabled;
-                self.core.apply_config(cfg.clone(), now);
-                if let Err(e) = cfg.save() {
-                    log::error!("保存配置失败: {e}");
-                }
-                self.tray.set_enabled(cfg.enabled);
-                self.tray.set_sound(cfg.sound_enabled);
-                if cfg.hotkey_enabled != self.registered_hotkey.is_some() {
-                    if let Err(e) = self.apply_hotkey_enabled(cfg.hotkey_enabled) {
-                        log::error!("应用热键设置失败: {e}");
-                    }
-                }
-                if let Some(s) = &mut self.settings {
-                    s.saved = cfg.clone();
-                    s.draft = cfg;
-                    s.saved_at = Some(now);
-                }
-                if check_now {
-                    self.spawn_update_check();
-                }
-                log::info!("配置已更新");
-            }
+            SettingsAction::Save(cfg) => self.commit_settings_config(*cfg, now),
             SettingsAction::RestNow => self.on_manual_break_start(now),
-            SettingsAction::ResetDefaults => {
-                let defaults = Config::default();
-                if let Some(s) = &mut self.settings {
-                    s.draft = defaults.clone();
-                }
-                // 即时保存语义：恢复默认也立即落盘
-                self.core.apply_config(defaults.clone(), now);
-                if let Err(e) = defaults.save() {
-                    log::error!("保存默认配置失败: {e}");
-                }
-                self.tray.set_enabled(defaults.enabled);
-                self.tray.set_sound(defaults.sound_enabled);
-                if defaults.hotkey_enabled != self.registered_hotkey.is_some() {
-                    if let Err(e) = self.apply_hotkey_enabled(defaults.hotkey_enabled) {
-                        log::error!("应用热键设置失败: {e}");
-                    }
-                }
-                if let Some(s) = &mut self.settings {
-                    s.saved = defaults;
-                    s.saved_at = Some(now);
-                }
-            }
+            SettingsAction::ResetDefaults => self.commit_settings_config(Config::default(), now),
             SettingsAction::SetAutostart(on) => {
                 if let Some(s) = &mut self.settings {
                     match autostart::set_enabled(on) {
@@ -485,26 +455,19 @@ impl Runtime {
                     }
                 }
             }
-            SettingsAction::SetHotkeyEnabled(on) => {
-                if let Err(e) = self.apply_hotkey_enabled(on) {
-                    log::error!("应用热键设置失败: {e}");
-                }
-                self.core.cfg.hotkey_enabled = on;
-                self.persist_config();
-                if let Some(s) = &mut self.settings {
-                    s.saved.hotkey_enabled = on;
-                    s.draft.hotkey_enabled = on;
-                }
-            }
             SettingsAction::Preview {
                 preset,
                 volume_pct,
                 duration_secs,
-            } => self.audio.play_cue(preset, volume_pct, duration_secs),
+            } => self
+                .audio
+                .play_cue(preset, volume_pct, duration_secs, CueOrigin::User),
             SettingsAction::PreviewCustom { path, volume_pct } => {
-                let result = self
-                    .audio
-                    .play_custom(std::path::Path::new(&path), volume_pct);
+                let result = self.audio.play_custom(
+                    std::path::Path::new(&path),
+                    volume_pct,
+                    CueOrigin::User,
+                );
                 if let Some(s) = &mut self.settings {
                     s.record_custom_preview_result(result);
                 }
@@ -591,6 +554,33 @@ impl Runtime {
         }
     }
 
+    /// Settings edits become active only after persistence succeeds.
+    fn commit_settings_config(&mut self, cfg: Config, now: Instant) {
+        if let Err(e) = cfg.save() {
+            log::error!("保存配置失败: {e}");
+            if let Some(settings) = &mut self.settings {
+                settings.record_save_failure(cfg);
+            }
+            return;
+        }
+        let check_now = cfg.update_check_enabled && !self.core.cfg.update_check_enabled;
+        self.core.apply_config(cfg.clone(), now);
+        self.tray.set_enabled(cfg.enabled);
+        self.tray.set_sound(cfg.sound_enabled);
+        if cfg.hotkey_enabled != self.registered_hotkey.is_some() {
+            if let Err(e) = self.apply_hotkey_enabled(cfg.hotkey_enabled) {
+                log::error!("应用热键设置失败: {e}");
+            }
+        }
+        if let Some(settings) = &mut self.settings {
+            settings.record_save_success(cfg, now);
+        }
+        if check_now {
+            self.spawn_update_check();
+        }
+        log::info!("配置已更新");
+    }
+
     /// 切换界面语言：更新全局语言状态 → 托盘逐项重写 → 落盘。
     ///
     /// 视口内容与字体不需要这里管：egui 每帧从 `tr()` 现取，`app.rs` 的
@@ -624,6 +614,8 @@ impl Runtime {
             tr("runtime.reminder_disabled").to_string()
         } else if self.core.is_paused(now) {
             tr("runtime.reminder_paused").to_string()
+        } else if self.core.in_quiet_period() && !matches!(self.core.phase, Phase::Break { .. }) {
+            tr("runtime.reminder_quiet").to_string()
         } else if self.core.automatic_pause_reason(now).is_some()
             && !matches!(self.core.phase, Phase::Break { .. })
         {
@@ -670,5 +662,54 @@ fn phase_discriminant(p: &Phase) -> u8 {
         Phase::Idle => 0,
         Phase::HeadsUp { .. } => 1,
         Phase::Break { .. } => 2,
+    }
+}
+
+#[cfg(test)]
+mod quiet_cue_tests {
+    use super::*;
+    use crate::platform::sensors::{Reading, SensorSnapshot};
+    use crate::stats::Stats;
+    use std::cell::Cell;
+
+    #[test]
+    fn quiet_entry_stops_the_existing_cue_once_without_emitting_a_new_one() {
+        let start = Instant::now();
+        let config = Config {
+            short_break_min_secs: 600,
+            short_break_max_secs: 600,
+            short_break_secs: 30,
+            heads_up_secs: 15,
+            long_break_enabled: false,
+            ..Config::default()
+        };
+        let mut core = Core::new(config, Stats::default(), start);
+        let stops = Cell::new(0);
+        let mut tick = |seconds, quiet| {
+            let now = start + Duration::from_secs(seconds);
+            core.set_sensors(SensorSnapshot {
+                sampled_at: now,
+                idle: Reading::Known(Duration::ZERO),
+                fullscreen: Reading::Known(false),
+                interruptible: Reading::Known(true),
+            });
+            let actions = tick_cue_boundary(&mut core, now, quiet, || stops.set(stops.get() + 1));
+            (actions, core.phase, core.next_break_in(now))
+        };
+        assert!(tick(0, false).0.is_empty());
+        assert_eq!(tick(586, false).0, vec![Action::PlayCue]);
+        let (actions, phase, before_quiet) = tick(601, false);
+        assert_eq!(actions, vec![Action::PlayCue]);
+        assert!(matches!(phase, Phase::Break { .. }));
+        let (actions, phase, during_quiet) = tick(602, true);
+        assert!(actions.is_empty());
+        assert_eq!(phase, Phase::Idle);
+        assert_eq!(during_quiet, before_quiet);
+        assert!(tick(615, true).0.is_empty());
+        assert_eq!(stops.get(), 1);
+        let (actions, _, resumed) = tick(620, false);
+        assert!(actions.is_empty());
+        assert_eq!(resumed, Duration::from_secs(75));
+        assert_eq!(stops.get(), 1);
     }
 }

@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 use egui::Widget;
 
 use crate::config::{
-    format_hhmm, parse_hhmm, Config, FlowSensitivity, SoundPreset, ThemeMode, WallpaperFit,
+    format_hhmm, quiet_minute, Config, FlowSensitivity, QuietPeriod, SoundPreset, ThemeMode,
+    WallpaperFit,
 };
 use crate::stats::Stats;
 use crate::tr::{tr, tr_fill, trn};
@@ -58,6 +59,12 @@ impl SettingsTab {
     }
 }
 
+struct QuietPeriodEdit {
+    index: Option<usize>,
+    start: String,
+    end: String,
+}
+
 pub struct SettingsState {
     /// 正在编辑的副本
     pub draft: Config,
@@ -69,6 +76,7 @@ pub struct SettingsState {
     pub autostart_error: Option<String>,
     pub config_open_error: Option<String>,
     pub saved_at: Option<Instant>,
+    save_failed: bool,
     /// 自定义提示音：选中文件的说明 / 校验错误
     pub custom_sound_info: Option<String>,
     pub custom_sound_error: Option<String>,
@@ -81,6 +89,7 @@ pub struct SettingsState {
     /// 每帧 1 次环境变量查询 + 4 次堆分配，外加一次 `format!`。
     /// 60 fps 下就是 240 次/秒的纯浪费，而路径在进程生命周期内不会变。
     config_path_display: String,
+    quiet_period_edit: Option<QuietPeriodEdit>,
 }
 
 impl SettingsState {
@@ -93,11 +102,26 @@ impl SettingsState {
             autostart_error: None,
             config_open_error: None,
             saved_at: None,
+            save_failed: false,
             custom_sound_info: None,
             custom_sound_error: None,
             wallpaper: WallpaperCache::new(),
             config_path_display: tr_fill("ui.config_file", "{path}", Config::path().display()),
+            quiet_period_edit: None,
         }
+    }
+
+    pub fn record_save_failure(&mut self, attempted: Config) {
+        self.draft = attempted;
+        self.saved_at = None;
+        self.save_failed = true;
+    }
+
+    pub fn record_save_success(&mut self, saved: Config, now: Instant) {
+        self.saved = saved.clone();
+        self.draft = saved;
+        self.saved_at = Some(now);
+        self.save_failed = false;
     }
 
     /// Store only the latest preview result; a successful retry clears the old
@@ -153,7 +177,6 @@ pub enum SettingsAction {
     RestNow,
     ResetDefaults,
     SetAutostart(bool),
-    SetHotkeyEnabled(bool),
     /// 试听预设提示音，携带 draft 里当前的音量与时长
     Preview {
         preset: SoundPreset,
@@ -190,6 +213,13 @@ pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Ve
         ui.label(reason);
     }
     tab_bar(ui, s);
+    if s.save_failed {
+        ui.colored_label(color_err(ui.visuals()), tr("ui.save_failed"));
+        if ui.button(tr("ui.retry_save")).clicked() {
+            push_save(s, &mut actions);
+        }
+        ui.separator();
+    }
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -199,6 +229,8 @@ pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Ve
                 // 窗口做引导，第一眼不该是一张要往下滚的设置表单。
                 SettingsTab::Now => status_card(ui, s, view, &mut actions),
                 SettingsTab::Reminder => {
+                    quiet_hours_card(ui, s, &mut actions);
+                    ui.add_space(4.0);
                     rhythm_card(ui, s, &mut actions);
                     ui.add_space(4.0);
                     delivery_card(ui, s, view, &mut actions);
@@ -406,6 +438,12 @@ fn status_card(
         ui.horizontal_wrapped(|ui| {
             ui.weak(tr("stats.dot"));
             ui.weak(view.state_label);
+            let quiet_hours = ui.button(tr("ui.quiet_hours"));
+            #[cfg(feature = "desktop-smoke")]
+            acceptance_rect("status.quiet_hours", &quiet_hours);
+            if quiet_hours.clicked() {
+                s.tab = SettingsTab::Reminder;
+            }
         });
         let st = view.stats;
         let good = color_ok(ui.visuals());
@@ -973,53 +1011,174 @@ fn context_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<Sett
         }
 
         ui.add_space(4.0);
-        let mut qs = parse_hhmm(&s.draft.quiet_start);
-        let mut qe = parse_hhmm(&s.draft.quiet_end);
-        let mut committed = false;
-        ui.horizontal(|ui| {
-            ui.label(tr("ui.quiet_hours"));
-            committed |= time_editor(ui, "qs", &mut qs);
-            ui.label(tr("ui.quiet_until"));
-            committed |= time_editor(ui, "qe", &mut qe);
-            if qs == qe {
-                ui.weak(tr("ui.weak_quiet_same"));
-            }
-        });
-        s.draft.quiet_start = format_hhmm(qs);
-        s.draft.quiet_end = format_hhmm(qe);
-        if committed {
-            push_save(s, actions);
-        }
-
-        ui.add_space(4.0);
         if commit(&ui.checkbox(&mut s.draft.esc_skip_enabled, tr("ui.esc_skip"))) {
             push_save(s, actions);
         }
     });
 }
 
-/// 小时 : 分钟两个 DragValue；返回是否发生了“提交”（见 `commit`）。
-fn time_editor(ui: &mut egui::Ui, salt: &str, minutes: &mut u32) -> bool {
-    let mut h = *minutes / 60;
-    let mut m = *minutes % 60;
-    let response = ui.push_id(salt, |ui| {
-        let rh = ui.add(
-            egui::DragValue::new(&mut h)
-                .range(0..=23)
-                .speed(0.05)
-                .custom_formatter(|v, _| format!("{:02}", v as u32)),
-        );
-        ui.label(":");
-        let rm = ui.add(
-            egui::DragValue::new(&mut m)
-                .range(0..=59)
-                .speed(0.2)
-                .custom_formatter(|v, _| format!("{:02}", v as u32)),
-        );
-        commit(&rh) || commit(&rm)
+fn quiet_period_ends_next_day(start: &str, end: &str) -> bool {
+    quiet_minute(start)
+        .zip(quiet_minute(end))
+        .is_some_and(|(start, end)| start > end)
+}
+
+fn quiet_hours_card(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<SettingsAction>) {
+    card(ui, tr("ui.quiet_hours"), |ui| {
+        ui.label(tr("ui.quiet_explainer"));
+        if s.saved.in_quiet_hours(chrono::Local::now().time()) {
+            ui.label(egui::RichText::new(tr("runtime.reminder_quiet")).strong());
+        }
+        if s.draft.quiet_periods.is_empty() && s.quiet_period_edit.is_none() {
+            ui.label(tr("ui.quiet_empty"));
+        }
+
+        let mut remove = None;
+        let mut edit = None;
+        let editing = s.quiet_period_edit.is_some();
+        for (index, period) in s.draft.quiet_periods.iter().enumerate() {
+            ui.push_id(("quiet_period", index), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{} – {}", period.start, period.end)).strong(),
+                    );
+                    if quiet_period_ends_next_day(&period.start, &period.end) {
+                        ui.label(tr("ui.quiet_next_day"));
+                    }
+                    let edit_label = tr_fill("ui.quiet_edit_row", "{n}", index + 1);
+                    let remove_label = tr_fill("ui.quiet_remove_row", "{n}", index + 1);
+                    if ui
+                        .add_enabled(!editing, egui::Button::new(edit_label))
+                        .clicked()
+                    {
+                        edit = Some(QuietPeriodEdit {
+                            index: Some(index),
+                            start: period.start.clone(),
+                            end: period.end.clone(),
+                        });
+                    }
+                    if ui
+                        .add_enabled(!editing, egui::Button::new(remove_label))
+                        .clicked()
+                    {
+                        remove = Some(index);
+                    }
+                });
+            });
+        }
+        if let Some(index) = remove {
+            s.draft.quiet_periods.remove(index);
+            push_save(s, actions);
+        }
+        if edit.is_some() {
+            s.quiet_period_edit = edit;
+        }
+
+        if s.quiet_period_edit.is_none() {
+            let add = ui.button(tr("ui.quiet_add"));
+            #[cfg(feature = "desktop-smoke")]
+            acceptance_rect("quiet.add", &add);
+            if add.clicked() {
+                s.quiet_period_edit = Some(QuietPeriodEdit {
+                    index: None,
+                    start: String::new(),
+                    end: String::new(),
+                });
+            }
+        }
+
+        let mut save = None;
+        let mut close = false;
+        if let Some(edit) = &mut s.quiet_period_edit {
+            ui.add_space(4.0);
+            ui.group(|ui| {
+                if edit.index.is_none() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(tr("ui.quiet_presets"));
+                        for (label, start, end) in [
+                            ("ui.quiet_lunch", "12:00", "13:00"),
+                            ("ui.quiet_after_work", "18:00", "08:00"),
+                        ] {
+                            if ui.button(tr(label)).clicked() {
+                                start.clone_into(&mut edit.start);
+                                end.clone_into(&mut edit.end);
+                            }
+                        }
+                    });
+                }
+                ui.horizontal_wrapped(|ui| {
+                    let start_label = ui.label(tr("ui.quiet_start"));
+                    let start = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut edit.start)
+                                .id_salt("quiet_period_start")
+                                .hint_text("HH:MM")
+                                .desired_width(64.0),
+                        )
+                        .labelled_by(start_label.id);
+                    #[cfg(feature = "desktop-smoke")]
+                    acceptance_rect("quiet.start", &start);
+                    let _ = start;
+                    let end_label = ui.label(tr("ui.quiet_end"));
+                    let end = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut edit.end)
+                                .id_salt("quiet_period_end")
+                                .hint_text("HH:MM")
+                                .desired_width(64.0),
+                        )
+                        .labelled_by(end_label.id);
+                    #[cfg(feature = "desktop-smoke")]
+                    acceptance_rect("quiet.end", &end);
+                    let _ = end;
+                });
+
+                let valid = quiet_minute(&edit.start)
+                    .zip(quiet_minute(&edit.end))
+                    .filter(|(start, end)| start != end);
+                if let Some((start, end)) = valid {
+                    if start > end {
+                        ui.label(tr("ui.quiet_next_day"));
+                    }
+                } else {
+                    ui.label(tr("ui.quiet_time_help"));
+                }
+                ui.horizontal_wrapped(|ui| {
+                    let save_button =
+                        ui.add_enabled(valid.is_some(), egui::Button::new(tr("ui.quiet_save")));
+                    #[cfg(feature = "desktop-smoke")]
+                    acceptance_rect("quiet.save", &save_button);
+                    if let Some((start, end)) = valid.filter(|_| save_button.clicked()) {
+                        save = Some((
+                            edit.index,
+                            QuietPeriod {
+                                start: format_hhmm(start),
+                                end: format_hhmm(end),
+                            },
+                        ));
+                    }
+                    if ui.button(tr("ui.quiet_cancel")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        }
+        if let Some((index, period)) = save {
+            if let Some(index) = index {
+                if let Some(existing) = s.draft.quiet_periods.get_mut(index) {
+                    *existing = period;
+                    push_save(s, actions);
+                }
+            } else {
+                s.draft.quiet_periods.push(period);
+                push_save(s, actions);
+            }
+            close = true;
+        }
+        if close {
+            s.quiet_period_edit = None;
+        }
     });
-    *minutes = h * 60 + m;
-    response.inner
 }
 
 fn system_card(
@@ -1089,8 +1248,7 @@ fn system_card(
                 .checkbox(&mut s.draft.hotkey_enabled, tr("ui.hotkey"))
                 .on_hover_text(tr("ui.weak_hotkey"));
             if commit(&hotkey_resp) {
-                // 热键要立即注册/注销；draft 的改动同时也即时保存
-                actions.push(SettingsAction::SetHotkeyEnabled(s.draft.hotkey_enabled));
+                // 保存成功后，Runtime 再注册或注销热键。
                 push_save(s, actions);
             }
         });
@@ -1222,18 +1380,17 @@ fn footer(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<SettingsAc
     ui.horizontal(|ui| {
         if ui.button(tr("ui.reset_defaults")).clicked() {
             actions.push(SettingsAction::ResetDefaults);
-            // “修改即保存”：draft 换成默认值后也立即保存默认配置
-            s.draft = Config::default();
-            push_save(s, actions);
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.weak(tr("ui.weak_saved_hint"));
-            if s.saved_at
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
-            {
-                ui.colored_label(color_ok(ui.visuals()), tr("ui.saved"));
-            }
-        });
+        if !s.save_failed {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(tr("ui.weak_saved_hint"));
+                if s.saved_at
+                    .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
+                {
+                    ui.colored_label(color_ok(ui.visuals()), tr("ui.saved"));
+                }
+            });
+        }
     });
 }
 
@@ -1242,6 +1399,75 @@ pub use crate::duration_format::human_duration;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_failure_leaves_previous_snapshot_and_stages_draft_for_retry() {
+        let _language = crate::tr::TEST_LANGUAGE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let old = Config {
+            enabled: false,
+            ..Config::default()
+        };
+        let attempted = Config {
+            quiet_periods: Vec::new(),
+            ..Config::default()
+        };
+        let mut state = SettingsState::new(old.clone(), false);
+        let now = Instant::now();
+        state.record_save_success(old.clone(), now);
+        state.record_save_failure(attempted.clone());
+        assert_eq!(state.saved, old);
+        assert_eq!(state.draft, attempted);
+        assert!(state.saved_at.is_none());
+        assert!(state.save_failed);
+
+        let ctx = egui::Context::default();
+        let stats = Stats::default();
+        let view = SettingsView {
+            sensor_pause_reason: None,
+            state_label: "Active",
+            reminder_line: "Next break".into(),
+            hotkey_active: true,
+            stats: &stats,
+            audio_ok: true,
+            update_status: &UpdateStatus::Idle,
+        };
+        for tab in [
+            SettingsTab::Reminder,
+            SettingsTab::System,
+            SettingsTab::Reminder,
+        ] {
+            state.tab = tab;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(560.0, 1100.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| assert!(show(ui, &mut state, &view).is_empty()),
+            );
+            output.textures_delta.clear();
+            assert!(
+                state.save_failed,
+                "rendering must not retry or clear the error"
+            );
+        }
+
+        let mut actions = Vec::new();
+        push_save(&state, &mut actions);
+        assert_eq!(
+            actions,
+            vec![SettingsAction::Save(Box::new(attempted.clone()))]
+        );
+        state.record_save_success(attempted.clone(), now);
+        assert_eq!(state.saved, attempted);
+        assert!(!state.has_unsaved());
+        assert!(!state.save_failed);
+        assert_eq!(state.saved_at, Some(now));
+    }
 
     #[test]
     fn rest_durations_survive_reminder_status_round_trip() {
@@ -1463,6 +1689,27 @@ mod tests {
         state.record_custom_preview_result(Ok(()));
         assert!(state.custom_sound_error.is_none());
         assert_eq!(state.draft, draft);
+    }
+
+    #[test]
+    fn quiet_editor_accepts_local_clock_times_and_compares_minutes() {
+        for (value, expected) in [
+            ("0:00", Some(0)),
+            ("08:30", Some(510)),
+            ("8:30", Some(510)),
+            ("23:59", Some(1439)),
+            ("24:00", None),
+            ("13:60", None),
+            ("12:3", Some(723)),
+            ("bad", None),
+            ("", None),
+        ] {
+            assert_eq!(quiet_minute(value), expected, "{value:?}");
+        }
+        assert!(quiet_period_ends_next_day("18:00", "8:00"));
+        assert!(quiet_period_ends_next_day("18:30", "8:5"));
+        assert!(!quiet_period_ends_next_day("8:00", "18:00"));
+        assert!(!quiet_period_ends_next_day("18:00", "18:00"));
     }
 
     fn srgb_channel_to_linear(channel: u8) -> f64 {

@@ -2375,8 +2375,7 @@ fn parser_finds_inline_and_hover_sites() {
             "`{want}` 同属 `tr(<枚举>.key())` 的运行期 key，应当也被展开收进来。实际 {keys:?}"
         );
     }
-    // T1：布局上下文判定（`ui.quiet_hours` 在 `ui.horizontal` 里 ⇒ Extend；
-    // `ui.weak_flow` 在卡片的竖直布局里 ⇒ 不是 Extend）
+    // T1：布局上下文判定（上下文标签在横向布局里，免打扰标题和快捷入口可折行）。
     let find = |key: &str| -> &Site {
         sites
             .iter()
@@ -2384,8 +2383,16 @@ fn parser_finds_inline_and_hover_sites() {
             .unwrap_or_else(|| panic!("内联集合里没有 {key}，实际 {keys:?}"))
     };
     assert!(
-        find("ui.quiet_hours").extend,
-        "ui.quiet_hours 位于 `ui.horizontal(...)` 里（免打扰时段那一行），必须被判成 Extend"
+        find("ui.flow_sensitivity").extend,
+        "ui.flow_sensitivity 位于非折行的 ui.horizontal(...)，必须被判成 Extend"
+    );
+    assert!(
+        !find("ui.quiet_hours").extend
+            && sites
+                .iter()
+                .filter(|site| site.key == "ui.quiet_hours")
+                .all(|site| !site.extend),
+        "免打扰标题和状态页快捷入口均可折行，必须判成非 Extend"
     );
     assert!(
         !find("ui.weak_flow").extend,

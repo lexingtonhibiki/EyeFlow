@@ -93,9 +93,16 @@ pub struct AudioPlayer {
     output: RefCell<Option<AudioOutput>>,
 }
 
+#[derive(Clone, Copy)]
+pub enum CueOrigin {
+    Automatic,
+    User,
+}
+
 struct AudioOutput {
     sink: MixerDeviceSink,
     health: StreamHealth,
+    automatic: AutomaticPlayback,
 }
 
 /// Each opened stream gets its own flag. A late callback from a dropped stream
@@ -132,6 +139,31 @@ fn replace_output<T, E>(
     drop(slot.take());
     *slot = Some(open()?);
     Ok(())
+}
+
+/// Keep only the automatic player stoppable. Explicit cues use the existing
+/// detached/direct path. Each new accepted cue still replaces the entire sink.
+#[derive(Default)]
+struct AutomaticPlayback {
+    player: Option<Player>,
+}
+
+impl AutomaticPlayback {
+    fn play<S>(&mut self, mixer: &rodio::mixer::Mixer, source: S, volume: f32)
+    where
+        S: Source<Item = f32> + Send + 'static,
+    {
+        let player = Player::connect_new(mixer);
+        player.set_volume(volume);
+        player.append(source);
+        self.player = Some(player);
+    }
+
+    fn stop(&mut self) {
+        // Dropping an owned Rodio Player tells its queue to stop; dropping a
+        // detached handle cannot stop it.
+        drop(self.player.take());
+    }
 }
 
 impl AudioOutput {
@@ -185,23 +217,39 @@ impl AudioOutput {
         // still possible: accepting a source is not proof of audible output.
         health.check()?;
         log::info!("Opened current default audio output");
-        Ok(Self { sink, health })
+        Ok(Self {
+            sink,
+            health,
+            automatic: AutomaticPlayback::default(),
+        })
     }
 }
 
 impl AudioPlayer {
     /// Stream a custom file, capped at five minutes, with the requested volume.
     /// Decode first, so an invalid file does not interrupt an existing cue.
-    pub fn play_custom(&self, path: &std::path::Path, volume_pct: u32) -> Result<(), String> {
+    pub fn play_custom(
+        &self,
+        path: &std::path::Path,
+        volume_pct: u32,
+        origin: CueOrigin,
+    ) -> Result<(), String> {
         let source = open_decoder(path)?;
         let source = source.take_duration(Duration::from_secs(CUSTOM_MAX_SECS));
         let mut output = self.output.borrow_mut();
         replace_output(&mut output, AudioOutput::open)?;
-        if let Some(output) = output.as_ref() {
-            let player = Player::connect_new(output.sink.mixer());
-            player.set_volume(volume_pct.clamp(50, 200) as f32 / 100.0);
-            player.append(source);
-            player.detach();
+        if let Some(output) = output.as_mut() {
+            let mixer = output.sink.mixer();
+            let volume = volume_pct.clamp(50, 200) as f32 / 100.0;
+            match origin {
+                CueOrigin::Automatic => output.automatic.play(mixer, source, volume),
+                CueOrigin::User => {
+                    let player = Player::connect_new(mixer);
+                    player.set_volume(volume);
+                    player.append(source);
+                    player.detach();
+                }
+            }
             output.health.check()?;
         }
         Ok(())
@@ -222,13 +270,29 @@ impl AudioPlayer {
             .is_some_and(|output| output.health.available())
     }
 
-    pub fn play_cue(&self, preset: SoundPreset, volume_pct: u32, duration_secs: u64) {
+    pub fn play_cue(
+        &self,
+        preset: SoundPreset,
+        volume_pct: u32,
+        duration_secs: u64,
+        origin: CueOrigin,
+    ) {
         let source = VecSource::new(render(preset, volume_pct, duration_secs));
         let mut output = self.output.borrow_mut();
         if replace_output(&mut output, AudioOutput::open).is_ok() {
-            if let Some(output) = output.as_ref() {
-                output.sink.mixer().add(source);
+            if let Some(output) = output.as_mut() {
+                let mixer = output.sink.mixer();
+                match origin {
+                    CueOrigin::Automatic => output.automatic.play(mixer, source, 1.0),
+                    CueOrigin::User => mixer.add(source),
+                }
             }
+        }
+    }
+
+    pub fn stop_automatic(&self) {
+        if let Some(output) = self.output.borrow_mut().as_mut() {
+            output.automatic.stop();
         }
     }
 }
@@ -412,6 +476,53 @@ fn triple_beep() -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopping_automatic_samples_leaves_direct_and_detached_user_sources_playing() {
+        let channels = NonZero::new(1).unwrap();
+        let sample_rate = NonZero::new(SAMPLE_RATE).unwrap();
+        let (mixer, mut samples) = rodio::mixer::mixer(channels, sample_rate);
+        let cue = |amplitude| {
+            rodio::buffer::SamplesBuffer::new(
+                channels,
+                sample_rate,
+                vec![amplitude; SAMPLE_RATE as usize * 2],
+            )
+        };
+        let assert_samples = |mut actual: Vec<f32>, skip: usize, expect: f32, count: usize| {
+            assert_eq!(actual.len(), count);
+            assert!(actual.drain(skip..).all(|sample| sample == expect));
+        };
+
+        // The former direct automatic cue remained active with no owned handle.
+        let (old_mixer, mut old_samples) = rodio::mixer::mixer(channels, sample_rate);
+        old_mixer.add(cue(0.25));
+        let old_detached = Player::connect_new(&old_mixer);
+        old_detached.append(cue(0.125));
+        old_detached.detach();
+        AutomaticPlayback::default().stop();
+        assert_samples(old_samples.by_ref().take(960).collect(), 480, 0.375, 960);
+
+        // Keep the mixer clock running even when the owned source stops.
+        mixer.add(cue(0.0));
+        let mut automatic = AutomaticPlayback::default();
+        automatic.play(&mixer, cue(0.25), 1.0);
+        assert_samples(samples.by_ref().take(10).collect(), 0, 0.25, 10);
+        automatic.stop();
+        automatic.stop();
+        // Rodio checks stop periodically. Allow 10 ms of source consumption;
+        // this does not bound the host device's already-buffered samples.
+        assert_samples(samples.by_ref().take(960).collect(), 480, 0.0, 960);
+
+        automatic.play(&mixer, cue(0.25), 1.0);
+        mixer.add(cue(0.125));
+        let detached = Player::connect_new(&mixer);
+        detached.append(cue(0.5));
+        detached.detach();
+        assert_samples(samples.by_ref().take(10).collect(), 0, 0.875, 10);
+        automatic.stop();
+        assert_samples(samples.by_ref().take(960).collect(), 480, 0.625, 960);
+    }
 
     #[test]
     fn stream_failure_during_open_is_not_success() {
