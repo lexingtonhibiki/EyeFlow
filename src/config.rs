@@ -462,11 +462,14 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<(), ConfigError> {
-        let path = Self::path();
+        self.save_to(&Self::path())
+    }
+
+    fn save_to(&self, path: &std::path::Path) -> Result<(), ConfigError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        write_atomic(&path, toml::to_string_pretty(self)?.as_bytes())?;
+        write_atomic(path, toml::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
 
@@ -737,6 +740,48 @@ mod tests {
             start: start.into(),
             end: end.into(),
         }
+    }
+
+    #[test]
+    fn failed_settings_config_write_can_be_retried_without_overwriting_previous_file() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let scratch =
+            std::env::temp_dir().join(format!("eyeflow-config-save-{}-{tag}", std::process::id()));
+        std::fs::create_dir(&scratch).unwrap();
+        let scratch = Scratch(scratch);
+        let path = scratch.0.join("config.toml");
+        let old = Config {
+            enabled: false,
+            ..Config::default()
+        };
+        let candidate = Config {
+            quiet_periods: vec![period("12:00", "13:00")],
+            ..Config::default()
+        };
+        old.save_to(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+
+        // Place a directory where the writer needs a regular staging file. This
+        // fails regardless of elevated permissions, without touching user files.
+        let blocked = path.with_extension("toml.tmp");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(matches!(candidate.save_to(&path), Err(ConfigError::Io(_))));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        std::fs::remove_dir(&blocked).unwrap();
+        candidate.save_to(&path).unwrap();
+        let loaded: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded, candidate);
     }
 
     #[test]

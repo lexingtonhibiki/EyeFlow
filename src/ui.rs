@@ -76,6 +76,7 @@ pub struct SettingsState {
     pub autostart_error: Option<String>,
     pub config_open_error: Option<String>,
     pub saved_at: Option<Instant>,
+    save_failed: bool,
     /// 自定义提示音：选中文件的说明 / 校验错误
     pub custom_sound_info: Option<String>,
     pub custom_sound_error: Option<String>,
@@ -101,12 +102,26 @@ impl SettingsState {
             autostart_error: None,
             config_open_error: None,
             saved_at: None,
+            save_failed: false,
             custom_sound_info: None,
             custom_sound_error: None,
             wallpaper: WallpaperCache::new(),
             config_path_display: tr_fill("ui.config_file", "{path}", Config::path().display()),
             quiet_period_edit: None,
         }
+    }
+
+    pub fn record_save_failure(&mut self, attempted: Config) {
+        self.draft = attempted;
+        self.saved_at = None;
+        self.save_failed = true;
+    }
+
+    pub fn record_save_success(&mut self, saved: Config, now: Instant) {
+        self.saved = saved.clone();
+        self.draft = saved;
+        self.saved_at = Some(now);
+        self.save_failed = false;
     }
 
     /// Store only the latest preview result; a successful retry clears the old
@@ -162,7 +177,6 @@ pub enum SettingsAction {
     RestNow,
     ResetDefaults,
     SetAutostart(bool),
-    SetHotkeyEnabled(bool),
     /// 试听预设提示音，携带 draft 里当前的音量与时长
     Preview {
         preset: SoundPreset,
@@ -199,6 +213,13 @@ pub fn show(ui: &mut egui::Ui, s: &mut SettingsState, view: &SettingsView) -> Ve
         ui.label(reason);
     }
     tab_bar(ui, s);
+    if s.save_failed {
+        ui.colored_label(color_err(ui.visuals()), tr("ui.save_failed"));
+        if ui.button(tr("ui.retry_save")).clicked() {
+            push_save(s, &mut actions);
+        }
+        ui.separator();
+    }
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -1227,8 +1248,7 @@ fn system_card(
                 .checkbox(&mut s.draft.hotkey_enabled, tr("ui.hotkey"))
                 .on_hover_text(tr("ui.weak_hotkey"));
             if commit(&hotkey_resp) {
-                // 热键要立即注册/注销；draft 的改动同时也即时保存
-                actions.push(SettingsAction::SetHotkeyEnabled(s.draft.hotkey_enabled));
+                // 保存成功后，Runtime 再注册或注销热键。
                 push_save(s, actions);
             }
         });
@@ -1360,18 +1380,17 @@ fn footer(ui: &mut egui::Ui, s: &mut SettingsState, actions: &mut Vec<SettingsAc
     ui.horizontal(|ui| {
         if ui.button(tr("ui.reset_defaults")).clicked() {
             actions.push(SettingsAction::ResetDefaults);
-            // “修改即保存”：draft 换成默认值后也立即保存默认配置
-            s.draft = Config::default();
-            push_save(s, actions);
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.weak(tr("ui.weak_saved_hint"));
-            if s.saved_at
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
-            {
-                ui.colored_label(color_ok(ui.visuals()), tr("ui.saved"));
-            }
-        });
+        if !s.save_failed {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(tr("ui.weak_saved_hint"));
+                if s.saved_at
+                    .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
+                {
+                    ui.colored_label(color_ok(ui.visuals()), tr("ui.saved"));
+                }
+            });
+        }
     });
 }
 
@@ -1380,6 +1399,75 @@ pub use crate::duration_format::human_duration;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_failure_leaves_previous_snapshot_and_stages_draft_for_retry() {
+        let _language = crate::tr::TEST_LANGUAGE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let old = Config {
+            enabled: false,
+            ..Config::default()
+        };
+        let attempted = Config {
+            quiet_periods: Vec::new(),
+            ..Config::default()
+        };
+        let mut state = SettingsState::new(old.clone(), false);
+        let now = Instant::now();
+        state.record_save_success(old.clone(), now);
+        state.record_save_failure(attempted.clone());
+        assert_eq!(state.saved, old);
+        assert_eq!(state.draft, attempted);
+        assert!(state.saved_at.is_none());
+        assert!(state.save_failed);
+
+        let ctx = egui::Context::default();
+        let stats = Stats::default();
+        let view = SettingsView {
+            sensor_pause_reason: None,
+            state_label: "Active",
+            reminder_line: "Next break".into(),
+            hotkey_active: true,
+            stats: &stats,
+            audio_ok: true,
+            update_status: &UpdateStatus::Idle,
+        };
+        for tab in [
+            SettingsTab::Reminder,
+            SettingsTab::System,
+            SettingsTab::Reminder,
+        ] {
+            state.tab = tab;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(560.0, 1100.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| assert!(show(ui, &mut state, &view).is_empty()),
+            );
+            output.textures_delta.clear();
+            assert!(
+                state.save_failed,
+                "rendering must not retry or clear the error"
+            );
+        }
+
+        let mut actions = Vec::new();
+        push_save(&state, &mut actions);
+        assert_eq!(
+            actions,
+            vec![SettingsAction::Save(Box::new(attempted.clone()))]
+        );
+        state.record_save_success(attempted.clone(), now);
+        assert_eq!(state.saved, attempted);
+        assert!(!state.has_unsaved());
+        assert!(!state.save_failed);
+        assert_eq!(state.saved_at, Some(now));
+    }
 
     #[test]
     fn rest_durations_survive_reminder_status_round_trip() {

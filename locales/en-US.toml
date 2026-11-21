@@ -185,6 +185,8 @@
 "ui.reset_defaults" = "Restore defaults"
 "ui.weak_saved_hint" = "Changes are saved as you make them"
 "ui.saved" = "Saved"
+"ui.save_failed" = "Could not save. These changes weren’t applied."
+"ui.retry_save" = "Retry save"
 
 # ── Theme selector ──────────────────────────────────────────────────────
 "ui.theme" = "Theme"

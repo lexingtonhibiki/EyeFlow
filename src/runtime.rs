@@ -428,53 +428,9 @@ impl Runtime {
 
     pub fn apply_settings_action(&mut self, action: SettingsAction, now: Instant) {
         match action {
-            SettingsAction::Save(cfg) => {
-                let cfg = *cfg;
-                let check_now = cfg.update_check_enabled && !self.core.cfg.update_check_enabled;
-                self.core.apply_config(cfg.clone(), now);
-                if let Err(e) = cfg.save() {
-                    log::error!("保存配置失败: {e}");
-                }
-                self.tray.set_enabled(cfg.enabled);
-                self.tray.set_sound(cfg.sound_enabled);
-                if cfg.hotkey_enabled != self.registered_hotkey.is_some() {
-                    if let Err(e) = self.apply_hotkey_enabled(cfg.hotkey_enabled) {
-                        log::error!("应用热键设置失败: {e}");
-                    }
-                }
-                if let Some(s) = &mut self.settings {
-                    s.saved = cfg.clone();
-                    s.draft = cfg;
-                    s.saved_at = Some(now);
-                }
-                if check_now {
-                    self.spawn_update_check();
-                }
-                log::info!("配置已更新");
-            }
+            SettingsAction::Save(cfg) => self.commit_settings_config(*cfg, now),
             SettingsAction::RestNow => self.on_manual_break_start(now),
-            SettingsAction::ResetDefaults => {
-                let defaults = Config::default();
-                if let Some(s) = &mut self.settings {
-                    s.draft = defaults.clone();
-                }
-                // 即时保存语义：恢复默认也立即落盘
-                self.core.apply_config(defaults.clone(), now);
-                if let Err(e) = defaults.save() {
-                    log::error!("保存默认配置失败: {e}");
-                }
-                self.tray.set_enabled(defaults.enabled);
-                self.tray.set_sound(defaults.sound_enabled);
-                if defaults.hotkey_enabled != self.registered_hotkey.is_some() {
-                    if let Err(e) = self.apply_hotkey_enabled(defaults.hotkey_enabled) {
-                        log::error!("应用热键设置失败: {e}");
-                    }
-                }
-                if let Some(s) = &mut self.settings {
-                    s.saved = defaults;
-                    s.saved_at = Some(now);
-                }
-            }
+            SettingsAction::ResetDefaults => self.commit_settings_config(Config::default(), now),
             SettingsAction::SetAutostart(on) => {
                 if let Some(s) = &mut self.settings {
                     match autostart::set_enabled(on) {
@@ -484,17 +440,6 @@ impl Runtime {
                             s.autostart = autostart::is_enabled();
                         }
                     }
-                }
-            }
-            SettingsAction::SetHotkeyEnabled(on) => {
-                if let Err(e) = self.apply_hotkey_enabled(on) {
-                    log::error!("应用热键设置失败: {e}");
-                }
-                self.core.cfg.hotkey_enabled = on;
-                self.persist_config();
-                if let Some(s) = &mut self.settings {
-                    s.saved.hotkey_enabled = on;
-                    s.draft.hotkey_enabled = on;
                 }
             }
             SettingsAction::Preview {
@@ -590,6 +535,33 @@ impl Runtime {
                 }
             }
         }
+    }
+
+    /// Settings edits become active only after persistence succeeds.
+    fn commit_settings_config(&mut self, cfg: Config, now: Instant) {
+        if let Err(e) = cfg.save() {
+            log::error!("保存配置失败: {e}");
+            if let Some(settings) = &mut self.settings {
+                settings.record_save_failure(cfg);
+            }
+            return;
+        }
+        let check_now = cfg.update_check_enabled && !self.core.cfg.update_check_enabled;
+        self.core.apply_config(cfg.clone(), now);
+        self.tray.set_enabled(cfg.enabled);
+        self.tray.set_sound(cfg.sound_enabled);
+        if cfg.hotkey_enabled != self.registered_hotkey.is_some() {
+            if let Err(e) = self.apply_hotkey_enabled(cfg.hotkey_enabled) {
+                log::error!("应用热键设置失败: {e}");
+            }
+        }
+        if let Some(settings) = &mut self.settings {
+            settings.record_save_success(cfg, now);
+        }
+        if check_now {
+            self.spawn_update_check();
+        }
+        log::info!("配置已更新");
     }
 
     /// 切换界面语言：更新全局语言状态 → 托盘逐项重写 → 落盘。
