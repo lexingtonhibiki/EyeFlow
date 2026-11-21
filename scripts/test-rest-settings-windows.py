@@ -365,7 +365,7 @@ def run_windows(args, output, save_scenario=None):
             expect_runtime(old)
             assert values().get('quiet_periods') == old
             original = path.read_bytes()
-            blocked = path.with_extension('toml.tmp')
+            blocked = path.with_suffix('.toml.tmp')
             blocked.mkdir()  # Owned, empty blocker; never modify the actual config.
             failed_offset = len(read_log())
             click('quiet.add', periods=1)
