@@ -289,6 +289,27 @@ impl<'a> UiSession<'a> {
         if close {
             rt.settings = None;
         }
+        #[cfg(feature = "desktop-smoke")]
+        acceptance_quiet_runtime(rt, close);
+    }
+}
+
+#[cfg(feature = "desktop-smoke")]
+fn acceptance_quiet_runtime(rt: &Runtime, closed: bool) {
+    if !std::env::args_os().any(|arg| arg == "--smoke-stdin") {
+        return;
+    }
+    let phase = if closed { "closed" } else { "visible" };
+    let periods = ui::acceptance_quiet_periods(&rt.core.cfg);
+    let line = format!(
+        "GUI_QUIET_RUNTIME pid={} phase={phase} periods=[{periods}]",
+        std::process::id()
+    );
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let mut last = LAST.lock().unwrap_or_else(|error| error.into_inner());
+    if *last != line {
+        log::info!("{line}");
+        *last = line;
     }
 }
 
